@@ -1,7 +1,7 @@
 import bpy
 import os
-#******************UTILITY FUNCTIONS********************************************
 
+print("Blender utilities loaded - Version 1.0.0")
 
 def clear_console():
     # Questo comando funziona su Windows

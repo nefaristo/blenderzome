@@ -7,8 +7,7 @@ import random
 import time
 from blender_base import *
 
-
-print("Zome module loaded - Version 1.0.3")
+print("Zome module loaded - Version 1.0.11")
 #*******************POLYZOME CLASS************************************************
 """
 NB index conventions:
@@ -16,6 +15,7 @@ vertices[layer][radial] where layer is base 0 bottom up, radial is base 0 counte
 faces[layer][radial] is on the right of vertices[layer][radial] looking from the outside of the polyhedron;
 beams[layer][radial][side] is on the top right of faces[layer][radial], then it goes counterclockwise
 """
+
 class Zome:
     """
     A class to generate and visualize a geometric structure called PolyZome.
@@ -25,49 +25,52 @@ class Zome:
             self, 
             name="",
             N=8, M=7, theta=45, ZH=1, 
-            TW=0.1, TT=0.03, 
-            vertical_map=[], horizontal_map=[],
-            include={ "vertices":1, "edges":1, "faces":1, "beams":1, "barycenter":1 }
+            structure={
+                "TW":0.1,
+                "TT":0.03,
+                "strenghten_v":[],
+                "strenghten_h":[],
+            },
+            show={ "vertices":1, "edges":1, "beams":0, "faces":1, "barycenter":1 }
         ):
+        print("Zome con show = ",show)
         #basic parameters:
         self.name = name if name != "" else "zome " + str(random.randint(1000, 9999))
         self.N = N if N > 0 else 8
         self.M = M if M > 0 and M < N else N-1
         self.theta = theta if theta > 0 and theta < 180 else 45
-        self.ZH=ZH if ZH > 0 else 1
+        self.ZH = ZH if ZH > 0 else 1
         self.H = self.ZH / (N / (M + 1))
+        
         #derived parameters:
         self.h = self.ZH / M
         self.l = self.h / math.cos(math.radians(self.theta))
         self.alpha = 360.0 / N
-        #beams parameters:
-        self.TW=TW
-        self.TT=TT
-        #reinforcements:
-        self.vertical_map=vertical_map
-        self.horizontal_map=horizontal_map
+        
+        # Zome structure parameters
+        self.structure = structure 
+        
         #time and report:
-        self.time=time.time()
-        self.report=""  
+        self.time = time.time()
+        self.report = ""  
+        self.show = show
+        self.show["beams"]=self.show["beams"] and (self.structure.TW>0 and self.structure.TT>0)
 
-        # Initialize lists for vertices and polygons
-        #include ha u
-        #una lista di associativi "vertices=1|0" ecc 
-        self.include =include
+        #structures used to build the polyzome:
         self.vertices = []
         self.faces = [[] for _ in range(N)]
-        self.edges=[]
-        self.beams=[]
-        self.barycenter = (0,0,0)#single tuple (x,y,z) to be updated after building
+        self.edges = []
+        self.beams = []
+        self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         
         # Build the structure
-        self.create_polyzome() #abstract geometry
-        self.create_collection() #actual blender collection w/ subcollections
+        self.create_polyzome()  # abstract geometry
+        self.create_collection()  # actual blender collection w/ subcollections
     
     def create_polyzome(self):
-        self.print(f"\n\n*****\npoly-zome {self.name} creation\n")
+        self.print(f"\n*****\n'{self.name}'\n")
         self.print("INFO:\n"+self.info()+"\n")
-        self.print("base geomerty creation...")
+        self.print("polyhedron creation...")
         for layer_index in range(self.N+1): # max N-2 faces (0...N-2) + 2 vertices (0...N)
             vertices_layer = []
             faces_layer = []
@@ -110,9 +113,9 @@ class Zome:
                             edges_layer.append([(B_vec.x, B_vec.y, B_vec.z), (A_vec.x, A_vec.y, A_vec.z)])
                             edges_layer.append([(C_vec.x, C_vec.y, C_vec.z), (A_vec.x, A_vec.y, A_vec.z)])
                             #se in vertical|horizontal map l'indice esiste ed è 1, aggiungi un vertical|horizontal edge:
-                            if layer_index < len(self.vertical_map) and self.vertical_map[layer_index] == 1:
+                            if "strenghten_v" in self.structure and layer_index < len(self.structure["strenghten_v"]) and self.structure["strenghten_v"][layer_index] == 1:
                                 edges_layer.append([(D_vec.x, D_vec.y, D_vec.z), (A_vec.x, A_vec.y, A_vec.z)])#vertical edges
-                            if layer_index < len(self.horizontal_map) and self.horizontal_map[layer_index] == 1:
+                            if "strenghten_h" in self.structure and layer_index < len(self.structure["strenghten_h"]) and self.structure["strenghten_h"][layer_index] == 1:
                                 edges_layer.append([(B_vec.x, B_vec.y, B_vec.z), (C_vec.x, C_vec.y, C_vec.z)])#horizontal edges
                 case _ if layer_index >self.M+1: # the last layer, the one with the base
                     pass #nothing added
@@ -136,7 +139,7 @@ class Zome:
                 total_vertices += 1
         if total_vertices > 0:
             self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
-        self.print("base geometry creation completed",report_time=True)
+        self.print("polyhedron creation completed",report_time=True)
 
     def info(self):
         # returns a string with the info
@@ -159,6 +162,8 @@ class Zome:
 
     def create_collection(self):
         self.print("blender collections creation...")
+        print("DC",flush=True)
+
         transp=1
         colors = [
             (1.0, 0.0, 0.0, transp),  # Red
@@ -170,6 +175,18 @@ class Zome:
             (1.0, 1.0, 1.0, transp),   # White
             (0.0, 0.0, 0.0, transp)    # Black
         ]
+
+        # Dizionari per mappare le connessioni tra facce e bordi
+        next_face_adding = {#"layer_type": {edge_index: face_index_to_add to get the next face index}
+            "first": {0: +0, 1: None, 2: +1},#triangle (2 edges above)
+            "standard": {0: +0, 1: None, 2: None, 3: +1},#intermediate rhombi (2 edges above)
+            "last": {0: None, 1: None, 2: None, 3: +1}#last rhombus (1 edge on their side each)
+        }        
+        next_edge_number = {#"layer_type": {edge_index: next_edge_index}
+            "first": {0: 2, 1: None, 2: 1},#
+            "standard": {0: 2, 1: None, 2: None, 3: 1},#intermediate rhombus have 2 edges over them
+            "last": {0: None, 1: None, 2: None, 3: 0}#last rhombus have 1 edge on their right
+        }
 
         # Create materials once
         materiali = []
@@ -231,12 +248,68 @@ class Zome:
                 direction = end - start
                 length = direction.length
                 midpoint = (start + end) / 2
-
                 # Aggiungi una curva per il segmento
                 start_point = midpoint - (direction * (length / 2))
                 end_point = midpoint + (direction * (length / 2))
-                obj = add_segment_as_curve(start_point, end_point, name=rename(f"{self.name}_edge_{layer_index}_{edge_index}"))
+                obj = add_segment_as_curve(start, end, name=rename(f"{self.name}_edge_{layer_index}_{edge_index}"))
+                # Imposta le proprietà personalizzate DOPO aver creato l'oggetto
+                obj["start"] = start
+                obj["end"] = end
+
                 edges_collection.objects.link(obj)
+
+        # beams:
+        if self.show["beams"] == 1:
+            self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
+            main_collection.children.link(self.beams_collection)
+
+            for layer_index, layer in enumerate(self.faces):
+                layer_type = "first" if layer_index == 0 else "standard" if layer_index < self.M - 1 else "last"
+                for face_index, face in enumerate(layer):
+                    if len(face) >= 3:
+                        face_normal = mathutils.geometry.normal(face)
+                    else:
+                        face_normal = mathutils.Vector((0, 0, 0))
+                    face_center = sum((mathutils.Vector(v) for v in face), mathutils.Vector()) / len(face)
+                    for edge_index in range(len(face)):
+                        start_vertex = face[edge_index]
+                        end_vertex = face[(edge_index + 1) % len(face)]
+                        mid_point = (mathutils.Vector(start_vertex) + mathutils.Vector(end_vertex)) / 2
+                        edge = mathutils.Vector(end_vertex) - mathutils.Vector(start_vertex)
+                        edge_length = edge.length
+                        edge.normalize()
+
+                        bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
+                        beam = bpy.context.object
+                        beam.name = rename(f"{self.name}_beam_{layer_index}_{face_index}_{edge_index}")
+
+                        bpy.context.scene.transform_orientation_slots[0].type = 'LOCAL'
+                        beam.scale = (edge_length - 2 * self.structure["TT"], self.structure["TW"], self.structure["TT"])
+                        beam["length"] = edge_length - 2 * self.structure["TT"]
+                        beam["layer_type"] = layer_type
+                        beam["beam_type"] = "base" if layer_type == "first" and edge_index == 1 else "standard"
+                        bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+                        bpy.context.view_layer.objects.active = beam
+                        bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME')
+                        bpy.context.scene.transform_orientation_slots[0].type = 'GLOBAL'
+
+                        translation = face_normal.normalized() * (self.structure["TW"] / 2)
+                        translation = translation + (face_center - mid_point).normalized() * self.structure["TT"] / 2
+                        final_position = mid_point + translation
+                        beam.location = final_position
+
+                        beam.rotation_mode = 'QUATERNION'
+                        rotation_matrix = mathutils.Matrix((edge, face_normal, edge.cross(face_normal))).transposed()
+                        beam.rotation_quaternion = rotation_matrix.to_quaternion()
+
+                        beam["internal_constraint"] = f"{self.name}_beam_{layer_index}_{face_index}_{(edge_index + 1) % len(face)}"
+                        next_edge_index = next_edge_number[layer_type][edge_index % len(face)]
+                        if next_edge_index is not None:
+                            next_layer_index = layer_index + 1 if layer_type != "last" else layer_index
+                            next_face_index = (face_index + next_face_adding[layer_type][edge_index % len(face)]) % len(layer)
+                            beam["external_constraint"] = f"{self.name}_beam_{next_layer_index}_{next_face_index}_{next_edge_index}"
+                        self.beams_collection.objects.link(beam)
+                        bpy.context.collection.objects.unlink(beam)
 
         #faces:
         for layer_index, layer in enumerate(self.faces):
@@ -256,7 +329,7 @@ class Zome:
                 mat.diffuse_color = colors[(poly_index) % len(colors)]
                 poly_object.data.materials.append(mat)
         #barycenter:
-        if self.include["barycenter"] == 1:
+        if self.show["barycenter"] == 1:
             self.print("barycenter creation")
             bpy.ops.mesh.primitive_uv_sphere_add(radius=point_radius*5, location=self.barycenter)
             obj = bpy.context.object

@@ -3,18 +3,6 @@ import sys
 import importlib
 import shutil
 import bpy
-def clear_pycache():
-    # Scorri attraverso i percorsi in sys.path  
-    result=""
-    for path in sys.path:
-        pycache_path = os.path.join(path, '__pycache__')
-        if os.path.exists(pycache_path):
-            try:
-                shutil.rmtree(pycache_path)
-                result+=f"Cache rimossa: {pycache_path}\n"
-            except Exception as e:
-                result+=f"Errore durante la rimozione della cache: {e}\n"
-    return result
 
 # Esegui la pulizia della cache
 
@@ -34,31 +22,31 @@ import zome
 importlib.reload(zome)
 from zome import *
 # Importa operatori e pannelli
+import zome_operators
+importlib.reload(zome_operators)
+from zome_operators import *
 from zome_operators import register as register_operators, unregister as unregister_operators
+import zome_panels
+importlib.reload(zome_panels)
+from zome_panels import *
 from zome_panels import register as register_panels, unregister as unregister_panels
+import bpy
 
-
-
-# Funzioni di registrazione e deregistrazione
-def register():
-    register_operators()
-    register_panels()
-
-def unregister():
-    unregister_operators() 
-    unregister_panels()
 
 # Usa le funzioni importate
 clear_up()
-
+print("Script importati (percorso:",script_path,")")
 print("Impostazione pannello")
 
 # Esegui la deregistrazione e poi la registrazione se il file è eseguito come script principale
 if __name__ == "__main__":
     print("Script eseguito come principale")
-    unregister()
-    register()
-
+    #unregister_operators() 
+    #register_operators()
+    
+    #unregister_panels()
+    #register_panels()
+    
 bpy.ops.object.select_all(action='DESELECT')
 bpy.context.view_layer.objects.active = None
 
