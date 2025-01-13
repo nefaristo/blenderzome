@@ -1,4 +1,5 @@
 from zome import *
+import bpy
 
 print("Zome operators loaded - Version 1.0.1")
 
@@ -25,10 +26,11 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             ZH=context.scene.ZH,
             name=context.scene.name,
             structure={
-                "TW":0.05,
-                "TT":0.03,
-                "strenghten_v":strenghten_v,
-                "strenghten_h":strenghten_h,
+                "TW": context.scene.beam_width / 100.0,
+                "TT": context.scene.beam_thickness / 100.0,
+                "base": context.scene.base / 100.0,
+                "strenghten_v": strenghten_v,
+                "strenghten_h": strenghten_h,
             },
             show={
                 "vertices": 1 if context.scene.show_vertices else 0,
@@ -38,22 +40,30 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "beams": 1 if context.scene.show_beams else 0
             }
         )
-        set_visibility(zome1.name+"_vertices", context.scene.show_vertices)
-        set_visibility(zome1.name+"_edges", context.scene.show_edges)
-        set_visibility(zome1.name+"_faces", context.scene.show_faces)
-        set_visibility(zome1.name+"_barycenter", context.scene.show_barycenter)
-        set_visibility(zome1.name+"_beams", context.scene.show_beams)
         print(f"Zome {zome1.name} creation completed")
         if context.scene.join_edges:
             bpy.context.view_layer.update()
+        return {'FINISHED'}
+
+class OBJECT_OT_BooleanUnion(bpy.types.Operator):
+    bl_idname = "object.boolean_union"
+    bl_label = "Boolean Union Collection"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    collection_name: bpy.props.StringProperty(name="Collection Name", default="Pippo")
+    new_object_name: bpy.props.StringProperty(name="New Object Name", default="Pippo_boolunion")
+
+    def execute(self, context):
+        boolean_union_collection(self.collection_name, self.new_object_name)
         return {'FINISHED'}
 
 def register():
     result=True
     try:
         bpy.utils.register_class(OBJECT_OT_call_zome)
+        bpy.utils.register_class(OBJECT_OT_BooleanUnion)
     except RuntimeError as e:
-        print(f"Errore durante la registrazione di OBJECT_OT_call_zome: {e}")
+        print(f"Errore durante la registrazione degli operatori: {e}")
         result=False
     return result
 
@@ -61,7 +71,8 @@ def unregister():
     result=True         
     try:
         bpy.utils.unregister_class(OBJECT_OT_call_zome)
+        bpy.utils.unregister_class(OBJECT_OT_BooleanUnion)
     except RuntimeError as e:
-        print(f"Errore durante la deregistrazione di OBJECT_OT_call_zome: {e}")
+        print(f"Errore durante la deregistrazione degli operatori: {e}")
         result=False
     return result

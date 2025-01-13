@@ -7,7 +7,7 @@ import random
 import time
 from blender_base import *
 
-print("Zome module loaded - Version 1.0.11")
+print("Zome module loaded - Version 1.0.12")
 #*******************POLYZOME CLASS************************************************
 """
 NB index conventions:
@@ -17,10 +17,6 @@ beams[layer][radial][side] is on the top right of faces[layer][radial], then it 
 """
 
 class Zome:
-    """
-    A class to generate and visualize a geometric structure called PolyZome.
-
-    """
     def __init__(
             self, 
             name="",
@@ -28,34 +24,41 @@ class Zome:
             structure={
                 "TW":0.1,
                 "TT":0.03,
+                "base": 3.0,  # Spessore della base in centimetri
                 "strenghten_v":[],
                 "strenghten_h":[],
             },
-            show={ "vertices":1, "edges":1, "beams":0, "faces":1, "barycenter":1 }
+            show={ 
+                "vertices": 1, 
+                "edges": 1, 
+                "beams": 0, 
+                "faces": 1, 
+                "barycenter": 1 
+            }
         ):
-        print("Zome con show = ",show)
+        
         #basic parameters:
         self.name = name if name != "" else "zome " + str(random.randint(1000, 9999))
         self.N = N if N > 0 else 8
         self.M = M if M > 0 and M < N else N-1
         self.theta = theta if theta > 0 and theta < 180 else 45
-        self.ZH = ZH if ZH > 0 else 1
-        self.H = self.ZH / (N / (M + 1))
+        self.ZH = ZH if ZH > 0 else 1        
+        self.structure = structure
+        self.show = show
         
         #derived parameters:
+        self.H = self.ZH / (N / (M + 1))
         self.h = self.ZH / M
         self.l = self.h / math.cos(math.radians(self.theta))
-        self.alpha = 360.0 / N
-        
-        # Zome structure parameters
-        self.structure = structure 
+        self.alpha = 360.0 / N        
+        self.show["beams"] = self.show["beams"] and (self.structure["TW"] > 0 and self.structure["TT"] > 0)
+        self.show["base"] = self.structure["base"] > 0    
         
         #time and report:
         self.time = time.time()
         self.report = ""  
-        self.show = show
-        self.show["beams"]=self.show["beams"] and (self.structure.TW>0 and self.structure.TT>0)
 
+        print("Structure  ",structure,"\nShow  ",show)
         #structures used to build the polyzome:
         self.vertices = []
         self.faces = [[] for _ in range(N)]
@@ -215,48 +218,82 @@ class Zome:
         bpy.context.scene.collection.children.link(main_collection)
 
         # Create or get the collection for vertices
-        vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
-        main_collection.children.link(vertices_collection)
+
 
         # Create or get the collection for faces
-        faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
-        main_collection.children.link(faces_collection)
+
 
         # Create or get the collection for edges
-        edges_collection = bpy.data.collections.new(rename(self.name+"_edges"))
-        main_collection.children.link(edges_collection)
+        
+        point_radius = self.ZH / 100 
+        base_radius = math.sqrt(self.vertices[0][0][0]**2 + self.vertices[0][0][1]**2)
+        
+        # BASE:
+        base_thickness = self.structure["base"] # Converti da cm a metri
+        if base_thickness > 0:
+            bpy.ops.mesh.primitive_cylinder_add(vertices=self.N, radius=base_radius, depth=base_thickness)
+            obj = bpy.context.object
+            obj.name = rename(f"{self.name}_base")
+            print("base creation: vertices: ",self.N,"radius: ",base_radius,"depth: ",base_thickness)
+            main_collection.objects.link(obj)
+            bpy.context.collection.objects.unlink(obj)
+       
+        # VERTICES:
+        if self.show["vertices"] == 1:
+            vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
+            main_collection.children.link(vertices_collection)
+            for layer_index, layer in enumerate(self.vertices):
+                for vertex_index, v in enumerate(layer):
+                    bpy.ops.mesh.primitive_uv_sphere_add(radius=point_radius, location=v)
+                    obj = bpy.context.object
+                    obj.name = rename(f"{self.name}_vertex_{layer_index}_{vertex_index}")
 
-        point_radius=self.ZH/100;
-        #vertices:
-        for layer_index, layer in enumerate(self.vertices):
-            for vertex_index, v in enumerate(layer):
-                bpy.ops.mesh.primitive_uv_sphere_add(radius=point_radius, location=v)
-                obj = bpy.context.object
-                obj.name = rename(f"{self.name}_vertex_{layer_index}_{vertex_index}")
+                    # Assign the material cyclically
+                    obj.data.materials.append(materiali[(layer_index) % len(materiali)])
+                    # Link the object to the vertices collection
+                    vertices_collection.objects.link(obj)
+                    bpy.context.collection.objects.unlink(obj)
+        # EDGES::
+        if self.show["edges"] == 1:
+            edges_collection = bpy.data.collections.new(rename(self.name+"_edges"))
+            main_collection.children.link(edges_collection)
+            for layer_index, layer in enumerate(self.edges):
+                for edge_index, edge in enumerate(layer):
+                    # Calcola il vettore tra i due punti
+                    start = mathutils.Vector(edge[0])
+                    end = mathutils.Vector(edge[1])
+                    direction = end - start
+                    length = direction.length
+                    midpoint = (start + end) / 2
+                    # Aggiungi una curva per il segmento
+                    start_point = midpoint - (direction * (length / 2))
+                    end_point = midpoint + (direction * (length / 2))
+                    obj = add_segment_as_curve(start, end, name=rename(f"{self.name}_edge_{layer_index}_{edge_index}"))
+                    # Imposta le proprietà personalizzate DOPO aver creato l'oggetto
+                    obj["start"] = start
+                    obj["end"] = end
+                    edges_collection.objects.link(obj)
 
-                # Assign the material cyclically
-                obj.data.materials.append(materiali[(layer_index) % len(materiali)])
-                # Link the object to the vertices collection
-                vertices_collection.objects.link(obj)
-                bpy.context.collection.objects.unlink(obj)
-        #edges:
-        for layer_index, layer in enumerate(self.edges):
-            for edge_index, edge in enumerate(layer):
-                # Calcola il vettore tra i due punti
-                start = mathutils.Vector(edge[0])
-                end = mathutils.Vector(edge[1])
-                direction = end - start
-                length = direction.length
-                midpoint = (start + end) / 2
-                # Aggiungi una curva per il segmento
-                start_point = midpoint - (direction * (length / 2))
-                end_point = midpoint + (direction * (length / 2))
-                obj = add_segment_as_curve(start, end, name=rename(f"{self.name}_edge_{layer_index}_{edge_index}"))
-                # Imposta le proprietà personalizzate DOPO aver creato l'oggetto
-                obj["start"] = start
-                obj["end"] = end
+        # FACES:
+        if self.show["faces"] == 1:
+            faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
+            main_collection.children.link(faces_collection)
+            for layer_index, layer in enumerate(self.faces):
+                for poly_index, poly in enumerate(layer):
+                    # Create a new mesh and object for the polygon
+                    mesh_data = bpy.data.meshes.new(f"poly_mesh_{layer_index}_{poly_index}")
+                    # Generate indices for the polygon vertices
+                    indices = list(range(len(poly)))
+                    # Create the polygon with a variable number of vertices
+                    mesh_data.from_pydata(poly, [], [indices])
+                    poly_object = bpy.data.objects.new(rename(f"{self.name}_face_{layer_index}_{poly_index}"), mesh_data)
+                    # Link the object to the faces collection
+                    bpy.data.collections[faces_collection.name].objects.link(poly_object)
 
-                edges_collection.objects.link(obj)
+                    # Assign a colored material
+                    mat = bpy.data.materials.new(name=f"Material_{layer_index}_{poly_index}")
+                    mat.diffuse_color = colors[(poly_index) % len(colors)]
+                    poly_object.data.materials.append(mat)
 
         # beams:
         if self.show["beams"] == 1:
@@ -311,24 +348,9 @@ class Zome:
                         self.beams_collection.objects.link(beam)
                         bpy.context.collection.objects.unlink(beam)
 
-        #faces:
-        for layer_index, layer in enumerate(self.faces):
-            for poly_index, poly in enumerate(layer):
-                # Create a new mesh and object for the polygon
-                mesh_data = bpy.data.meshes.new(f"poly_mesh_{layer_index}_{poly_index}")
-                # Generate indices for the polygon vertices
-                indices = list(range(len(poly)))
-                # Create the polygon with a variable number of vertices
-                mesh_data.from_pydata(poly, [], [indices])
-                poly_object = bpy.data.objects.new(rename(f"{self.name}_face_{layer_index}_{poly_index}"), mesh_data)
-                # Link the object to the faces collection
-                bpy.data.collections[faces_collection.name].objects.link(poly_object)
 
-                # Assign a colored material
-                mat = bpy.data.materials.new(name=f"Material_{layer_index}_{poly_index}")
-                mat.diffuse_color = colors[(poly_index) % len(colors)]
-                poly_object.data.materials.append(mat)
-        #barycenter:
+
+        # BARYCENTER:
         if self.show["barycenter"] == 1:
             self.print("barycenter creation")
             bpy.ops.mesh.primitive_uv_sphere_add(radius=point_radius*5, location=self.barycenter)
@@ -339,8 +361,7 @@ class Zome:
             bpy.context.collection.objects.unlink(obj)
         self.print("collection creation completed",report_time=True)
 
-    def select(self,subcollection_name=""): #select main collection by name. and all its objects
-        
+    def DELETE_select(self,subcollection_name=""): #select main collection by name. and all its objects
         name=self.name
         if subcollection_name != "":
             name=name+"_"+subcollection_name
@@ -358,7 +379,7 @@ class Zome:
         # Optionally, set the active object to None if needed
         bpy.context.view_layer.objects.active = None
 
-    def translate(self, value=(0, 0, 0)):
+    def DELETE_translate(self, value=(0, 0, 0)):
         self.select()
         bpy.ops.transform.translate(value=value)
 

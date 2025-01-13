@@ -11,54 +11,82 @@ class ZomePanel(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        scene = context.scene
 
-        row = layout.row()
-        row.label(text="N:")
-        row.prop(context.scene, "N", text="")
+        # Sezione Geometria Pura
+        box = layout.box()
+        box.prop(scene, "expand_geometria_pura", text="Geometria Pura", icon="TRIA_DOWN" if scene.expand_geometria_pura else "TRIA_RIGHT", emboss=False)
+        if scene.expand_geometria_pura:
+            row = box.row()
+            row.label(text="N:")
+            row.prop(scene, "N", text="")
 
-        row = layout.row()
-        row.label(text="Numero di strati:")
-        row.prop(context.scene, "M", text="")
+            row = box.row()
+            row.label(text="Numero di strati:")
+            row.prop(scene, "M", text="")
 
-        row = layout.row()
-        row.label(text="Angolo tra stella finale e verticale:")
-        row.prop(context.scene, "theta", text="")
+            row = box.row()
+            row.label(text="Angolo tra stella finale e verticale:")
+            row.prop(scene, "theta", text="")
 
-        row = layout.row()
-        row.label(text="Altezza m:")
-        row.prop(context.scene, "ZH", text="")
+            row = box.row()
+            row.label(text="Altezza m:")
+            row.prop(scene, "ZH", text="")
 
-        row = layout.row()
-        row.label(text="Nome:")
-        row.prop(context.scene, "name", text="")
+            row = box.row()
+            row.label(text="Nome:")
+            row.prop(scene, "name", text="")
 
-        row = layout.row()
-        row.prop(context.scene, "join_edges", text="Unifica bordi")
+        # Sezione Costruttivi
+        box = layout.box()
+        box.prop(scene, "expand_metodo_costruttivo", text="Costruttivi", icon="TRIA_DOWN" if scene.expand_metodo_costruttivo else "TRIA_RIGHT", emboss=False)
+        if scene.expand_metodo_costruttivo:
+            row = box.row()
+            row.prop(scene, "show_vertices", text="Vertici")
 
-        # Aggiungi checkbox per le proprietà di visibilità
-        row = layout.row()
-        row.prop(context.scene, "show_vertices", text="Vertici")
+            row = box.row()
+            row.prop(scene, "show_edges", text="Bordi")
 
-        row = layout.row()
-        row.prop(context.scene, "show_edges", text="Bordi")
+            row = box.row()
+            row.prop(scene, "show_faces", text="Facce")
 
-        row = layout.row()
-        row.prop(context.scene, "show_faces", text="Facce")
+            # Modifica Base per essere una misura in centimetri
+            row = box.row()
+            row.label(text="Base (cm):")
+            row.prop(scene, "base", text="")
 
-        row = layout.row()
-        row.prop(context.scene, "show_barycenter", text="Baricentro")
+            # Travi: Larghezza e Spessore
+            row = box.row()
+            row.label(text="Travi:")
+            row = box.row()
+            row.label(text="Largh. (cm):")
+            row.prop(scene, "beam_width", text="")
+            row = box.row()
+            row.label(text="Spess. (cm):")
+            row.prop(scene, "beam_thickness", text="")
 
-        # Aggiungi checkbox per la visibilità dei travi
-        row = layout.row()
-        row.prop(context.scene, "show_beams", text="Travi")
+            row = box.row()
+            row.prop(scene, "show_barycenter", text="Baricentro")
 
-        # Chiamata all'operatore
+        # Pulsante Crea Zome nel pannello principale
         layout.operator("object.call_zome", text="Crea Zome")
+
+class VIEW3D_PT_BooleanUnionPanel(bpy.types.Panel):
+    bl_label = "Boolean Union"
+    bl_idname = "VIEW3D_PT_boolean_union"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Tool'
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("object.boolean_union")
 
 def register():
     result=True
     try:
         bpy.utils.register_class(ZomePanel)
+        bpy.utils.register_class(VIEW3D_PT_BooleanUnionPanel)
         bpy.types.Scene.N = bpy.props.IntProperty(
             default=8,
             description="Numero di lati del poligono"
@@ -76,7 +104,7 @@ def register():
             description="Altezza in metri"
         )
         bpy.types.Scene.name = bpy.props.StringProperty(
-            default="8x5x60",
+            default="[nome]",
             description="Nome del progetto"
         )
         bpy.types.Scene.show_vertices = bpy.props.BoolProperty(
@@ -95,6 +123,11 @@ def register():
             default=False,
             description="Mostra le facce"
         )
+
+        bpy.types.Scene.show_base = bpy.props.BoolProperty(
+            default=False,
+            description="Mostra la base"
+        )
         bpy.types.Scene.show_barycenter = bpy.props.BoolProperty(
             default=True,
             description="Mostra il baricentro"
@@ -103,8 +136,22 @@ def register():
             default=True,
             description="Mostra i travi"
         )
+        bpy.types.Scene.expand_geometria_pura = bpy.props.BoolProperty(default=True)
+        bpy.types.Scene.expand_metodo_costruttivo = bpy.props.BoolProperty(default=True)
+        bpy.types.Scene.base = bpy.props.FloatProperty(
+            default=3.0,
+            description="Lunghezza della base in centimetri"
+        )
+        bpy.types.Scene.beam_width = bpy.props.FloatProperty(
+            default=5.0,
+            description="Larghezza delle travi in centimetri"
+        )
+        bpy.types.Scene.beam_thickness = bpy.props.FloatProperty(
+            default=2.0,
+            description="Spessore delle travi in centimetri"
+        )
     except RuntimeError as e:
-        print(f"Errore durante la registrazione di ZomePanel: {e}")
+        print(f"Errore durante la registrazione dei pannelli: {e}")
         result=False
     return result
 
@@ -112,6 +159,7 @@ def unregister():
     result=True
     try:
         bpy.utils.unregister_class(ZomePanel)
+        bpy.utils.unregister_class(VIEW3D_PT_BooleanUnionPanel)
         del bpy.types.Scene.N
         del bpy.types.Scene.M
         del bpy.types.Scene.theta
@@ -121,10 +169,16 @@ def unregister():
         del bpy.types.Scene.show_edges
         del bpy.types.Scene.join_edges
         del bpy.types.Scene.show_faces
+        del bpy.types.Scene.show_base
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.show_beams
+        del bpy.types.Scene.expand_geometria_pura
+        del bpy.types.Scene.expand_metodo_costruttivo
+        del bpy.types.Scene.base
+        del bpy.types.Scene.beam_width
+        del bpy.types.Scene.beam_thickness
     except RuntimeError as e:
-        print(f"Errore durante la deregistrazione di ZomePanel: {e}")
+        print(f"Errore durante la deregistrazione dei pannelli: {e}")
         result=False
     return result
 

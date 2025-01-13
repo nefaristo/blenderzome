@@ -74,3 +74,44 @@ def add_segment_as_curve(start, end, name="Segment"):
     curve_obj = bpy.data.objects.new(name, curve_data)
 
     return curve_obj
+
+def boolean_union_collection(collection_name, new_object_name):
+    # Assicurati che la collezione esista
+    if collection_name not in bpy.data.collections:
+        print(f"Collection '{collection_name}' not found.")
+        return
+
+    # Crea una nuova collezione per l'oggetto unito
+    union_collection = bpy.data.collections.new(name=f"{new_object_name}_collection")
+    bpy.context.scene.collection.children.link(union_collection)
+
+    # Duplicare gli oggetti della collezione specificata
+    original_objects = bpy.data.collections[collection_name].objects
+    bpy.ops.object.select_all(action='DESELECT')
+    for obj in original_objects:
+        obj.select_set(True)
+    bpy.ops.object.duplicate()
+
+    # Unisci gli oggetti duplicati
+    duplicated_objects = [obj for obj in bpy.context.selected_objects]
+    bpy.context.view_layer.objects.active = duplicated_objects[0]
+    bpy.ops.object.join()
+
+    # Rinominare l'oggetto unito
+    union_object = bpy.context.active_object
+    union_object.name = new_object_name
+
+    # Sposta l'oggetto unito fuori dalla collezione originale
+    bpy.context.scene.collection.objects.link(union_object)
+    for obj in duplicated_objects:
+        bpy.data.collections[collection_name].objects.unlink(obj)
+
+    # Aggiungi l'oggetto unito alla nuova collezione
+    union_collection.objects.link(union_object)
+
+    print(f"Boolean union created: {union_object.name}")
+
+
+
+
+

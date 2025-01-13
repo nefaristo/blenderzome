@@ -38,6 +38,15 @@ clear_up()
 print("Script importati (percorso:",script_path,")")
 print("Impostazione pannello")
 
+# Registra gli operatori e i pannelli
+def register():
+    zome_operators.register()
+    zome_panels.register()
+
+def unregister():
+    zome_operators.unregister()
+    zome_panels.unregister()
+
 # Esegui la deregistrazione e poi la registrazione se il file è eseguito come script principale
 if __name__ == "__main__":
     print("Script eseguito come principale")
@@ -46,6 +55,8 @@ if __name__ == "__main__":
     
     #unregister_panels()
     #register_panels()
+    
+    register()
     
 bpy.ops.object.select_all(action='DESELECT')
 bpy.context.view_layer.objects.active = None
