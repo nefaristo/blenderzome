@@ -53,13 +53,10 @@ class Zome:
         self.show["beams"] = self.show["beams"] and (self.structure["TW"] > 0 and self.structure["TT"] > 0)
         self.show["base"] = self.structure["base"] > 0    
         
-        #time and report:
-        self.time = time.time()
-        self.report = ""  
 
         #structures used to build the polyzome:
         self.vertices = []
-        self.faces = [[] for _ in range(N)]
+        self.faces = []
         self.edges = []
         self.beams = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
@@ -72,15 +69,15 @@ class Zome:
         self.print(f"\n_____________\nZome '{self.name}'\n")
         self.print(f"Base geometry: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}\n")
         self.print(f"Structure: {self.structure}\nShow: {self.show}\n______________\n")
-        self.print("Polyhedron...")
+        self.print("Geometry...")
         for layer_index in range(self.N+1): # max N-2 faces (0...N-2) + 2 vertices (0...N)
             vertices_layer = []
             faces_layer = []
             edges_layer=[]
             match layer_index:
-                case 0:  # APEX (1 vertex, no vertices, no edges)
+                case 0:  # APEX (1 vertex, no edges or faces)
                     vertices_layer.append((0, 0, self.ZH))#appends to the layer a tuple with the apex
-                case 1:  # FIRST POLYGON (N x 4 vertices)
+                case 1:  # FIRST POLYGON (N x 4 vertices, no faces yet)
                     for radial_index in range(self.N):
                         x = self.l * math.sin(math.radians(self.theta)) * math.cos(math.radians(radial_index * self.alpha))
                         y = self.l * math.sin(math.radians(self.theta)) * math.sin(math.radians(radial_index * self.alpha))
@@ -141,6 +138,7 @@ class Zome:
                 total_vertices += 1
         if total_vertices > 0:
             self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
+        self.print(f"faces:{len(self.faces)}, vertices:{len(self.vertices)}, edges:{len(self.edges)}")
         self.print("✔️\n",)
 
     
@@ -207,7 +205,9 @@ class Zome:
             self.print("Base...")
             base_radius = math.sqrt(self.vertices[0][0][0]**2 + self.vertices[0][0][1]**2)
             bpy.ops.mesh.primitive_cylinder_add(vertices=self.N, radius=base_radius, depth=base_thickness)
+            #moves it on z down by half of its height
             obj = bpy.context.object
+            obj.location = (0, 0, -base_thickness / 2)
             obj.name = rename(f"{self.name}_base")
             main_collection.objects.link(obj)
             bpy.context.collection.objects.unlink(obj)
@@ -280,12 +280,12 @@ class Zome:
         # BEAMS:
         if self.show["beams"] == 1:
             self.print("Beams...")
-            self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
-            main_collection.children.link(self.beams_collection)
-
+            beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
+            main_collection.children.link(beams_collection)
             for layer_index, layer in enumerate(self.faces):
+                time_start = time.time()#performance report
                 layer_type = "first" if layer_index == 0 else "standard" if layer_index < self.M - 1 else "last"
-                for face_index, face in enumerate(layer):
+                for face_index, face in enumerate(layer):                
                     if len(face) >= 3:
                         face_normal = mathutils.geometry.normal(face)
                     else:
@@ -328,8 +328,10 @@ class Zome:
                             next_layer_index = layer_index + 1 if layer_type != "last" else layer_index
                             next_face_index = (face_index + next_face_adding[layer_type][edge_index % len(face)]) % len(layer)
                             beam["external_constraint"] = f"{self.name}_beam_{next_layer_index}_{next_face_index}_{next_edge_index}"
-                        self.beams_collection.objects.link(beam)
+                        beams_collection.objects.link(beam)
                         bpy.context.collection.objects.unlink(beam)
+                time_end = time.time()
+                self.print(f"Layer {layer_index} done in {(time_end - time_start):.2f}s\n")
             self.print("✔️\n")
 
         # BARYCENTER:
@@ -345,13 +347,12 @@ class Zome:
 
 
     #UTILITY FUNCTIONS:
-    def print(self, message, report_time=False,print_now=True,):
-        result=message + f"({(time.time() - self.time):.2f}s)" if report_time else message
-        if report_time:
-            self.time=time.time()
-        if print_now:
-            print(result,end="")
-        return result        
+    def print(self, message):
+        print(message,end="")
+
+     
+
+
 
 
 
