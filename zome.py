@@ -31,7 +31,6 @@ class Zome:
             show={ 
                 "vertices": 1, 
                 "edges": 1, 
-                "beams": 0, 
                 "faces": 1, 
                 "barycenter": 1 
             }
@@ -58,7 +57,6 @@ class Zome:
         self.time = time.time()
         self.report = ""  
 
-        print("Structure  ",structure,"\nShow  ",show)
         #structures used to build the polyzome:
         self.vertices = []
         self.faces = [[] for _ in range(N)]
@@ -71,9 +69,10 @@ class Zome:
         self.create_collection()  # actual blender collection w/ subcollections
     
     def create_polyzome(self):
-        self.print(f"\n*****\n'{self.name}'\n")
-        self.print("INFO:\n"+self.info()+"\n")
-        self.print("polyhedron creation...")
+        self.print(f"\n_____________\nZome '{self.name}'\n")
+        self.print(f"Base geometry: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}\n")
+        self.print(f"Structure: {self.structure}\nShow: {self.show}\n______________\n")
+        self.print("Polyhedron...")
         for layer_index in range(self.N+1): # max N-2 faces (0...N-2) + 2 vertices (0...N)
             vertices_layer = []
             faces_layer = []
@@ -142,31 +141,16 @@ class Zome:
                 total_vertices += 1
         if total_vertices > 0:
             self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
-        self.print("polyhedron creation completed",report_time=True)
+        self.print("✔️\n",)
 
-    def info(self):
-        # returns a string with the info
-        return (f"{self.N} layers\n"
-                f"M: {self.M}\n"
-                f"theta: {self.theta:.2f}\n"
-                f"ZH: {self.ZH:.2f}\n"
-                f"H: {self.H:.2f}\n"
-                f"h: {self.h:.2f}\n"
-                f"l: {self.l:.2f}\n"
-                f"alpha: {self.alpha:.2f}")
-
-    def print(self, message, report_time=False,print_now=True,):
-        result=message + f"({(time.time() - self.time):.2f}s)" if report_time else message
-        if report_time:
-            self.time=time.time()
-        if print_now:
-            print(result)
-        return result        
-
+    
     def create_collection(self):
-        self.print("blender collections creation...")
-        print("DC",flush=True)
+        self.print("Preps & root collection...")
+        
+        #points radius:
+        points_radius = self.ZH / 100 
 
+        #colors and materials:
         transp=1
         colors = [
             (1.0, 0.0, 0.0, transp),  # Red
@@ -178,8 +162,13 @@ class Zome:
             (1.0, 1.0, 1.0, transp),   # White
             (0.0, 0.0, 0.0, transp)    # Black
         ]
+        materiali = []
+        for i, color in enumerate(colors):
+            mat = bpy.data.materials.new(name=f"Material_{i}")
+            mat.diffuse_color = color
+            materiali.append(mat)
 
-        # Dizionari per mappare le connessioni tra facce e bordi
+        # DICTIONARIES to map the connections between faces and edges:
         next_face_adding = {#"layer_type": {edge_index: face_index_to_add to get the next face index}
             "first": {0: +0, 1: None, 2: +1},#triangle (2 edges above)
             "standard": {0: +0, 1: None, 2: None, 3: +1},#intermediate rhombi (2 edges above)
@@ -191,14 +180,7 @@ class Zome:
             "last": {0: None, 1: None, 2: None, 3: 0}#last rhombus have 1 edge on their right
         }
 
-        # Create materials once
-        materiali = []
-        for i, color in enumerate(colors):
-            mat = bpy.data.materials.new(name=f"Material_{i}")
-            mat.diffuse_color = color
-            materiali.append(mat)
-
-        # Check if the main collection exists and delete it
+        # DELETE COLLECTIONS with the same name of the zome:
         if self.name in bpy.data.collections:
             collection_to_remove = bpy.data.collections[self.name]
             # Deselect all objects
@@ -213,38 +195,32 @@ class Zome:
             # Delete the collection
             bpy.data.collections.remove(collection_to_remove)
 
-        # Create the main collection only if it doesn't exist
+        # CREATE THE ROOT COLLECTION:
         main_collection = bpy.data.collections.new(self.name)
         bpy.context.scene.collection.children.link(main_collection)
 
-        # Create or get the collection for vertices
+        self.print("✔️\n")
 
-
-        # Create or get the collection for faces
-
-
-        # Create or get the collection for edges
-        
-        point_radius = self.ZH / 100 
-        base_radius = math.sqrt(self.vertices[0][0][0]**2 + self.vertices[0][0][1]**2)
-        
         # BASE:
         base_thickness = self.structure["base"] # Converti da cm a metri
         if base_thickness > 0:
+            self.print("Base...")
+            base_radius = math.sqrt(self.vertices[0][0][0]**2 + self.vertices[0][0][1]**2)
             bpy.ops.mesh.primitive_cylinder_add(vertices=self.N, radius=base_radius, depth=base_thickness)
             obj = bpy.context.object
             obj.name = rename(f"{self.name}_base")
-            print("base creation: vertices: ",self.N,"radius: ",base_radius,"depth: ",base_thickness)
             main_collection.objects.link(obj)
             bpy.context.collection.objects.unlink(obj)
-       
+            self.print("✔️\n")
+
         # VERTICES:
         if self.show["vertices"] == 1:
+            self.print("Vertices...")
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             main_collection.children.link(vertices_collection)
             for layer_index, layer in enumerate(self.vertices):
                 for vertex_index, v in enumerate(layer):
-                    bpy.ops.mesh.primitive_uv_sphere_add(radius=point_radius, location=v)
+                    bpy.ops.mesh.primitive_uv_sphere_add(radius=points_radius, location=v)
                     obj = bpy.context.object
                     obj.name = rename(f"{self.name}_vertex_{layer_index}_{vertex_index}")
 
@@ -253,8 +229,11 @@ class Zome:
                     # Link the object to the vertices collection
                     vertices_collection.objects.link(obj)
                     bpy.context.collection.objects.unlink(obj)
-        # EDGES::
+            self.print("✔️\n")
+
+        # EDGES:
         if self.show["edges"] == 1:
+            self.print("Edges...")
             edges_collection = bpy.data.collections.new(rename(self.name+"_edges"))
             main_collection.children.link(edges_collection)
             for layer_index, layer in enumerate(self.edges):
@@ -273,9 +252,11 @@ class Zome:
                     obj["start"] = start
                     obj["end"] = end
                     edges_collection.objects.link(obj)
+            self.print("✔️\n")
 
         # FACES:
         if self.show["faces"] == 1:
+            self.print("Faces...")
             faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
             main_collection.children.link(faces_collection)
             for layer_index, layer in enumerate(self.faces):
@@ -294,9 +275,11 @@ class Zome:
                     mat = bpy.data.materials.new(name=f"Material_{layer_index}_{poly_index}")
                     mat.diffuse_color = colors[(poly_index) % len(colors)]
                     poly_object.data.materials.append(mat)
+            self.print("✔️\n")
 
-        # beams:
+        # BEAMS:
         if self.show["beams"] == 1:
+            self.print("Beams...")
             self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
             main_collection.children.link(self.beams_collection)
 
@@ -347,58 +330,31 @@ class Zome:
                             beam["external_constraint"] = f"{self.name}_beam_{next_layer_index}_{next_face_index}_{next_edge_index}"
                         self.beams_collection.objects.link(beam)
                         bpy.context.collection.objects.unlink(beam)
-
-
+            self.print("✔️\n")
 
         # BARYCENTER:
         if self.show["barycenter"] == 1:
-            self.print("barycenter creation")
-            bpy.ops.mesh.primitive_uv_sphere_add(radius=point_radius*5, location=self.barycenter)
+            self.print("Barycenter...")
+            bpy.ops.mesh.primitive_uv_sphere_add(radius=points_radius*5, location=self.barycenter)
             obj = bpy.context.object
             obj.name = rename(f"{self.name}_barycenter")
             obj.data.materials.append(materiali[0])
             main_collection.objects.link(obj)
             bpy.context.collection.objects.unlink(obj)
-        self.print("collection creation completed",report_time=True)
+            self.print("✔️\n")
 
-    def DELETE_select(self,subcollection_name=""): #select main collection by name. and all its objects
-        name=self.name
-        if subcollection_name != "":
-            name=name+"_"+subcollection_name
-        # Deselect all objects
-        bpy.ops.object.select_all(action='DESELECT')
-        
-        # Ensure the context is set to the correct view layer
-        view_layer = bpy.context.view_layer
-        
-        # Select all objects in the collection
-        for obj in bpy.data.collections[name].all_objects:
-            view_layer.objects.active = obj
-            obj.select_set(True)
-        
-        # Optionally, set the active object to None if needed
-        bpy.context.view_layer.objects.active = None
 
-    def DELETE_translate(self, value=(0, 0, 0)):
-        self.select()
-        bpy.ops.transform.translate(value=value)
+    #UTILITY FUNCTIONS:
+    def print(self, message, report_time=False,print_now=True,):
+        result=message + f"({(time.time() - self.time):.2f}s)" if report_time else message
+        if report_time:
+            self.time=time.time()
+        if print_now:
+            print(result,end="")
+        return result        
 
 
 
-    
 
-#***********************ACTUAL RUN********************************************
 
-# function to create a panel with:
-# N=3-20
-# M=2-N-1
-# theta = 20°-80°
-# ZH = 0.1-10 meters (precision 0.01, possibily with slider by 0.1) 
-# TW = 0.1-0.4 
-# TT = 0.00-0.1
-# Name = "Zome " +random number as default
-# create a button to run the zome creation
-# create a button to clear the scene
-# create a button to play the animation
-# create a button to stop the animation
 

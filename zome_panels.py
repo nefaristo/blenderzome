@@ -58,6 +58,8 @@ class ZomePanel(bpy.types.Panel):
             # Travi: Larghezza e Spessore
             row = box.row()
             row.label(text="Travi:")
+            row.prop(scene, "show_beams", text="")
+            
             row = box.row()
             row.label(text="Largh. (cm):")
             row.prop(scene, "beam_width", text="")
@@ -167,7 +169,6 @@ def unregister():
         del bpy.types.Scene.name
         del bpy.types.Scene.show_vertices
         del bpy.types.Scene.show_edges
-        del bpy.types.Scene.join_edges
         del bpy.types.Scene.show_faces
         del bpy.types.Scene.show_base
         del bpy.types.Scene.show_barycenter
