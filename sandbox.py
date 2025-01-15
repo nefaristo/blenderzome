@@ -195,10 +195,11 @@ def beams_polygon(polyverts, TW, TT, target_collection,method="butt joint ccw"):
         elif method == "miter joint": #split the angle in two
             outer_low_0=edge_0
             outer_low_1=edge_1
-            delta_0=TT / (math.sin(alpha_0/2) if math.sin(alpha_0/2) else 1)
-            delta_1=TT / (math.sin(alpha_1/2) if math.sin(alpha_1/2) else 1)
+            delta_0=TT / (math.tan(alpha_0/2) if alpha_0!=0 else 1)
+            delta_1=TT / ((math.cos(alpha_1/2)/math.sin(alpha_1/2)) if alpha_1!=0 else 1)
             inner_low_0 = outer_low_0 - TT* thickness_norm + delta_0*edge_norm
-            inner_low_1 = outer_low_1 - TT* thickness_norm 
+            inner_low_1 = outer_low_1 - TT* thickness_norm - delta_1*edge_norm
+            print (delta_0,delta_1)
         #calc high vertices
         outer_high_0 = outer_low_0 + z * TW
         outer_high_1 = outer_low_1 + z * TW
@@ -248,18 +249,16 @@ bb.clear_up()
 if "sandbox" not in bpy.data.collections:
     sandbox_collection = bpy.data.collections.new("sandbox")
     bpy.context.scene.collection.children.link(sandbox_collection)
-    print("Collezione 'sandbox' creata.")
 else:
     sandbox_collection = bpy.data.collections["sandbox"]
-    print("Collezione 'sandbox' trovata.")
 
 #delete all objects and collections in collection "Sandbox":
 for obj in bpy.data.collections["sandbox"].objects:
     bpy.data.objects.remove(obj, do_unlink=True)
 
 rpv=rnd_poly_vertices(random.randint(3,10),0.4,on_xy_plane=True)
-print(rpv)
-rpv=[(0.3999148699053098, -0.00825208026010272, 0), (0.29867582132566467, 0.2660690770372229, 0), (0.014141169299956707, 0.39974995601104196, 0), (-0.29997214364181013, 0.26460671389618445, 0), (-0.3992668030203351, 0.02420785008878145, 0), (-0.2848712346911126, -0.2807995364055309, 0), (0.008147981801640931, -0.39991700438035904, 0), (0.28189451733450505, -0.28378773951097047, 0)]
+#print(rpv)
+#rpv=[(0.3999148699053098, -0.00825208026010272, 0), (0.29867582132566467, 0.2660690770372229, 0), (0.014141169299956707, 0.39974995601104196, 0), (-0.29997214364181013, 0.26460671389618445, 0), (-0.3992668030203351, 0.02420785008878145, 0), (-0.2848712346911126, -0.2807995364055309, 0), (0.008147981801640931, -0.39991700438035904, 0), (0.28189451733450505, -0.28378773951097047, 0)]
 #rpv=rnd_poly_vertices(3,1,on_xy_plane=True)
 obj = draw_polygon("random_polygon",rpv,only_edges=True)
 #obj.name=bb.rename("random_polygon")
