@@ -282,6 +282,26 @@ class Zome:
             self.print("Beams...")
             beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
             main_collection.children.link(beams_collection)
+            #for each face,create a polygon with its vertices and its name:
+            for layer_index, layer in enumerate(self.faces):
+                self.print(f"Layer {layer_index}...")
+                for poly_index, poly in enumerate(layer):
+                    self.print(f"Poly {poly_index}...")
+                    obj = beams_polygon(
+                        name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
+                        polyverts=poly,
+                        TW=self.structure["TW"],
+                        TT=self.structure["TT"],
+                        method="butt joint ccw",
+                        TT_sink_fraction=0.01,
+                        add_polygon=False,
+                        target_collection=beams_collection
+                    )
+            self.print("✔️\n")
+        if self.show["beams_old"] == 1:
+            self.print("Beams...")
+            beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
+            main_collection.children.link(beams_collection)
             for layer_index, layer in enumerate(self.faces):
                 time_start = time.time()#performance report
                 layer_type = "first" if layer_index == 0 else "standard" if layer_index < self.M - 1 else "last"
