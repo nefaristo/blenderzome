@@ -3,6 +3,7 @@ import os
 import math
 import mathutils
 import bmesh
+from mathutils import Vector
 
 print("Blender utilities loaded - Version 1.0.0")
 
@@ -10,24 +11,42 @@ def clear_console():
     # Questo comando funziona su Windows
     os.system('cls' if os.name == 'nt' else 'clear')
 
-def clear_up(name="",delete_collection=False):
-    if name != "":
-        if name in bpy.data.collections:
-            # Seleziona e cancella tutti gli oggetti nella collezione
-            for obj in bpy.data.collections[name].objects:
-                obj.select_set(True)
-            bpy.ops.object.delete()
-            if delete_collection:
-                bpy.data.collections.remove(bpy.data.collections[name])
-            print(f"Collection '{name}' cleared.")
-        else:
-            print(f"Collection '{name}' not found")
-    else:
-        # Cancella tutti gli oggetti da tutte le collezioni
+def set_collection(name="", delete_root=False, first_delete_objects=True, first_delete_subcollections=True, add_objects=[]):
+    if name == "":#delete ALL collections and objects
         for collection in bpy.data.collections:
             for obj in collection.objects:
                 bpy.data.objects.remove(obj, do_unlink=True)
-        print("All collections cleared.")
+        for collection in bpy.data.collections:
+            bpy.data.collections.remove(collection)
+        return None
+    
+    if delete_root:
+        bpy.data.collections.remove(collection)
+        print(f"Collection '{name}' deleted.")
+        return None
+    
+    if name in bpy.data.collections:
+        collection = bpy.data.collections[name]
+        if first_delete_objects:
+            for obj in collection.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
+        if first_delete_subcollections:
+            for subcollection in collection.children:
+                bpy.data.collections.remove(subcollection)
+    else: #not existing collection=>create it
+        collection = bpy.data.collections.new(name)
+        bpy.context.scene.collection.children.link(collection)
+    
+    collection.hide_render = False
+    collection.hide_viewport = False
+
+    for obj in add_objects:#add new objects
+        if obj.name not in collection.objects:
+            collection.objects.link(obj)
+
+    return collection
+
+
 
 
 def set_visibility(name, visibility):
@@ -45,7 +64,7 @@ def set_visibility(name, visibility):
         print(f"No item {name} found")    
 
 
-def rename(new_name):
+def rename(new_name): #resets name avoiding the ".001" suffix
     # Controlla se esiste già un oggetto con il nuovo nome
     if new_name in bpy.data.objects:
         existing_obj = bpy.data.objects[new_name]
@@ -118,44 +137,24 @@ def boolean_union_selected(new_object_name):
     bpy.context.view_layer.update() 
     print(f"Boolean union created: {active_obj.name}")
 
-def beams_polygon(name, polyverts, TW, TT,method="butt joint ccw",TT_sink_fraction=0.01,add_polygon=False,target_collection=None):
-    #if TT_sink_fraction>0, moves some vertices sligthly (depending on method)
-    #so that a eventual union will get rid of the inner faces
-    #misc prep: collection and raw polygon
-    #if target collection is not specified, doesn't draw the objects, just returns them:
-    result=[]
-    if name not in bpy.data.collections: #create it and add it to target collection or scene if not specified
-        if target_collection is None:
-            collection = bpy.data.collections.new(name)
-            bpy.context.scene.collection.children.link(collection)
-        else:
-            collection = target_collection
-    else:
-        collection = bpy.data.collections[name]
-        #must be visible or its objects will add up with different names
-        collection.hide_viewport = False
-        collection.hide_render = False
-        clear_up(name)
+def beams_polygon(polyverts, 
+                  TW, TT,TT_sink_fraction=0.01, 
+                  method="butt joint ccw", 
+                  beam_name="beam"):
+    result = []
+    z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2])#normal to the plane
 
-    if add_polygon:
-        obj = draw_polygon("random_polygon",polyverts,only_edges=True)
-        collection.objects.link(obj)
-        bpy.context.scene.collection.objects.unlink(obj)
-    #polygon edges loop:
-    z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2]) #normal vector to the polygon
     for i in range(len(polyverts)):
-        #prep: edge vertices, vector, normalized vector 
+        #prep: edge (beam length), thickness (in the plane), adjiacents edges data
         edge_0 = mathutils.Vector(polyverts[i])
         edge_1 = mathutils.Vector(polyverts[(i + 1) % len(polyverts)])
         edge = edge_1 - edge_0
         edge_norm = edge.normalized()
-        #adjacent stuff:
+        thickness_norm = edge.cross(z).normalized()
         prev_edge_norm = (mathutils.Vector(polyverts[(i - 1) % len(polyverts)]) - edge_0).normalized()
-        next_edge_norm = (mathutils.Vector(polyverts[(i + 2) % len(polyverts)]) - edge_1).normalized()        
+        next_edge_norm = (mathutils.Vector(polyverts[(i + 2) % len(polyverts)]) - edge_1).normalized()
         alpha_0 = edge.angle(prev_edge_norm)
-        alpha_1 = edge.angle(next_edge_norm)
-        #thickness vector
-        thickness_norm = edge.cross(z).normalized() 
+        alpha_1 = edge.angle(next_edge_norm)        
 
         #calc lower vertices depending on method
         if method == "butt joint ccw": #cut on the ccw side (left)
@@ -185,39 +184,72 @@ def beams_polygon(name, polyverts, TW, TT,method="butt joint ccw",TT_sink_fracti
         outer_high_1 = outer_low_1 + z * TW
         inner_high_0 = inner_low_0 + z * TW
         inner_high_1 = inner_low_1 + z * TW  
-        
-        # Create a new mesh and object for the parallelogram and add it to the collection
-        mesh = bpy.data.meshes.new(f"beam_{i}")
-        obj = bpy.data.objects.new(f"beam_{i}", mesh)
-        collection.objects.link(obj)
-        #create bmesh
-        bm = bmesh.new()
-        bm_verts = [
-            #external face vertices:
-            bm.verts.new(outer_low_0), bm.verts.new(outer_low_1), 
-            bm.verts.new(outer_high_1), bm.verts.new(outer_high_0),
-            #internal face vertices:
-            bm.verts.new(inner_low_0), bm.verts.new(inner_high_0), 
-            bm.verts.new(inner_high_1), bm.verts.new(inner_low_1) 
-        ]
-        bm.verts.ensure_lookup_table() #ensure_lookup_table() is a method that ensures that the lookup table for the vertices is up to date.
-        #create faces
-        bm.faces.new([bm_verts[0], bm_verts[1], bm_verts[2], bm_verts[3]])#external face
-        bm.faces.new([bm_verts[4], bm_verts[5], bm_verts[6], bm_verts[7]])#internal face
-        bm.faces.new([bm_verts[0], bm_verts[4], bm_verts[7], bm_verts[1]])#lower face
-        bm.faces.new([bm_verts[2], bm_verts[6], bm_verts[5], bm_verts[3]])#upper face
-        bm.faces.new([bm_verts[0], bm_verts[3], bm_verts[5], bm_verts[4]])#towards-previous face
-        bm.faces.new([bm_verts[1], bm_verts[7], bm_verts[6], bm_verts[2]])#towards-next face
-        #update mesh and snaps the origin to the center of the mesh:
-        bm.to_mesh(mesh)
-        bm.free()
-        obj.select_set(True) #select the object
-        bpy.context.view_layer.objects.active = obj #set the object as the active object
-        #snap the origin to the center of the mesh:
-        bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME', center='MEDIAN')
-        #deselect all objects
-        bpy.ops.object.select_all(action='DESELECT')
-    return
+
+        # Crea la mesh e calcola il baricentro e il volume
+        obj= create_object(
+            [
+            outer_low_0, outer_low_1, outer_high_1, outer_high_0,
+            inner_low_0, inner_high_0, inner_high_1, inner_low_1
+            ],
+            name=f"{beam_name}_{i}")
+        result.append(obj)  # Aggiungi l'oggetto alla lista
+    return result  # Restituisci la lista degli oggetti creati
 
 
+
+
+def set_physics(obj, density=1,active=True):
+
+    # Assegna il corpo rigido attivo
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.rigidbody.object_add()
+    obj.rigid_body.type = 'ACTIVE' if active else 'PASSIVE'
+    if "volume" in obj:
+        obj.rigid_body.mass = density * obj["volume"]
+    else:
+        print("volume not found in object",obj.name)
+    obj.rigid_body.restitution = 0.1
+    obj.rigid_body.linear_damping = 0.7
+    obj.rigid_body.angular_damping = 0.7
+    obj.rigid_body.friction = 0.8  # principalmente contro il pavimento
+    #custom properties:
+    obj["density"] = density
+
+def create_object(vertices, name=""):
+    # Crea un nuovo mesh e oggetto
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(rename(name), mesh)
+
+    # Crea bmesh e aggiungi i vertici
+    bm = bmesh.new()
+    bm_verts = [bm.verts.new(v) for v in vertices]
+    bm.verts.ensure_lookup_table()
+
+    # Definisci le facce del prisma romboidale (assi arbitrari, solo per raggruppare a due a due)
+    bm.faces.new([bm_verts[0], bm_verts[1], bm_verts[2], bm_verts[3]])  # Faccia Y
+    bm.faces.new([bm_verts[4], bm_verts[5], bm_verts[6], bm_verts[7]])  # Faccia -Y
+    bm.faces.new([bm_verts[0], bm_verts[4], bm_verts[7], bm_verts[1]])  # Faccia Z
+    bm.faces.new([bm_verts[2], bm_verts[6], bm_verts[5], bm_verts[3]])  # Faccia -Z
+    bm.faces.new([bm_verts[0], bm_verts[3], bm_verts[5], bm_verts[4]])  # Faccia X
+    bm.faces.new([bm_verts[1], bm_verts[7], bm_verts[6], bm_verts[2]])  # Faccia -X
+
+    bm.to_mesh(mesh)
+
+    # Calcola il volume usando bmesh
+    obj["calc_volume"] = bm.calc_volume(signed=True)
+    obj["volume"] = (vertices[0]-vertices[4]).magnitude * (vertices[0]-vertices[1]).magnitude * (vertices[0]-vertices[3]).magnitude
+    # Libera il bmesh
+    bm.free()
+
+    # Calcola il baricentro
+    centroid = Vector((0.0, 0.0, 0.0))
+    for v in vertices:
+        centroid += v
+    centroid /= len(vertices)
+
+    # Sposta i vertici in modo che il baricentro sia all'origine
+    for vert in obj.data.vertices:
+       pass# vert.co -= centroid
+
+    return obj 
 

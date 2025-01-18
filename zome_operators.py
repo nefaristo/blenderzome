@@ -38,6 +38,10 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "faces": 1 if context.scene.show_faces else 0,
                 "barycenter": 1 if context.scene.show_barycenter else 0,
                 "beams": 1 if context.scene.show_beams else 0
+            },
+            modifications={
+                "height_reduction": context.scene.height_reduction,
+                "involved_levels": context.scene.involved_levels
             }
         )
         print(f"Zome {zome1.name} creation completed")

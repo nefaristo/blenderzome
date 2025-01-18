@@ -33,6 +33,10 @@ class Zome:
                 "edges": 1, 
                 "faces": 1, 
                 "barycenter": 1 
+            },
+            modifications={
+                "height_reduction": 0,
+                "involved_levels": 0
             }
         ):
         
@@ -44,7 +48,9 @@ class Zome:
         self.ZH = ZH if ZH > 0 else 1        
         self.structure = structure
         self.show = show
-        
+        self.modifications = modifications 
+        self.modifications["height_reduction"] = self.modifications["height_reduction"] / 100 if self.modifications["height_reduction"] > 0 else 0
+
         #derived parameters:
         self.H = self.ZH / (N / (M + 1))
         self.h = self.ZH / M
@@ -63,6 +69,7 @@ class Zome:
         
         # Build the structure
         self.create_polyzome()  # abstract geometry
+
         self.create_collection()  # actual blender collection w/ subcollections
     
     def create_polyzome(self):
@@ -70,18 +77,25 @@ class Zome:
         self.print(f"Base geometry: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}\n")
         self.print(f"Structure: {self.structure}\nShow: {self.show}\n______________\n")
         self.print("Geometry...")
+        self.print ("Vertices:")
         for layer_index in range(self.N+1): # max N-2 faces (0...N-2) + 2 vertices (0...N)
             vertices_layer = []
             faces_layer = []
             edges_layer=[]
+            if self.modifications["involved_levels"] > 0 and layer_index < self.modifications["involved_levels"]:
+                delta_z = self.modifications["height_reduction"] / self.modifications["involved_levels"]
+                self.print(f"Layer {layer_index}: modified by {delta_z} m\n")
+            else:
+                delta_z = 0
+                self.print(f"Layer {layer_index}: no modifications\n")
             match layer_index:
                 case 0:  # APEX (1 vertex, no edges or faces)
-                    vertices_layer.append((0, 0, self.ZH))#appends to the layer a tuple with the apex
+                    vertices_layer.append((0, 0, self.ZH- delta_z))#appends to the layer a tuple with the apex
                 case 1:  # FIRST POLYGON (N x 4 vertices, no faces yet)
                     for radial_index in range(self.N):
                         x = self.l * math.sin(math.radians(self.theta)) * math.cos(math.radians(radial_index * self.alpha))
                         y = self.l * math.sin(math.radians(self.theta)) * math.sin(math.radians(radial_index * self.alpha))
-                        z = self.ZH - self.h
+                        z = self.ZH - self.h - delta_z
                         vertices_layer.append((x, y, z))
                         new_edge=[(x,y,z),(0,0,self.ZH)]
                         edges_layer.append(new_edge)
@@ -91,7 +105,7 @@ class Zome:
                         B = self.vertices[layer_index-1][radial_index]
                         C = self.vertices[layer_index-1][(radial_index+1) % self.N]
                         M = (mathutils.Vector(B) + mathutils.Vector(C)) / 2  # Punto medio di B e C
-                        D = 2 * M - mathutils.Vector(A)  # Simmetrico di A rispetto a B-C
+                        D = 2 * M - mathutils.Vector(A) - mathutils.Vector([0, 0, delta_z]) # Simmetrico di A rispetto a B-C
                         #if layer is M+1 and M<N-1, its' cutting rhombi to triangles and doesnt add the vertex
                         #in the other cases, adds the rhombi and, as for the vertices, 
                         A_vec = mathutils.Vector(A)
@@ -129,6 +143,7 @@ class Zome:
         self.vertices.reverse()
         self.faces.reverse()
         self.edges.reverse()
+
         #update barycenter
         self.barycenter = (0,0,0)
         total_vertices = 0
@@ -212,6 +227,8 @@ class Zome:
             main_collection.objects.link(obj)
             bpy.context.collection.objects.unlink(obj)
             self.print("✔️\n")
+            #set physics
+            set_physics(obj, active=False)
 
         # VERTICES:
         if self.show["vertices"] == 1:
@@ -287,71 +304,23 @@ class Zome:
                 self.print(f"Layer {layer_index}...")
                 for poly_index, poly in enumerate(layer):
                     self.print(f"Poly {poly_index}...")
-                    obj = beams_polygon(
-                        name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
+                    objects = beams_polygon(
+                        beam_name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
                         polyverts=poly,
                         TW=self.structure["TW"],
                         TT=self.structure["TT"],
                         method="butt joint ccw",
                         TT_sink_fraction=0.01,
-                        add_polygon=False,
-                        target_collection=beams_collection
                     )
+                    set_collection(name=beams_collection.name, 
+                                   add_objects=objects,
+                                   first_delete_objects=False) 
+                    #for each obj, set physics
+                    for obj in objects:
+                        set_physics(obj)                   
             self.print("✔️\n")
-        if self.show["beams_old"] == 1:
-            self.print("Beams...")
-            beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
-            main_collection.children.link(beams_collection)
-            for layer_index, layer in enumerate(self.faces):
-                time_start = time.time()#performance report
-                layer_type = "first" if layer_index == 0 else "standard" if layer_index < self.M - 1 else "last"
-                for face_index, face in enumerate(layer):                
-                    if len(face) >= 3:
-                        face_normal = mathutils.geometry.normal(face)
-                    else:
-                        face_normal = mathutils.Vector((0, 0, 0))
-                    face_center = sum((mathutils.Vector(v) for v in face), mathutils.Vector()) / len(face)
-                    for edge_index in range(len(face)):
-                        start_vertex = face[edge_index]
-                        end_vertex = face[(edge_index + 1) % len(face)]
-                        mid_point = (mathutils.Vector(start_vertex) + mathutils.Vector(end_vertex)) / 2
-                        edge = mathutils.Vector(end_vertex) - mathutils.Vector(start_vertex)
-                        edge_length = edge.length
-                        edge.normalize()
-
-                        bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
-                        beam = bpy.context.object
-                        beam.name = rename(f"{self.name}_beam_{layer_index}_{face_index}_{edge_index}")
-
-                        bpy.context.scene.transform_orientation_slots[0].type = 'LOCAL'
-                        beam.scale = (edge_length - 2 * self.structure["TT"], self.structure["TW"], self.structure["TT"])
-                        beam["length"] = edge_length - 2 * self.structure["TT"]
-                        beam["layer_type"] = layer_type
-                        beam["beam_type"] = "base" if layer_type == "first" and edge_index == 1 else "standard"
-                        bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
-                        bpy.context.view_layer.objects.active = beam
-                        bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME')
-                        bpy.context.scene.transform_orientation_slots[0].type = 'GLOBAL'
-
-                        translation = face_normal.normalized() * (self.structure["TW"] / 2)
-                        translation = translation + (face_center - mid_point).normalized() * self.structure["TT"] / 2
-                        final_position = mid_point + translation
-                        beam.location = final_position
-
-                        beam.rotation_mode = 'QUATERNION'
-                        rotation_matrix = mathutils.Matrix((edge, face_normal, edge.cross(face_normal))).transposed()
-                        beam.rotation_quaternion = rotation_matrix.to_quaternion()
-
-                        beam["internal_constraint"] = f"{self.name}_beam_{layer_index}_{face_index}_{(edge_index + 1) % len(face)}"
-                        next_edge_index = next_edge_number[layer_type][edge_index % len(face)]
-                        if next_edge_index is not None:
-                            next_layer_index = layer_index + 1 if layer_type != "last" else layer_index
-                            next_face_index = (face_index + next_face_adding[layer_type][edge_index % len(face)]) % len(layer)
-                            beam["external_constraint"] = f"{self.name}_beam_{next_layer_index}_{next_face_index}_{next_edge_index}"
-                        beams_collection.objects.link(beam)
-                        bpy.context.collection.objects.unlink(beam)
-                time_end = time.time()
-                self.print(f"Layer {layer_index} done in {(time_end - time_start):.2f}s\n")
+            self.print("Connecting beams...")
+            self.connect_beams(objects)
             self.print("✔️\n")
 
         # BARYCENTER:
@@ -365,12 +334,57 @@ class Zome:
             bpy.context.collection.objects.unlink(obj)
             self.print("✔️\n")
 
+    def connect_beams(self, objects): #make each obj physics active and connect them with the nex ob
+        #first loop to make the physics active:
+        for i, obj in enumerate(objects):
+            set_physics(obj)
+        #second loop to connect them with the next obj:
+        for i, obj in enumerate(objects):
+            #add constraint of each to the next: spring
+            if i < len(objects) - 1:
+                add_constraint(obj, objects[(i + 1) % len(objects)])
 
+        
+        
     #UTILITY FUNCTIONS:
     def print(self, message):
         print(message,end="")
 
-     
+
+def add_constraint(obj, to_obj):
+    # Assicurati che entrambi gli oggetti abbiano il corpo rigido abilitato
+    if not obj.rigid_body:
+        bpy.ops.rigidbody.object_add({'object': obj})
+    if not to_obj.rigid_body:
+        bpy.ops.rigidbody.object_add({'object': to_obj})
+
+    # Crea il vincolo di tipo molla
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
+
+    # Configura il vincolo
+    constraint = obj.rigid_body_constraint
+    constraint.object1 = obj
+    constraint.object2 = to_obj
+
+    # Abilita le molle per le traslazioni sugli assi X, Y e Z
+    constraint.use_spring_x = True
+    constraint.use_spring_y = True
+    constraint.use_spring_z = True
+
+    # Imposta la rigidità della molla (valore tipico)
+    constraint.spring_stiffness_x = 10.0
+    constraint.spring_stiffness_y = 10.0
+    constraint.spring_stiffness_z = 10.0
+
+    # Imposta l'ammortizzazione della molla (valore tipico)
+    constraint.spring_damping_x = 0.5
+    constraint.spring_damping_y = 0.5
+    constraint.spring_damping_z = 0.5
+
+
 
 
 

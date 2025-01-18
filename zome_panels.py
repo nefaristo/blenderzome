@@ -70,6 +70,18 @@ class ZomePanel(bpy.types.Panel):
             row = box.row()
             row.prop(scene, "show_barycenter", text="Baricentro")
 
+        # Sezione Modifiche
+        box = layout.box()
+        box.prop(scene, "expand_modifications", text="Modifiche", icon="TRIA_DOWN" if scene.expand_modifications else "TRIA_RIGHT", emboss=False)
+        if scene.expand_modifications:
+            row = box.row()
+            row.label(text="Riduzione di altezza (cm):")
+            row.prop(scene, "height_reduction", text="")
+
+            row = box.row()
+            row.label(text="Livelli coinvolti:")
+            row.prop(scene, "involved_levels", text="")
+
         # Pulsante Crea Zome nel pannello principale
         layout.operator("object.call_zome", text="Crea Zome")
 
@@ -139,8 +151,9 @@ def register():
             description="Mostra i travi"
         )
         bpy.types.Scene.expand_geometria_pura = bpy.props.BoolProperty(default=True)
-        bpy.types.Scene.expand_metodo_costruttivo = bpy.props.BoolProperty(default=True)
-        bpy.types.Scene.base = bpy.props.FloatProperty(
+        bpy.types.Scene.expand_construction_method = bpy.props.BoolProperty(default=True)
+        bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=True)
+        bpy.types.Scene.base_length = bpy.props.FloatProperty(
             default=3.0,
             description="Lunghezza della base in centimetri"
         )
@@ -151,6 +164,18 @@ def register():
         bpy.types.Scene.beam_thickness = bpy.props.FloatProperty(
             default=2.0,
             description="Spessore delle travi in centimetri"
+        )
+        bpy.types.Scene.height_reduction = bpy.props.IntProperty(
+            default=0,
+            min=0,
+            max=200,
+            description="Riduzione di altezza in centimetri"
+        )
+        bpy.types.Scene.involved_levels = bpy.props.IntProperty(
+            default=0,
+            min=0,
+            max=5,
+            description="Livelli coinvolti"
         )
     except RuntimeError as e:
         print(f"Errore durante la registrazione dei pannelli: {e}")
@@ -174,8 +199,8 @@ def unregister():
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.show_beams
         del bpy.types.Scene.expand_geometria_pura
-        del bpy.types.Scene.expand_metodo_costruttivo
-        del bpy.types.Scene.base
+        del bpy.types.Scene.expand_construction_method
+        del bpy.types.Scene.base_length
         del bpy.types.Scene.beam_width
         del bpy.types.Scene.beam_thickness
     except RuntimeError as e:

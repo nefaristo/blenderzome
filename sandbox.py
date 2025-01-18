@@ -157,108 +157,7 @@ def rnd_poly_vertices(number_of_vertices, radius, on_xy_plane=False):
             vertices.append(vertex)
     
     return vertices
-    
-def beams_polygon(name, polyverts, TW, TT,method="butt joint ccw",TT_sink_fraction=0.01,add_polygon=False):
-    #if TT_sink_fraction>0, moves some vertices sligthly (depending on method)
-    #so that a eventual union will get rid of the inner faces
-    #misc prep: collection and raw polygon
-    #if a collection with the same name already exists, do a hierarchy delete:
-    
-    #
-    if name not in bpy.data.collections: #create it and add it to the scene
-        collection = bpy.data.collections.new(name)
-        bpy.context.scene.collection.children.link(collection)
-    else:
-        collection = bpy.data.collections[name]
-        #must be visible or its objects will add up with different names
-        collection.hide_viewport = False
-        collection.hide_render = False
-        bb.clear_up(name)
-
-    if add_polygon:
-        obj = draw_polygon("random_polygon",polyverts,only_edges=True)
-        collection.objects.link(obj)
-        bpy.context.scene.collection.objects.unlink(obj)
-    #polygon edges loop:
-    z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2]) #normal vector to the polygon
-    for i in range(len(polyverts)):
-        #prep: edge vertices, vector, normalized vector 
-        edge_0 = mathutils.Vector(polyverts[i])
-        edge_1 = mathutils.Vector(polyverts[(i + 1) % len(polyverts)])
-        edge = edge_1 - edge_0
-        edge_norm = edge.normalized()
-        #adjacent stuff:
-        prev_edge_norm = (mathutils.Vector(polyverts[(i - 1) % len(polyverts)]) - edge_0).normalized()
-        next_edge_norm = (mathutils.Vector(polyverts[(i + 2) % len(polyverts)]) - edge_1).normalized()        
-        alpha_0 = edge.angle(prev_edge_norm)
-        alpha_1 = edge.angle(next_edge_norm)
-        #thickness vector
-        thickness_norm = edge.cross(z).normalized() 
-
-        #calc lower vertices depending on method
-        if method == "butt joint ccw": #cut on the ccw side (left)
-            delta_0=TT / (math.sin(alpha_0) if alpha_0!=0 else 1)
-            delta_1=TT / (math.sin(alpha_1) if alpha_1!=0 else 1)
-            outer_low_0=edge_0 + (delta_0+TT*TT_sink_fraction) *edge_norm #'losing' side
-            inner_low_0 = outer_low_0 + delta_0*prev_edge_norm
-            outer_low_1=edge_1 #'winning' side
-            inner_low_1 = outer_low_1 + delta_1*next_edge_norm
-        elif method == "butt joint cw": #cut on the cw side (right)
-            delta_0=TT / (math.sin(alpha_0) if alpha_0!=0 else 1)
-            delta_1=TT / (math.sin(alpha_1) if alpha_1!=0 else 1)
-            outer_low_0=edge_0 #'winning' side
-            inner_low_0 = outer_low_0 + delta_0*prev_edge_norm
-            outer_low_1=edge_1 - (delta_1+TT*TT_sink_fraction) *edge_norm #'losing' side
-            inner_low_1 = outer_low_1 + delta_1*next_edge_norm            
-        elif method == "miter joint": #split the angle in two
-            outer_low_0=edge_0
-            outer_low_1=edge_1
-            delta_0=TT / (math.tan(alpha_0/2) if alpha_0!=0 else 1)
-            delta_1=TT / ((math.cos(alpha_1/2)/math.sin(alpha_1/2)) if alpha_1!=0 else 1)
-            inner_low_0 = outer_low_0 - TT* thickness_norm + (delta_0+TT*TT_sink_fraction)*edge_norm
-            inner_low_1 = outer_low_1 - TT* thickness_norm - (delta_1+TT*TT_sink_fraction)*edge_norm
-            print (delta_0,delta_1)
-        #calc high vertices
-        outer_high_0 = outer_low_0 + z * TW
-        outer_high_1 = outer_low_1 + z * TW
-        inner_high_0 = inner_low_0 + z * TW
-        inner_high_1 = inner_low_1 + z * TW  
-        
-        # Create a new mesh and object for the parallelogram and add it to the collection
-        mesh = bpy.data.meshes.new(f"beam_{i}")
-        obj = bpy.data.objects.new(f"beam_{i}", mesh)
-        collection.objects.link(obj)
-        #create bmesh
-        bm = bmesh.new()
-        bm_verts = [
-            #external face vertices:
-            bm.verts.new(outer_low_0), bm.verts.new(outer_low_1), 
-            bm.verts.new(outer_high_1), bm.verts.new(outer_high_0),
-            #internal face vertices:
-            bm.verts.new(inner_low_0), bm.verts.new(inner_high_0), 
-            bm.verts.new(inner_high_1), bm.verts.new(inner_low_1) 
-        ]
-        bm.verts.ensure_lookup_table() #ensure_lookup_table() is a method that ensures that the lookup table for the vertices is up to date.
-        #create faces
-        bm.faces.new([bm_verts[0], bm_verts[1], bm_verts[2], bm_verts[3]])#external face
-        bm.faces.new([bm_verts[4], bm_verts[5], bm_verts[6], bm_verts[7]])#internal face
-        bm.faces.new([bm_verts[0], bm_verts[4], bm_verts[7], bm_verts[1]])#lower face
-        bm.faces.new([bm_verts[2], bm_verts[6], bm_verts[5], bm_verts[3]])#upper face
-        bm.faces.new([bm_verts[0], bm_verts[3], bm_verts[5], bm_verts[4]])#towards-previous face
-        bm.faces.new([bm_verts[1], bm_verts[7], bm_verts[6], bm_verts[2]])#towards-next face
-        #update mesh and snaps the origin to the center of the mesh:
-        bm.to_mesh(mesh)
-        bm.free()
-        obj.select_set(True) #select the object
-        bpy.context.view_layer.objects.active = obj #set the object as the active object
-        #snap the origin to the center of the mesh:
-        bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME', center='MEDIAN')
-        #deselect all objects
-        bpy.ops.object.select_all(action='DESELECT')
-    return
-
-
-
+ 
 def check_mesh(obj):
     # Verifica che l'oggetto sia di tipo 'MESH'
     if obj and obj.type == 'MESH':
@@ -282,40 +181,43 @@ def main():
         check_mesh(obj)
     #return
 
-    #bb.clear_up()
-
-    rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=True)
+    bb.set_collection(delete_root=True)
+    
+    rnd_rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=False)
     #rpv=[(0.3999148699053098, -0.00825208026010272, 0), (0.29867582132566467, 0.2660690770372229, 0), (0.014141169299956707, 0.39974995601104196, 0), (-0.29997214364181013, 0.26460671389618445, 0), (-0.3992668030203351, 0.02420785008878145, 0), (-0.2848712346911126, -0.2807995364055309, 0), (0.008147981801640931, -0.39991700438035904, 0), (0.28189451733450505, -0.28378773951097047, 0)]
     rpv=[(0.9969599828435831, -0.0778646193251266, 0.0019866387923732753), (0.6025715717786836, 0.798037568386693, -0.0046657921493871825), (-0.24053233303458307, 0.9705893856582063, -0.007086560762670025), (-0.8651826267999024, 0.5014121734843402, -0.004735685664424331), (-0.9382626040849168, -0.34592068610809945, 0.0010403470236673938), (-0.18556277229080098, -0.9825887254163675, 0.006551796147353777), (0.6647647279942153, -0.747002151275522, 0.006149817169094832)]
-    print(rpv)
+    #print(rpv)
+
+    beams=bb.beams_polygon(
+                  beam_name="random",
+                  polyverts=rnd_rpv,
+                  TW=0.2,
+                  TT=0.03,
+                  method="butt joint ccw",
+                  TT_sink_fraction=0)   
+    set_collection("random poly",add_objects=beams)
     
-    beams_polygon(name="basic poly",
+    beams=bb.beams_polygon(
+                  beam_name="basic",
                   polyverts=rpv,
                   TW=0.2,
                   TT=0.03,
                   method="butt joint ccw",
-                  add_polygon=True,
                   TT_sink_fraction=0)   
+    set_collection("basic poly",add_objects=beams)
     for obj in bpy.data.collections["basic poly"].objects:
-        obj.select_set(True)
-    #move the selected objects by 1 m in the z direction
-    bpy.ops.transform.translate(value=(0,0,1))
-    boolean_union_selected("basic")
-    obj = bpy.data.objects.get("basic")
-    check_mesh(obj) 
-    
-    beams_polygon(name="sunk poly",
-                polyverts=rpv,
-                TW=0.2,
-                TT=0.03,
-                method="butt joint ccw",
-                add_polygon=True,
-                TT_sink_fraction=0.01) 
+        obj.location = (0,0,2)
+           
+    vertices=bb.beams_polygon(
+                    beam_name="sunk",
+                    polyverts=rpv,
+                    TW=0.2,
+                    TT=0.03,
+                    method="butt joint ccw",
+                    TT_sink_fraction=0.01) 
+    set_collection("sunk poly", add_objects=vertices)
     for obj in bpy.data.collections["sunk poly"].objects:
-        obj.select_set(True)
-    boolean_union_selected("sunk")
-    #obj = bpy.data.objects.get("sunk")
-    #check_mesh(obj) 
+        obj.location = (0,0,1)
 
 main()
 

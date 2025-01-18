@@ -34,7 +34,7 @@ import bpy
 
 
 # Usa le funzioni importate
-clear_up()
+set_collection("")
 print("Script importati (percorso:",script_path,")")
 print("Impostazione pannello")
 
