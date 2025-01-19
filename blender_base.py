@@ -164,7 +164,8 @@ def draw_polygon(name="polygon", polyverts=[], color=(1, 0, 0)):
     obj.data.materials.append(mat)
 
     return obj
-def beams_polygon(polyverts, 
+def beams_polygon(collection,
+                  polyverts, 
                   TW, TT,TT_sink_fraction=0.01, 
                   method="butt joint ccw", 
                   beam_name="beam"):
@@ -219,7 +220,19 @@ def beams_polygon(polyverts,
             inner_low_0, inner_high_0, inner_high_1, inner_low_1
             ],
             name=f"{beam_name}_{i}")
+        #add to collection
+        collection.objects.link(obj)
+        #set origin
+        bpy.context.view_layer.objects.active = obj
+        obj.select_set(True)
+
+        # Imposta l'origine
+        bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME', center='MEDIAN')
+
+        # Deseleziona l'oggetto
+        obj.select_set(False) 
         result.append(obj)  # Aggiungi l'oggetto alla lista
+        
     return result  # Restituisci la lista degli oggetti creati
 
 
@@ -279,4 +292,69 @@ def create_object(vertices, name=""):
        pass# vert.co -= centroid
 
     return obj 
+
+def add_text_object(text, location=(0, 0, 0), rotation=(0, 0, 0),scale=1):
+    # Crea un nuovo oggetto di testo
+    bpy.ops.object.text_add(location=location, rotation=rotation)
+    text_obj = bpy.context.object
+    text_obj.data.body = text
+
+    # Imposta le dimensioni e l'allineamento del testo
+    text_obj.data.size = scale
+    text_obj.data.align_x = 'CENTER'
+    text_obj.data.align_y = 'CENTER'
+
+    # Aggiungi un vincolo di tracking alla camera
+    if bpy.context.scene.camera:
+        text_obj.constraints.new(type='TRACK_TO')
+        text_obj.constraints["Track To"].target = bpy.context.scene.camera
+        text_obj.constraints["Track To"].track_axis = 'TRACK_Z'
+        text_obj.constraints["Track To"].up_axis = 'UP_Y'
+    else:
+        print("Nessuna camera trovata nella scena.")
+
+    return text_obj
+
+def update_text_from_file(text_object_name, file_path):
+    # Leggi il contenuto del file
+    try:
+        with open(file_path, 'r') as file:
+            new_text = file.read()
+    except FileNotFoundError:
+        print(f"File non trovato: {file_path}")
+        return
+
+    # Trova l'oggetto di testo nella scena
+    text_obj = bpy.data.objects.get(text_object_name)
+    if text_obj and text_obj.type == 'FONT':
+        # Aggiorna il testo dell'oggetto
+        text_obj.data.body = new_text
+        print(f"Testo aggiornato per l'oggetto: {text_object_name}")
+    else:
+        print(f"Oggetto di testo non trovato o non è un oggetto di tipo FONT: {text_object_name}")
+
+def on_click(name, function):
+    def selection_handler(scene):
+        # Ottieni l'oggetto attualmente selezionato
+        selected_objects = bpy.context.selected_objects
+        if selected_objects:
+            selected_object = selected_objects[0]
+            # Verifica se l'oggetto selezionato è quello di interesse
+            if selected_object.name == name:
+                # Esegui la funzione passata come argomento
+                function(selected_object)
+
+    # Aggiungi l'handler per monitorare i cambiamenti nella selezione
+    bpy.app.handlers.depsgraph_update_post.append(selection_handler)
+
+    # Ritorna la funzione handler per poterla rimuovere se necessario
+    return selection_handler
+
+# Esempio di utilizzo
+def my_custom_function(obj):
+    print(f"L'oggetto {obj.name} è stato cliccato!")
+
+# Associa la funzione all'oggetto con nome "NomeOggettoInteresse"
+#handler = on_click("NomeOggettoInteresse", my_custom_function)
+
 

@@ -13,47 +13,46 @@ class ZomePanel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
 
-        # Sezione Geometria Pura
+        # Sezione Geometria Base
         box = layout.box()
-        box.prop(scene, "expand_geometria_pura", text="Geometria Pura", icon="TRIA_DOWN" if scene.expand_geometria_pura else "TRIA_RIGHT", emboss=False)
-        if scene.expand_geometria_pura:
-            row = box.row()
-            row.label(text="N:")
-            row.prop(scene, "N", text="")
-
-            row = box.row()
-            row.label(text="Numero di strati:")
-            row.prop(scene, "M", text="")
-
-            row = box.row()
-            row.label(text="Angolo tra stella finale e verticale:")
-            row.prop(scene, "Ө", text="")
-
-            row = box.row()
-            row.label(text="Altezza m:")
-            row.prop(scene, "ZH", text="")
-
+        box.prop(scene, "expand_geometria", text="Dati base", icon="TRIA_DOWN" if scene.expand_geometria else "TRIA_RIGHT", emboss=False)
+        if scene.expand_geometria:
             row = box.row()
             row.label(text="Nome:")
             row.prop(scene, "name", text="")
 
+            row = box.row()
+            row.label(text="N:")
+            row.prop(scene, "N", text="")
+            row.label(text="M:")
+            row.prop(scene, "M", text="")
+
+            row=box.row()
+            row.label(text="Ө °")
+            row.prop(scene, "theta", text="")
+            row.label(text="H (m):")
+            row.prop(scene, "ZH", text="")
+
+            row = box.row()
+            row.prop(scene, "show_vertices", text="Vertici")
+            row.prop(scene, "show_edges", text="Bordi")
+            row.prop(scene, "show_barycenter", text="Baricentro")
+            row.prop(scene, "show_faces", text="Facce")
+
+            row = box.row()
+            row.label(text="Trasparenza:")
+            row.prop(scene, "face_transparency", text="")
         # Sezione Costruttivi
         box = layout.box()
         box.prop(scene, "expand_construction_method", text="Costruttivi", icon="TRIA_DOWN" if scene.expand_construction_method else "TRIA_RIGHT", emboss=False)
         if scene.expand_construction_method:
-            row = box.row()
-            row.prop(scene, "show_vertices", text="Vertici")
+            
+  
 
-            row = box.row()
-            row.prop(scene, "show_edges", text="Bordi")
-
-            row = box.row()
-            row.prop(scene, "show_faces", text="Facce")
-
-            # Modifica Base per essere una misura in centimetri
-            row = box.row()
-            row.label(text="Base (cm):")
-            row.prop(scene, "base_thickness", text="")
+           
+            #row = box.row()
+            #row.label(text="Base (cm):")
+            #row.prop(scene, "base_thickness", text="")
 
             # Travi: Larghezza e Spessore
             row = box.row()
@@ -69,7 +68,10 @@ class ZomePanel(bpy.types.Panel):
             row.prop(scene, "beam_thickness", text="")
 
             row = box.row()
-            row.prop(scene, "show_barycenter", text="Baricentro")
+            row.label(text="Densità tavole (kg/m3):")
+            row.prop(scene, "beam_density", text="")
+
+
 
         # Sezione Modifiche
         box = layout.box()
@@ -107,15 +109,15 @@ def register():
         bpy.utils.register_class(VIEW3D_PT_BooleanUnionPanel)
         bpy.types.Scene.N = bpy.props.IntProperty(
             default=8,
-            description="Numero di lati del poligono"
+            description="Numero di lati del poligono di base"
         )
         bpy.types.Scene.M = bpy.props.IntProperty(
             default=5,
-            description="Numero di strati"
+            description="Numero di livelli, inclusi triangoli"
         )
-        bpy.types.Scene.theta = bpy.props.IntProperty(
+        bpy.types.Scene.theta = bpy.props.FloatProperty(
             default=60,
-            description="Angolo tra stella finale e verticale"
+            description="Angolo tra i rombi e la verticale"
         )
         bpy.types.Scene.ZH = bpy.props.FloatProperty(
             default=3,
@@ -123,7 +125,7 @@ def register():
         )
         bpy.types.Scene.name = bpy.props.StringProperty(
             default="[nome]",
-            description="Nome del progetto"
+            description="Nome dello zome. Gli elementi dello zome andranno in una collection con questo nome"
         )
         bpy.types.Scene.show_vertices = bpy.props.BoolProperty(
             default=False,
@@ -154,7 +156,7 @@ def register():
             default=True,
             description="Mostra i travi"
         )
-        bpy.types.Scene.expand_geometria_pura = bpy.props.BoolProperty(default=True)
+        bpy.types.Scene.expand_geometria = bpy.props.BoolProperty(default=True)
         bpy.types.Scene.expand_construction_method = bpy.props.BoolProperty(default=True)
         bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=True)
         bpy.types.Scene.base_thickness = bpy.props.FloatProperty(
@@ -169,6 +171,13 @@ def register():
             default=2.0,
             description="Spessore delle travi in centimetri"
         )
+        #densità assi:
+        bpy.types.Scene.beam_density = bpy.props.IntProperty(
+            default=700,
+            min=0,
+            max=1000,
+            description="Densità legno (kg/m3)"
+        )
         bpy.types.Scene.top_reduction_height = bpy.props.IntProperty(
             default=0,
             min=0,
@@ -180,6 +189,13 @@ def register():
             min=0,
             max=5,
             description="Livelli:"
+        )
+        bpy.types.Scene.face_transparency = bpy.props.FloatProperty(
+            name="Trasparenza",
+            description="Controlla la trasparenza delle facce",
+            default=1.0,
+            min=0.0,
+            max=1.0
         )
     except RuntimeError as e:
         print(f"Errore durante la registrazione dei pannelli: {e}")
@@ -202,7 +218,7 @@ def unregister():
         del bpy.types.Scene.show_base
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.show_beams
-        del bpy.types.Scene.expand_geometria_pura
+        del bpy.types.Scene.expand_geometria
         del bpy.types.Scene.expand_construction_method
         del bpy.types.Scene.beam_width
         del bpy.types.Scene.beam_thickness

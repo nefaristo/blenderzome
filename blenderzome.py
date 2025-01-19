@@ -57,9 +57,12 @@ if __name__ == "__main__":
     
     #unregister_panels()
     #register_panels()
-    
+    def my_custom_function(obj):
+        #delete
+        bpy.data.objects.remove(obj)
     register()
-    
+    #registra il click su un oggetto di nome "NomeOggettoInteresse"e esegue la funzione my_custom_function che stampa un messaggio
+    handler = on_click("Philippe mod_text", my_custom_function)
 
 
     # Deseleziona tutti gli oggetti

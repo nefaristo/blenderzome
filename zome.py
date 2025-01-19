@@ -32,12 +32,20 @@ class Zome:
                 "vertices": 1, 
                 "edges": 1, 
                 "faces": 1, 
+                "face_transparency": 0.5,
                 "barycenter": 1 
             },
             modifications={
                 "top_reduction_height": 0,
                 "top_reduction_levels": 0,
                 "spin": 0
+            },
+            physics={
+                "active": True,
+                "density": 1,
+                "friction": 0.8,
+                "spring_stiffness": 10,
+                "spring_damping": 0.5,
             }
         ):
         
@@ -138,7 +146,7 @@ class Zome:
                 D=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % self.N]
                 if B is not None:
                     if A is not None and D is not None:#rhombus
-                        new_faces_layer.append((A, B, D, C))
+                        new_faces_layer.append((A, C, D, B))
                     elif A is not None: #triangle
                         new_faces_layer.append((A, B, C))
                     elif D is not None: #upside down triangle
@@ -165,16 +173,16 @@ class Zome:
         points_radius = self.ZH / 100 
 
         #colors and materials:
-        transp=1
+        alpha=self.show["face_transparency"]
         colors = [
-            (1.0, 0.0, 0.0, transp),  # Red
-            (0.0, 1.0, 0.0, transp),  # Green
-            (0.0, 0.0, 1.0, transp),  # Blue
-            (1.0, 1.0, 0.0, transp),  # Yellow
-            (1.0, 0.0, 1.0, transp),  # Magenta
-            (0.0, 1.0, 1.0, transp),   # Cyan
-            (1.0, 1.0, 1.0, transp),   # White
-            (0.0, 0.0, 0.0, transp)    # Black
+            (1.0, 0.0, 0.0, alpha),  # Red
+            (0.0, 1.0, 0.0, alpha),  # Green
+            (0.0, 0.0, 1.0, alpha),  # Blue
+            (1.0, 1.0, 0.0, alpha),  # Yellow
+            (1.0, 0.0, 1.0, alpha),  # Magenta
+            (0.0, 1.0, 1.0, alpha),   # Cyan
+            (1.0, 1.0, 1.0, alpha),   # White
+            (0.0, 0.0, 0.0, alpha)    # Black
         ]
         materiali = []
         for i, color in enumerate(colors):
@@ -291,63 +299,68 @@ class Zome:
             main_collection.children.link(beams_collection)
             #for each face,create a polygon with its vertices and its name:
             for layer_index, layer in enumerate(self.faces):
+                
+                
                 for poly_index, poly in enumerate(layer):
-                    if len(poly) > 3:
-                        objects = beams_polygon(
-                            beam_name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
-                            polyverts=poly,
-                            TW=self.structure["TW"],
-                            TT=self.structure["TT"],
-                            method="butt joint ccw",
-                            TT_sink_fraction=0,
-                        )
-                        set_collection(name=beams_collection.name, 
-                                    add_objects=objects,
-                                    first_delete_objects=False)                    
-            self.print("✔️\n")
-            #for each obj, set physics
-            self.print("Fisica degli assi...")
-            for obj in objects:
-                pass #set_physics(obj)
-            self.print("✔️\n")
-            self.print("Collegamento degli assi...WIP")
-            #self.connect_beams(objects)
+                    objects = beams_polygon(
+                        collection=beams_collection,
+                        beam_name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
+                        polyverts=poly,
+                        TW=self.structure["TW"],
+                        TT=self.structure["TT"],
+                        method="butt joint ccw",
+                        TT_sink_fraction=0,
+                    )
+                    set_collection(name=beams_collection.name, 
+                                add_objects=objects,
+                                first_delete_objects=False)                    
             self.print("✔️\n")
 
-        # BARYCENTER:
-        if self.show["barycenter"] == 1:
-            self.print("Baricentro...")
-            bpy.ops.mesh.primitive_uv_sphere_add(radius=points_radius*5, location=self.barycenter)
-            obj = bpy.context.object
-            obj.name = rename(f"{self.name}_barycenter")
-            obj.data.materials.append(materiali[0])
-            main_collection.objects.link(obj)
-            bpy.context.collection.objects.unlink(obj)
-            self.print("✔️\n")
+            if False:
+                #PHYSICS:
+                self.print("Fisica degli assi...")
+                for obj in beams_collection.objects:
+                    set_physics(obj, density=self.structure["beam_density"],active=True)
+                self.print("✔️\n")
 
-    def connect_beams(self, objects): #make each obj physics active and connect them with the nex ob
-        #first loop to make the physics active:
-        for i, obj in enumerate(objects):
-            set_physics(obj)
-        #second loop to connect them with the next obj:
-        for i, obj in enumerate(objects):
-            #add constraint of each to the next: spring
-            if i < len(objects) - 1:
-                add_constraint(obj, objects[(i + 1) % len(objects)])
+            
+            self.connect_beams(objects)
+            
+
+
 
         
         
     #UTILITY FUNCTIONS:
     def print(self, message):
+        # Nome della collezione e dell'oggetto di testo
+        collection_name = f"{self.name}_messages"
+        text_object_name = f"{self.name}_text"
+
+        # Controlla se la collezione esiste, altrimenti la crea
+        if collection_name not in bpy.data.collections:
+            new_collection = bpy.data.collections.new(collection_name)
+            bpy.context.scene.collection.children.link(new_collection)
+        else:
+            new_collection = bpy.data.collections[collection_name]
+
+        # Controlla se l'oggetto di testo esiste, altrimenti lo crea
+        text_obj = bpy.data.objects.get(text_object_name)
+        if not text_obj:
+            # Usa la funzione add_text_object per creare un nuovo oggetto di testo
+            text_obj = add_text_object(message, location=(0, 0, 0))
+            text_obj.name = text_object_name
+            new_collection.objects.link(text_obj)
+            bpy.context.collection.objects.unlink(text_obj)
+        else:
+            # Aggiungi il nuovo messaggio al testo esistente
+            text_obj.data.body += "\n" + message
+        #scrive anche su canale normal
         print(message,end="")
 
 
 def add_constraint(obj, to_obj):
-    # Assicurati che entrambi gli oggetti abbiano il corpo rigido abilitato
-    if not obj.rigid_body:
-        bpy.ops.rigidbody.object_add({'object': obj})
-    if not to_obj.rigid_body:
-        bpy.ops.rigidbody.object_add({'object': to_obj})
+    # takes for granted that both objects have physics active
 
     # Crea il vincolo di tipo molla
     bpy.ops.object.select_all(action='DESELECT')
