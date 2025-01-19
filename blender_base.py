@@ -137,6 +137,33 @@ def boolean_union_selected(new_object_name):
     bpy.context.view_layer.update() 
     print(f"Boolean union created: {active_obj.name}")
 
+def draw_polygon(name="polygon", polyverts=[], color=(1, 0, 0)):
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(name, mesh)
+
+    # Aggiungi l'oggetto alla scena
+    bpy.context.collection.objects.link(obj)
+
+    # Usa bmesh per creare la geometria
+    bm = bmesh.new()
+    verts = [bm.verts.new(v_co) for v_co in polyverts]
+    bm.verts.ensure_lookup_table()
+
+    # Crea spigoli tra i vertici
+    for i in range(len(verts)):
+        bm.edges.new((verts[i], verts[(i + 1) % len(verts)]))
+
+    # Scrivi la geometria nel mesh
+    bm.to_mesh(mesh)
+    bm.free()
+
+    # Imposta il nome e il colore
+    obj.name = rename(f"polygon_{obj.name}")
+    mat = bpy.data.materials.new(name="PolygonMaterial")
+    mat.diffuse_color = (*color, 1)  # Aggiungi l'alpha per il colore
+    obj.data.materials.append(mat)
+
+    return obj
 def beams_polygon(polyverts, 
                   TW, TT,TT_sink_fraction=0.01, 
                   method="butt joint ccw", 

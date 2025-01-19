@@ -24,7 +24,7 @@ class Zome:
             structure={
                 "TW":0.1,
                 "TT":0.03,
-                "base": 3.0,  # Spessore della base in centimetri
+                "base_thickness": 3.0,  # Spessore della base in centimetri
                 "strenghten_v":[],
                 "strenghten_h":[],
             },
@@ -35,8 +35,9 @@ class Zome:
                 "barycenter": 1 
             },
             modifications={
-                "height_reduction": 0,
-                "involved_levels": 0
+                "top_reduction_height": 0,
+                "top_reduction_levels": 0,
+                "spin": 0
             }
         ):
         
@@ -49,101 +50,103 @@ class Zome:
         self.structure = structure
         self.show = show
         self.modifications = modifications 
-        self.modifications["height_reduction"] = self.modifications["height_reduction"] / 100 if self.modifications["height_reduction"] > 0 else 0
-
+        
         #derived parameters:
         self.H = self.ZH / (N / (M + 1))
-        self.h = self.ZH / M
+        self.h = self.ZH / (M-1)
         self.l = self.h / math.cos(math.radians(self.theta))
         self.alpha = 360.0 / N        
         self.show["beams"] = self.show["beams"] and (self.structure["TW"] > 0 and self.structure["TT"] > 0)
-        self.show["base"] = self.structure["base"] > 0    
-        
+        self.show["base"] = self.structure["base_thickness"] > 0    
+        self.spin = 0 #how much the first layer is rotated
 
         #structures used to build the polyzome:
         self.vertices = []
         self.faces = []
-        self.edges = []
         self.beams = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         
         # Build the structure
-        self.create_polyzome()  # abstract geometry
-
+        self.print(f"\n***********\nZome '{self.name}'\n")
+        self.print(f"Geometria: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}\n")
+        self.print(f"Struttura: {self.structure}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\n***********\n")
+        
+        self.set_vertices()  # theoretical vertices
+        self.modify_vertices() #modification of the vertices
+        self.set_derived_geometry()  #  edges and faces build upon modified vertices
         self.create_collection()  # actual blender collection w/ subcollections
-    
-    def create_polyzome(self):
-        self.print(f"\n_____________\nZome '{self.name}'\n")
-        self.print(f"Base geometry: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}\n")
-        self.print(f"Structure: {self.structure}\nShow: {self.show}\n______________\n")
-        self.print("Geometry...")
-        self.print ("Vertices:")
-        for layer_index in range(self.N+1): # max N-2 faces (0...N-2) + 2 vertices (0...N)
-            vertices_layer = []
-            faces_layer = []
-            edges_layer=[]
-            if self.modifications["involved_levels"] > 0 and layer_index < self.modifications["involved_levels"]:
-                delta_z = self.modifications["height_reduction"] / self.modifications["involved_levels"]
-                self.print(f"Layer {layer_index}: modified by {delta_z} m\n")
-            else:
-                delta_z = 0
-                self.print(f"Layer {layer_index}: no modifications\n")
+                
+    def set_vertices(self):
+        self.vertices = []
+        self.print("Vertici: ")
+        for layer_index in range(self.M): 
+            vertices_layer = []              
             match layer_index:
-                case 0:  # APEX (1 vertex, no edges or faces)
-                    vertices_layer.append((0, 0, self.ZH- delta_z))#appends to the layer a tuple with the apex
-                case 1:  # FIRST POLYGON (N x 4 vertices, no faces yet)
+                case _ if layer_index==0 or layer_index==self.N-1:  # APEX or possibly ANTIPODAL APEX
+                    vertices_layer.append((0, 0, self.ZH))  # appends to the layer a tuple with the apex
+                case 1:  # FIRST LAYER - arbitrary orientation
                     for radial_index in range(self.N):
-                        x = self.l * math.sin(math.radians(self.theta)) * math.cos(math.radians(radial_index * self.alpha))
-                        y = self.l * math.sin(math.radians(self.theta)) * math.sin(math.radians(radial_index * self.alpha))
-                        z = self.ZH - self.h - delta_z
+                        x = self.l * math.sin(math.radians(self.theta)) * math.cos(math.radians(radial_index * self.alpha+self.spin))
+                        y = self.l * math.sin(math.radians(self.theta)) * math.sin(math.radians(radial_index * self.alpha+self.spin))
+                        z = self.ZH - self.h
                         vertices_layer.append((x, y, z))
-                        new_edge=[(x,y,z),(0,0,self.ZH)]
-                        edges_layer.append(new_edge)
-                case _ if 2 <= layer_index <= self.M+1:  # ACTUAL FACES (N vertices, N faces) (0..M-1)
+                case _ if 2 <= layer_index <= self.M+1:  # RHOMBI 
                     for radial_index in range(self.N):
-                        A = self.vertices[0][0] if layer_index == 2 else self.vertices[layer_index-2][(radial_index+1) % self.N]
+                        A = self.vertices[0][0] if layer_index == 2 else self.vertices[(layer_index-2)%self.M][(radial_index+1) % self.N]
                         B = self.vertices[layer_index-1][radial_index]
                         C = self.vertices[layer_index-1][(radial_index+1) % self.N]
                         M = (mathutils.Vector(B) + mathutils.Vector(C)) / 2  # Punto medio di B e C
-                        D = 2 * M - mathutils.Vector(A) - mathutils.Vector([0, 0, delta_z]) # Simmetrico di A rispetto a B-C
-                        #if layer is M+1 and M<N-1, its' cutting rhombi to triangles and doesnt add the vertex
-                        #in the other cases, adds the rhombi and, as for the vertices, 
+                        D = 2 * M - mathutils.Vector(A)  # Simmetrico di A rispetto a B-C
+                        # if layer is M+1 and M<N-1, its' cutting rhombi to triangles and doesnt add the vertex
+                        # in the other cases, adds the rhombi and, as for the vertices,
                         A_vec = mathutils.Vector(A)
                         B_vec = mathutils.Vector(B)
                         C_vec = mathutils.Vector(C)
                         D_vec = mathutils.Vector(D)
-                        if(layer_index == self.M+1 and self.M < self.N-1): #there's a cut and it's here => TRIANGLES, and no more vertices
-                            faces_layer.append((A, B, C))
-                            edges_layer.append([(A_vec.x, A_vec.y, A_vec.z), (B_vec.x, B_vec.y, B_vec.z)])
-                            edges_layer.append([(B_vec.x, B_vec.y, B_vec.z), (C_vec.x, C_vec.y, C_vec.z)])
-                            edges_layer.append([(C_vec.x, C_vec.y, C_vec.z), (A_vec.x, A_vec.y, A_vec.z)])
-                        else:#RHOMBI
-                            faces_layer.append((A, B, D, C)) 
-                            if(layer_index == self.M+1 and self.M == self.N-1):#...and just one copy of the vertices if it's the polyhedron's apex
-                                if radial_index == 0: vertices_layer.append((D.x, D.y, D.z))
-                            else:#..otherwise adds them all
-                                vertices_layer.append((D.x, D.y, D.z))
-                            edges_layer.append([(B_vec.x, B_vec.y, B_vec.z), (A_vec.x, A_vec.y, A_vec.z)])
-                            edges_layer.append([(C_vec.x, C_vec.y, C_vec.z), (A_vec.x, A_vec.y, A_vec.z)])
-                            #se in vertical|horizontal map l'indice esiste ed è 1, aggiungi un vertical|horizontal edge:
-                            if "strenghten_v" in self.structure and layer_index < len(self.structure["strenghten_v"]) and self.structure["strenghten_v"][layer_index] == 1:
-                                edges_layer.append([(D_vec.x, D_vec.y, D_vec.z), (A_vec.x, A_vec.y, A_vec.z)])#vertical edges
-                            if "strenghten_h" in self.structure and layer_index < len(self.structure["strenghten_h"]) and self.structure["strenghten_h"][layer_index] == 1:
-                                edges_layer.append([(B_vec.x, B_vec.y, B_vec.z), (C_vec.x, C_vec.y, C_vec.z)])#horizontal edges
-                case _ if layer_index >self.M+1: # the last layer, the one with the base
-                    pass #nothing added
-            #add the layers to the lists if not empty:
-            if len(vertices_layer) > 0:
-                self.vertices.append(vertices_layer)
-            if len(faces_layer) > 0:
-                self.faces.append(faces_layer)
-            if len(edges_layer) > 0:
-                self.edges.append(edges_layer)
-        #it was build from the bottom to the top, so it's reversed and the base will be the first layer
+                        vertices_layer.append((D.x, D.y, D.z))         
+            self.vertices.append(vertices_layer)
+            self.print(f"{len(vertices_layer)} ")            
         self.vertices.reverse()
-        self.faces.reverse()
-        self.edges.reverse()
+        self.print("✔️\n")
 
+    def modify_vertices(self):
+        self.print("Alterazioni: ")
+        #top reduction:
+        if self.modifications["top_reduction_levels"] > 0: 
+            delta_z=0
+            for layer_index in range(self.M -  self.modifications["top_reduction_levels"], self.M):
+                delta_z -= self.modifications["top_reduction_height"] / self.modifications["top_reduction_levels"]
+                #loop through the vertices of the layer and reduce their z by delta_z
+                for vertex_index, vertex in enumerate(self.vertices[layer_index]):
+                    self.vertices[layer_index][vertex_index] = (vertex[0], vertex[1], vertex[2] + delta_z )
+                self.print(f"livello {layer_index}: {delta_z} ")                    
+        self.print("✔️\n")        
+
+    def set_derived_geometry(self):
+        self.faces = []
+        self.print("Facce: ")
+        for layer_index in range(len(self.vertices)): 
+            new_faces_layer = []    
+            count=len(self.vertices[layer_index])
+            prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
+            next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])
+            layer_type="" #default is no faces (apex | antiapex)
+            for radial_index in range(self.N):
+                A=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%self.N]
+                B=None if count==1 else self.vertices[layer_index][radial_index%self.N]
+                C=None if count==1 else self.vertices[layer_index][(radial_index+1) % self.N]
+                D=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % self.N]
+                if B is not None:
+                    if A is not None and D is not None:#rhombus
+                        new_faces_layer.append((A, B, D, C))
+                    elif A is not None: #triangle
+                        new_faces_layer.append((A, B, C))
+                    elif D is not None: #upside down triangle
+                        new_faces_layer.append((B, C, D))
+            if len(new_faces_layer) > 0:
+                self.faces.append(new_faces_layer)
+                self.print(f"{len(new_faces_layer)} ")
+        self.print("✔️\n")
         #update barycenter
         self.barycenter = (0,0,0)
         total_vertices = 0
@@ -153,12 +156,10 @@ class Zome:
                 total_vertices += 1
         if total_vertices > 0:
             self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
-        self.print(f"faces:{len(self.faces)}, vertices:{len(self.vertices)}, edges:{len(self.edges)}")
-        self.print("✔️\n",)
-
+        
     
     def create_collection(self):
-        self.print("Preps & root collection...")
+        self.print("Collections...")
         
         #points radius:
         points_radius = self.ZH / 100 
@@ -215,9 +216,9 @@ class Zome:
         self.print("✔️\n")
 
         # BASE:
-        base_thickness = self.structure["base"] # Converti da cm a metri
+        base_thickness = self.structure["base_thickness"] 
         if base_thickness > 0:
-            self.print("Base...")
+            self.print("Base (base_thickness:{base_thickness})")
             base_radius = math.sqrt(self.vertices[0][0][0]**2 + self.vertices[0][0][1]**2)
             bpy.ops.mesh.primitive_cylinder_add(vertices=self.N, radius=base_radius, depth=base_thickness)
             #moves it on z down by half of its height
@@ -228,11 +229,11 @@ class Zome:
             bpy.context.collection.objects.unlink(obj)
             self.print("✔️\n")
             #set physics
-            set_physics(obj, active=False)
+            #set_physics(obj, active=False)
 
         # VERTICES:
         if self.show["vertices"] == 1:
-            self.print("Vertices...")
+            self.print("Punti...")
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             main_collection.children.link(vertices_collection)
             for layer_index, layer in enumerate(self.vertices):
@@ -250,30 +251,19 @@ class Zome:
 
         # EDGES:
         if self.show["edges"] == 1:
-            self.print("Edges...")
+            self.print("Bordi...")
             edges_collection = bpy.data.collections.new(rename(self.name+"_edges"))
             main_collection.children.link(edges_collection)
-            for layer_index, layer in enumerate(self.edges):
-                for edge_index, edge in enumerate(layer):
-                    # Calcola il vettore tra i due punti
-                    start = mathutils.Vector(edge[0])
-                    end = mathutils.Vector(edge[1])
-                    direction = end - start
-                    length = direction.length
-                    midpoint = (start + end) / 2
-                    # Aggiungi una curva per il segmento
-                    start_point = midpoint - (direction * (length / 2))
-                    end_point = midpoint + (direction * (length / 2))
-                    obj = add_segment_as_curve(start, end, name=rename(f"{self.name}_edge_{layer_index}_{edge_index}"))
-                    # Imposta le proprietà personalizzate DOPO aver creato l'oggetto
-                    obj["start"] = start
-                    obj["end"] = end
+            for layer_index, layer in enumerate(self.faces):
+                for poly_index, poly in enumerate(layer):
+                    obj=draw_polygon( name=rename(f"{self.name}_edge_{layer_index}_{poly_index}"), polyverts=poly, color=(1,0,0))
                     edges_collection.objects.link(obj)
+                    bpy.context.collection.objects.unlink(obj)
             self.print("✔️\n")
 
         # FACES:
         if self.show["faces"] == 1:
-            self.print("Faces...")
+            self.print("Facce interne...")
             faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
             main_collection.children.link(faces_collection)
             for layer_index, layer in enumerate(self.faces):
@@ -296,36 +286,37 @@ class Zome:
 
         # BEAMS:
         if self.show["beams"] == 1:
-            self.print("Beams...")
+            self.print("Assi...")
             beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
             main_collection.children.link(beams_collection)
             #for each face,create a polygon with its vertices and its name:
             for layer_index, layer in enumerate(self.faces):
-                self.print(f"Layer {layer_index}...")
                 for poly_index, poly in enumerate(layer):
-                    self.print(f"Poly {poly_index}...")
-                    objects = beams_polygon(
-                        beam_name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
-                        polyverts=poly,
-                        TW=self.structure["TW"],
-                        TT=self.structure["TT"],
-                        method="butt joint ccw",
-                        TT_sink_fraction=0.01,
-                    )
-                    set_collection(name=beams_collection.name, 
-                                   add_objects=objects,
-                                   first_delete_objects=False) 
-                    #for each obj, set physics
-                    for obj in objects:
-                        set_physics(obj)                   
+                    if len(poly) > 3:
+                        objects = beams_polygon(
+                            beam_name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
+                            polyverts=poly,
+                            TW=self.structure["TW"],
+                            TT=self.structure["TT"],
+                            method="butt joint ccw",
+                            TT_sink_fraction=0,
+                        )
+                        set_collection(name=beams_collection.name, 
+                                    add_objects=objects,
+                                    first_delete_objects=False)                    
             self.print("✔️\n")
-            self.print("Connecting beams...")
-            self.connect_beams(objects)
+            #for each obj, set physics
+            self.print("Fisica degli assi...")
+            for obj in objects:
+                pass #set_physics(obj)
+            self.print("✔️\n")
+            self.print("Collegamento degli assi...WIP")
+            #self.connect_beams(objects)
             self.print("✔️\n")
 
         # BARYCENTER:
         if self.show["barycenter"] == 1:
-            self.print("Barycenter...")
+            self.print("Baricentro...")
             bpy.ops.mesh.primitive_uv_sphere_add(radius=points_radius*5, location=self.barycenter)
             obj = bpy.context.object
             obj.name = rename(f"{self.name}_barycenter")

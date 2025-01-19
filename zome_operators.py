@@ -28,7 +28,7 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             structure={
                 "TW": context.scene.beam_width / 100.0,
                 "TT": context.scene.beam_thickness / 100.0,
-                "base": context.scene.base / 100.0,
+                "base_thickness": context.scene.base_thickness/ 100.0,
                 "strenghten_v": strenghten_v,
                 "strenghten_h": strenghten_h,
             },
@@ -40,8 +40,8 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "beams": 1 if context.scene.show_beams else 0
             },
             modifications={
-                "height_reduction": context.scene.height_reduction,
-                "involved_levels": context.scene.involved_levels
+                "top_reduction_height": context.scene.top_reduction_height/100,
+                "top_reduction_levels": context.scene.top_reduction_levels
             }
         )
         print(f"Zome {zome1.name} creation completed")

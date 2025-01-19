@@ -7,7 +7,9 @@ import bpy
 # Esegui la pulizia della cache
 
 # Percorso dello script
-script_path = r"C:\Users\nefar\OneDrive\Documenti\Zome\zome_scripts"
+script_path = bpy.path.abspath("//scripts")
+if not os.path.exists(script_path):
+    raise Exception(f"Directory degli script non trovata in: {script_path}")
 if script_path not in sys.path:
     sys.path.append(script_path)
 
@@ -30,12 +32,10 @@ import zome_panels
 importlib.reload(zome_panels)
 from zome_panels import *
 from zome_panels import register as register_panels, unregister as unregister_panels
-import bpy
-
 
 # Usa le funzioni importate
-set_collection("")
-print("Script importati (percorso:",script_path,")")
+#set_collection("")
+print("Script importati (percorso:", script_path, ")")
 print("Impostazione pannello")
 
 # Registra gli operatori e i pannelli
@@ -46,6 +46,8 @@ def register():
 def unregister():
     zome_operators.unregister()
     zome_panels.unregister()
+
+
 
 # Esegui la deregistrazione e poi la registrazione se il file è eseguito come script principale
 if __name__ == "__main__":
@@ -58,7 +60,9 @@ if __name__ == "__main__":
     
     register()
     
-bpy.ops.object.select_all(action='DESELECT')
-bpy.context.view_layer.objects.active = None
+
+
+    # Deseleziona tutti gli oggetti
+    bpy.ops.object.select_all(action='DESELECT')
 
 

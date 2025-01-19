@@ -27,7 +27,7 @@ class ZomePanel(bpy.types.Panel):
 
             row = box.row()
             row.label(text="Angolo tra stella finale e verticale:")
-            row.prop(scene, "theta", text="")
+            row.prop(scene, "Ө", text="")
 
             row = box.row()
             row.label(text="Altezza m:")
@@ -39,8 +39,8 @@ class ZomePanel(bpy.types.Panel):
 
         # Sezione Costruttivi
         box = layout.box()
-        box.prop(scene, "expand_metodo_costruttivo", text="Costruttivi", icon="TRIA_DOWN" if scene.expand_metodo_costruttivo else "TRIA_RIGHT", emboss=False)
-        if scene.expand_metodo_costruttivo:
+        box.prop(scene, "expand_construction_method", text="Costruttivi", icon="TRIA_DOWN" if scene.expand_construction_method else "TRIA_RIGHT", emboss=False)
+        if scene.expand_construction_method:
             row = box.row()
             row.prop(scene, "show_vertices", text="Vertici")
 
@@ -53,13 +53,14 @@ class ZomePanel(bpy.types.Panel):
             # Modifica Base per essere una misura in centimetri
             row = box.row()
             row.label(text="Base (cm):")
-            row.prop(scene, "base", text="")
+            row.prop(scene, "base_thickness", text="")
 
             # Travi: Larghezza e Spessore
             row = box.row()
-            row.label(text="Travi:")
-            row.prop(scene, "show_beams", text="")
             
+            row.prop(scene, "show_beams", text="")
+            row.label(text="Tavole:")
+
             row = box.row()
             row.label(text="Largh. (cm):")
             row.prop(scene, "beam_width", text="")
@@ -74,13 +75,16 @@ class ZomePanel(bpy.types.Panel):
         box = layout.box()
         box.prop(scene, "expand_modifications", text="Modifiche", icon="TRIA_DOWN" if scene.expand_modifications else "TRIA_RIGHT", emboss=False)
         if scene.expand_modifications:
-            row = box.row()
-            row.label(text="Riduzione di altezza (cm):")
-            row.prop(scene, "height_reduction", text="")
+            # Aggiungi un'etichetta per "Riduzione Top"
+            box.label(text="Riduzione Top")
 
             row = box.row()
-            row.label(text="Livelli coinvolti:")
-            row.prop(scene, "involved_levels", text="")
+            row.label(text="Altezza (cm):")
+            row.prop(scene, "top_reduction_height", text="")
+
+            row = box.row()
+            row.label(text="N° livelli:")
+            row.prop(scene, "top_reduction_levels", text="")
 
         # Pulsante Crea Zome nel pannello principale
         layout.operator("object.call_zome", text="Crea Zome")
@@ -153,9 +157,9 @@ def register():
         bpy.types.Scene.expand_geometria_pura = bpy.props.BoolProperty(default=True)
         bpy.types.Scene.expand_construction_method = bpy.props.BoolProperty(default=True)
         bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=True)
-        bpy.types.Scene.base_length = bpy.props.FloatProperty(
-            default=3.0,
-            description="Lunghezza della base in centimetri"
+        bpy.types.Scene.base_thickness = bpy.props.FloatProperty(
+            default=0.0,
+            description="Spessore della base in centimetri"
         )
         bpy.types.Scene.beam_width = bpy.props.FloatProperty(
             default=5.0,
@@ -165,17 +169,17 @@ def register():
             default=2.0,
             description="Spessore delle travi in centimetri"
         )
-        bpy.types.Scene.height_reduction = bpy.props.IntProperty(
+        bpy.types.Scene.top_reduction_height = bpy.props.IntProperty(
             default=0,
             min=0,
             max=200,
-            description="Riduzione di altezza in centimetri"
+            description="Altezza (cm)"
         )
-        bpy.types.Scene.involved_levels = bpy.props.IntProperty(
+        bpy.types.Scene.top_reduction_levels = bpy.props.IntProperty(
             default=0,
             min=0,
             max=5,
-            description="Livelli coinvolti"
+            description="Livelli:"
         )
     except RuntimeError as e:
         print(f"Errore durante la registrazione dei pannelli: {e}")
@@ -200,9 +204,9 @@ def unregister():
         del bpy.types.Scene.show_beams
         del bpy.types.Scene.expand_geometria_pura
         del bpy.types.Scene.expand_construction_method
-        del bpy.types.Scene.base_length
         del bpy.types.Scene.beam_width
         del bpy.types.Scene.beam_thickness
+        del bpy.types.Scene.base_thickness
     except RuntimeError as e:
         print(f"Errore durante la deregistrazione dei pannelli: {e}")
         result=False
