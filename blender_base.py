@@ -5,19 +5,25 @@ import mathutils
 import bmesh
 from mathutils import Vector
 
-print("Blender utilities loaded - Version 1.0.0")
+print("Blender utilities loaded - Version 2.0.0")
 
 def clear_console():
     # Questo comando funziona su Windows
     os.system('cls' if os.name == 'nt' else 'clear')
 
 def set_collection(name="", delete_root=False, first_delete_objects=True, first_delete_subcollections=True, add_objects=[]):
-    if name == "":#delete ALL collections and objects
-        for collection in bpy.data.collections:
-            for obj in collection.objects:
-                bpy.data.objects.remove(obj, do_unlink=True)
+    if name == "":  # delete ALL collections and objects
+        # Rimuovi tutti gli oggetti dalla scena
+        for obj in bpy.data.objects:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        
+        # Rimuovi tutte le collezioni
         for collection in bpy.data.collections:
             bpy.data.collections.remove(collection)
+        
+        # Forza l'aggiornamento della scena per assicurarsi che non ci siano riferimenti residui
+        bpy.context.view_layer.update()
+        
         return None
     
     if delete_root:
@@ -293,27 +299,7 @@ def create_object(vertices, name=""):
 
     return obj 
 
-def add_text_object(text, location=(0, 0, 0), rotation=(0, 0, 0),scale=1):
-    # Crea un nuovo oggetto di testo
-    bpy.ops.object.text_add(location=location, rotation=rotation)
-    text_obj = bpy.context.object
-    text_obj.data.body = text
 
-    # Imposta le dimensioni e l'allineamento del testo
-    text_obj.data.size = scale
-    text_obj.data.align_x = 'CENTER'
-    text_obj.data.align_y = 'CENTER'
-
-    # Aggiungi un vincolo di tracking alla camera
-    if bpy.context.scene.camera:
-        text_obj.constraints.new(type='TRACK_TO')
-        text_obj.constraints["Track To"].target = bpy.context.scene.camera
-        text_obj.constraints["Track To"].track_axis = 'TRACK_Z'
-        text_obj.constraints["Track To"].up_axis = 'UP_Y'
-    else:
-        print("Nessuna camera trovata nella scena.")
-
-    return text_obj
 
 def update_text_from_file(text_object_name, file_path):
     # Leggi il contenuto del file
@@ -344,11 +330,19 @@ def on_click(name, function):
                 # Esegui la funzione passata come argomento
                 function(selected_object)
 
-    # Aggiungi l'handler per monitorare i cambiamenti nella selezione
-    bpy.app.handlers.depsgraph_update_post.append(selection_handler)
+    # Verifica se l'handler è già presente
+    if selection_handler not in bpy.app.handlers.depsgraph_update_post:
+        # Aggiungi l'handler per monitorare i cambiamenti nella selezione
+        bpy.app.handlers.depsgraph_update_post.append(selection_handler)
 
     # Ritorna la funzione handler per poterla rimuovere se necessario
     return selection_handler
+
+def remove_handler(handler):
+    try:
+        bpy.app.handlers.depsgraph_update_post.remove(handler)
+    except ValueError:
+        print("Handler non trovato nella lista.")
 
 # Esempio di utilizzo
 def my_custom_function(obj):
@@ -356,5 +350,6 @@ def my_custom_function(obj):
 
 # Associa la funzione all'oggetto con nome "NomeOggettoInteresse"
 #handler = on_click("NomeOggettoInteresse", my_custom_function)
+
 
 

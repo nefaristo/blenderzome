@@ -5,67 +5,29 @@ import math
 import mathutils
 import sys
 import importlib
-# Percorso dello script
-script_path = r"C:\Users\nefar\OneDrive\Documenti\Zome\zome_scripts"
+import os
+
+# Ottieni il percorso del file .blend
+blend_file_path = bpy.data.filepath
+print(f"Blend file path: {blend_file_path}")  # Debug: stampa il percorso del file .blend
+
+# Ottieni la directory del file .blend
+blend_dir = os.path.dirname(blend_file_path)
+
+# Costruisci il percorso relativo alla directory degli script
+# Supponendo che 'scripts' sia una sottodirectory della directory del file .blend
+script_path = os.path.join(blend_dir, "scripts")
+
 if script_path not in sys.path:
     sys.path.append(script_path)
 
-# Importa il modulo blender_base e ricaricalo 
+# Importa moduli editabili on the fly ricaricandoli: 
 import blender_base as bb
 importlib.reload(bb)
 from blender_base import *
-
-junctions = [
-    {
-        "name": {"eng": "miter_joint", "ita": "giunto a taglio obliquo"},
-        "description": {
-            "eng": "A joint where two pieces are cut at an angle to form a corner.",
-            "ita": "Un giunto dove due pezzi sono tagliati per dividersi un angolo, tipo cornici."
-        }
-    },
-    {
-        "name": {"eng": "butt_joint", "ita": "giunto a testa"},
-        "description": {
-            "eng": "A simple joint where two pieces are joined end to end or edge to edge.",
-            "ita": "Un giunto semplice dove due pezzi sono uniti testa a testa o bordo a bordo."
-        }
-    },
-    {
-        "name": {"eng": "half_lap_joint", "ita": "giunto a mezzo legno"},
-        "description": {
-            "eng": "A joint where half the thickness of each piece is removed for overlap.",
-            "ita": "Un giunto dove metà dello spessore di ciascun pezzo viene rimosso per sovrapporli."
-        }
-    },
-    {
-        "name": {"eng": "dovetail_joint", "ita": "giunto a coda di rondine"},
-        "description": {
-            "eng": "A strong interlocking joint with trapezoidal projections and recesses.",
-            "ita": "Un giunto forte a incastro con proiezioni e recessi trapezoidali."
-        }
-    },
-    {
-        "name": {"eng": "mortise_and_tenon_joint", "ita": "giunto a mortasa e tenone"},
-        "description": {
-            "eng": "A joint where a projection (tenon) fits into a cavity (mortise).",
-            "ita": "Un giunto dove una sporgenza (tenone) si inserisce in una cavità (mortasa)."
-        }
-    },
-    {
-        "name": {"eng": "dowel_joint", "ita": "giunto a spine"},
-        "description": {
-            "eng": "A joint strengthened by wooden or metal dowels.",
-            "ita": "Un giunto rinforzato da spine di legno o metallo."
-        }
-    }
-]
-
-# Example: Accessing names and descriptions
-for joint in junctions:
-    print(f"English Name: {joint['name']['eng']}")
-    print(f"Italian Name: {joint['name']['ita']}")
-    print(f"English Description: {joint['description']['eng']}")
-    print(f"Italian Description: {joint['description']['ita']}\n")
+import helper
+importlib.reload(helper)
+from helper import *  # Reimporta per aggiornare i simboli
 
 
 def draw_polygon(name, vertices, only_edges=False):
@@ -157,67 +119,40 @@ def rnd_poly_vertices(number_of_vertices, radius, on_xy_plane=False):
             vertices.append(vertex)
     
     return vertices
- 
-def check_mesh(obj):
-    # Verifica che l'oggetto sia di tipo 'MESH'
-    if obj and obj.type == 'MESH':
-        bpy.context.view_layer.objects.active = obj
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.mesh.normals_make_consistent(inside=False)
-        bpy.ops.object.mode_set(mode='OBJECT')
-        print(f"Checked mesh for '{obj.name}'.")
-    else:
-        print(f"Object '{obj}' is not a mesh or not found.")
 
-# Esempio di utilizzo
 
 
 #boolean_union_selected("unioned")
 def main():
-    
-    #boolean_union_selected("unioned")
+    bb.set_collection(delete_root=True)#cancella tutto
 
-    for obj in bpy.context.selected_objects:
-        check_mesh(obj)
-    #return
-
-    bb.set_collection(delete_root=True)
     
-    rnd_rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=False)
+    # Crea un cubo
+    bpy.ops.mesh.primitive_cube_add(size=2)
+    cube = bpy.context.active_object
+    cube["info"] = "TEST"  # Imposta la proprietà personalizzata
+
+    #varie liste di vertici:
+    #rnd_rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=False)
     #rpv=[(0.3999148699053098, -0.00825208026010272, 0), (0.29867582132566467, 0.2660690770372229, 0), (0.014141169299956707, 0.39974995601104196, 0), (-0.29997214364181013, 0.26460671389618445, 0), (-0.3992668030203351, 0.02420785008878145, 0), (-0.2848712346911126, -0.2807995364055309, 0), (0.008147981801640931, -0.39991700438035904, 0), (0.28189451733450505, -0.28378773951097047, 0)]
     rpv=[(0.9969599828435831, -0.0778646193251266, 0.0019866387923732753), (0.6025715717786836, 0.798037568386693, -0.0046657921493871825), (-0.24053233303458307, 0.9705893856582063, -0.007086560762670025), (-0.8651826267999024, 0.5014121734843402, -0.004735685664424331), (-0.9382626040849168, -0.34592068610809945, 0.0010403470236673938), (-0.18556277229080098, -0.9825887254163675, 0.006551796147353777), (0.6647647279942153, -0.747002151275522, 0.006149817169094832)]
     #print(rpv)
-
-    beams=bb.beams_polygon(
-                  beam_name="random",
-                  polyverts=rnd_rpv,
-                  TW=0.2,
-                  TT=0.03,
-                  method="butt joint ccw",
-                  TT_sink_fraction=0)   
-    set_collection("random poly",add_objects=beams)
     
-    beams=bb.beams_polygon(
-                  beam_name="basic",
-                  polyverts=rpv,
-                  TW=0.2,
-                  TT=0.03,
-                  method="butt joint ccw",
-                  TT_sink_fraction=0)   
-    set_collection("basic poly",add_objects=beams)
-    for obj in bpy.data.collections["basic poly"].objects:
-        obj.location = (0,0,2)
-           
-    vertices=bb.beams_polygon(
-                    beam_name="sunk",
+    #crea un beam polygon:
+    beam_poly=bb.beams_polygon(
+                    collection=bb.set_collection("its_collection"),
+                    beam_name="first",
                     polyverts=rpv,
                     TW=0.2,
-                    TT=0.03,
+                    TT=0.06,
                     method="butt joint ccw",
-                    TT_sink_fraction=0.01) 
-    set_collection("sunk poly", add_objects=vertices)
-    for obj in bpy.data.collections["sunk poly"].objects:
-        obj.location = (0,0,1)
+                    TT_sink_fraction=0)   
+    
+    #deseleziona tutto
+    
+    return
 
-main()
+bpy.ops.object.select_all(action='DESELECT')
+helper.register()#registra il gestore di eventi per mostrare le info degli oggetti
+    
 
