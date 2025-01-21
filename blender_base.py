@@ -5,7 +5,23 @@ import mathutils
 import bmesh
 from mathutils import Vector
 
-print("Blender utilities loaded - Version 2.0.0")
+"""
+NOTICE ABOUT THE LOCAL AXES SETTING IN THE FUNCTION create_parallelepiped():
+when creating the parallelepiped from vertices, the local axes are aligned with the global axes. 
+For constraints and such, it is necessary to rotate them parallel to the edges of the parallelepiped.
+This is done by creating a rotation matrix that aligns the object with the global axes, and then applying it to the object,
+then rotating the object back to its original position. WHY such a convoluted and probably computationally expensive solution?
+1st way:
+    using directly world_matrix or matrix_world or matrix_basis: it *always* rotates the object, not its axes. FAILED
+2nd way:
+    bpy.context.scene.tool_settings.use_transform_data_origin = True
+    #bpy.ops.transform.rotate(matrix_from_edges_to_globalxyz)
+    bpy.context.scene.tool_settings.use_transform_data_origin = False
+    #bpy.ops.transform.rotate(matrix_from_edges_to_globalxyz)
+    But seemingly there is a bug in blender that makes bpy.ops.transform.rotate not work when used with matrix (!!!).
+"""
+
+print("Blender utilities loaded - Version 2.0.1")
 
 def clear_console():
     # Questo comando funziona su Windows
@@ -53,8 +69,6 @@ def set_collection(name="", delete_root=False, first_delete_objects=True, first_
     return collection
 
 
-
-
 def set_visibility(name, visibility):
     #for bjects OR collections: 
     item = bpy.data.collections.get(name)
@@ -71,19 +85,19 @@ def set_visibility(name, visibility):
 
 
 def rename(new_name): #resets name avoiding the ".001" suffix
-    # Controlla se esiste già un oggetto con il nuovo nome
+    #Check if the new name is already used by an object or a collection
     if new_name in bpy.data.objects:
         existing_obj = bpy.data.objects[new_name]
         bpy.data.objects.remove(existing_obj, do_unlink=True)
     
-    # Controlla se esiste già una collezione con il nuovo nome
+    #Check if the new name is already used by a collection
     if new_name in bpy.data.collections:
         existing_collection = bpy.data.collections[new_name]
         bpy.data.collections.remove(existing_collection)
     
     return new_name
 
-def add_segment_as_curve(start, end, name="Segment"):
+def draw_segment(start, end, name="Segment",color=(1, 0, 0)):
     # Crea una nuova curva
     curve_data = bpy.data.curves.new(name=name, type='CURVE')
     curve_data.dimensions = '3D'
@@ -170,11 +184,11 @@ def draw_polygon(name="polygon", polyverts=[], color=(1, 0, 0)):
     obj.data.materials.append(mat)
 
     return obj
-def beams_polygon(collection,
-                  polyverts, 
+def beams_polygon(polyverts, 
                   TW, TT,TT_sink_fraction=0.01, 
                   method="butt joint ccw", 
-                  beam_name="beam"):
+                  beam_name="beam",
+                  add_to_collection=None):
     result = []
     z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2])#normal to the plane
 
@@ -220,28 +234,87 @@ def beams_polygon(collection,
         inner_high_1 = inner_low_1 + z * TW  
 
         # Crea la mesh e calcola il baricentro e il volume
-        obj= create_object(
+        obj= create_parallelepiped(
             [
             outer_low_0, outer_low_1, outer_high_1, outer_high_0,
             inner_low_0, inner_high_0, inner_high_1, inner_low_1
             ],
-            name=f"{beam_name}_{i}")
-        #add to collection
-        collection.objects.link(obj)
+            name=f"{beam_name}_{i}",
+            add_to_collection=add_to_collection)
+
         #set origin
-        bpy.context.view_layer.objects.active = obj
-        obj.select_set(True)
-
-        # Imposta l'origine
-        bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME', center='MEDIAN')
-
-        # Deseleziona l'oggetto
-        obj.select_set(False) 
-        result.append(obj)  # Aggiungi l'oggetto alla lista
-        
+        result.append(obj)  # Aggiungi l'oggetto alla lista        
     return result  # Restituisci la lista degli oggetti creati
 
+def constraints_chain(obj_list,loop=True,density=1):
+    active=False
+    for index, obj in enumerate(obj_list):
+        print(f"{obj.name}:")
+        #apply scale and rotation
+        #makes it physical
+        set_physics(obj,density,active)
+        if not active: #TEMP: FIRST PASSIVE TO GIVE A REFERENCE POINT
+            active=True
+        #add a generic constraint to the next one (last one as well if loop=True)
+        if index < len(obj_list) - 1 or loop:
+            # Ottieni il prossimo oggetto nella lista, o il primo se è un loop
+            next_obj = obj_list[(index + 1) % len(obj_list)] if loop else obj_list[index + 1]
 
+            # Aggiungi un constraint di tipo "Rigid Body Constraint"
+            bpy.ops.object.select_all(action='DESELECT')  # Deseleziona tutti gli oggetti
+            obj.select_set(True)  # Seleziona l'oggetto corrente
+            next_obj.select_set(True)  # Seleziona il prossimo oggetto
+            bpy.context.view_layer.objects.active = obj  # Imposta l'oggetto corrente come attivo
+
+            # Aggiungi il constraint
+            bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
+            spring_constraint = bpy.context.object.rigid_body_constraint
+
+            # Imposta le proprietà del constraint
+            spring_constraint.object1 = obj  # Primo oggetto
+            spring_constraint.object2 = next_obj  # Secondo oggetto
+
+            limit_ang_plane=0 #fixed
+            limit_lin_plane=0 #fixed
+
+            limit_ang_z=3.14/90 #1 degree
+            limit_lin_z=0.01
+            stiffness_ang_z=10
+            damping_ang_z=0.5
+            stiffness_lin_z=10
+            damping_lin_z=0.5
+           
+            spring_constraint.use_limit_ang_x=True
+            spring_constraint.limit_ang_x_lower = -limit_ang_plane #unità: rad
+            spring_constraint.limit_ang_x_upper = limit_ang_plane
+            spring_constraint.use_limit_ang_y=True
+            spring_constraint.limit_ang_y_lower = -limit_ang_plane #unità: rad
+            spring_constraint.limit_ang_y_upper = limit_ang_plane
+            spring_constraint.use_limit_ang_z = True
+            spring_constraint.limit_ang_z_lower = -limit_ang_z #unità: rad
+            spring_constraint.limit_ang_z_upper = limit_ang_z
+
+            
+            spring_constraint.use_limit_lin_x=True
+            spring_constraint.limit_lin_x_lower = -limit_lin_plane
+            spring_constraint.limit_lin_x_upper = limit_lin_plane
+            spring_constraint.use_limit_lin_y=True
+            spring_constraint.limit_lin_y_lower = -limit_lin_plane
+            spring_constraint.limit_lin_y_upper = limit_lin_plane
+            spring_constraint.use_limit_lin_z = True
+            spring_constraint.limit_lin_z_lower = -limit_lin_z
+            spring_constraint.limit_lin_z_upper = limit_lin_z
+
+
+            spring_constraint.use_spring_ang_z = True  # Abilita la molla sull'asse Z
+            spring_constraint.spring_stiffness_ang_z = stiffness_ang_z
+            spring_constraint.spring_damping_ang_z = damping_ang_z
+            
+            spring_constraint.use_spring_z = True  # Abilita la molla sull'asse Z
+            spring_constraint.spring_stiffness_z = stiffness_lin_z
+            spring_constraint.spring_damping_z = damping_lin_z
+
+    return  
 
 
 def set_physics(obj, density=1,active=True):
@@ -254,49 +327,45 @@ def set_physics(obj, density=1,active=True):
         obj.rigid_body.mass = density * obj["volume"]
     else:
         print("volume not found in object",obj.name)
-    obj.rigid_body.restitution = 0.1
+    obj.rigid_body.restitution = 0.1 #elasticity
     obj.rigid_body.linear_damping = 0.7
     obj.rigid_body.angular_damping = 0.7
     obj.rigid_body.friction = 0.8  # principalmente contro il pavimento
     #custom properties:
     obj["density"] = density
 
-def create_object(vertices, name=""):
-    # Crea un nuovo mesh e oggetto
+def create_parallelepiped(vertices, name="",add_to_collection=None):
+    collection=add_to_collection if add_to_collection else bpy.context.collection
+    #VERTICES RELATED:
     mesh = bpy.data.meshes.new(name)
     obj = bpy.data.objects.new(rename(name), mesh)
-
-    # Crea bmesh e aggiungi i vertici
+    # create object from mesh:
     bm = bmesh.new()
     bm_verts = [bm.verts.new(v) for v in vertices]
     bm.verts.ensure_lookup_table()
-
-    # Definisci le facce del prisma romboidale (assi arbitrari, solo per raggruppare a due a due)
-    bm.faces.new([bm_verts[0], bm_verts[1], bm_verts[2], bm_verts[3]])  # Faccia Y
-    bm.faces.new([bm_verts[4], bm_verts[5], bm_verts[6], bm_verts[7]])  # Faccia -Y
-    bm.faces.new([bm_verts[0], bm_verts[4], bm_verts[7], bm_verts[1]])  # Faccia Z
-    bm.faces.new([bm_verts[2], bm_verts[6], bm_verts[5], bm_verts[3]])  # Faccia -Z
-    bm.faces.new([bm_verts[0], bm_verts[3], bm_verts[5], bm_verts[4]])  # Faccia X
-    bm.faces.new([bm_verts[1], bm_verts[7], bm_verts[6], bm_verts[2]])  # Faccia -X
-
+    # faces (vertices order in ccw seen from the outside)
+    bm.faces.new([bm_verts[0], bm_verts[1], bm_verts[2], bm_verts[3]]) 
+    bm.faces.new([bm_verts[4], bm_verts[5], bm_verts[6], bm_verts[7]])  
+    bm.faces.new([bm_verts[0], bm_verts[4], bm_verts[7], bm_verts[1]]) 
+    bm.faces.new([bm_verts[2], bm_verts[6], bm_verts[5], bm_verts[3]]) 
+    bm.faces.new([bm_verts[0], bm_verts[3], bm_verts[5], bm_verts[4]]) 
+    bm.faces.new([bm_verts[1], bm_verts[7], bm_verts[6], bm_verts[2]])  
+    #mesh to object
     bm.to_mesh(mesh)
-
-    # Calcola il volume usando bmesh
+    #stores some data from vertices
     obj["calc_volume"] = bm.calc_volume(signed=True)
     obj["volume"] = (vertices[0]-vertices[4]).magnitude * (vertices[0]-vertices[1]).magnitude * (vertices[0]-vertices[3]).magnitude
-    # Libera il bmesh
+    #local axes: 
+    v1 = (bm_verts[1].co - bm_verts[0].co).normalized()  # Edge lungo X
+    v3 = (bm_verts[2].co - bm_verts[1].co).normalized()  # Edge lungo Z
+    v2 = (bm_verts[7].co - bm_verts[1].co).normalized()  # Edge lungo Y
+    v2 = v3.cross(v1).normalized()
     bm.free()
+    collection.objects.link(obj)#needed to select it, needed to apply rotation 
+    #draw v1 starting from obj.location:
+     
 
-    # Calcola il baricentro
-    centroid = Vector((0.0, 0.0, 0.0))
-    for v in vertices:
-        centroid += v
-    centroid /= len(vertices)
-
-    # Sposta i vertici in modo che il baricentro sia all'origine
-    for vert in obj.data.vertices:
-       pass# vert.co -= centroid
-
+    align_local_axes(obj,v1,v2,v3)#also set origin to the center of volume
     return obj 
 
 
@@ -319,37 +388,103 @@ def update_text_from_file(text_object_name, file_path):
     else:
         print(f"Oggetto di testo non trovato o non è un oggetto di tipo FONT: {text_object_name}")
 
-def on_click(name, function):
-    def selection_handler(scene):
-        # Ottieni l'oggetto attualmente selezionato
-        selected_objects = bpy.context.selected_objects
-        if selected_objects:
-            selected_object = selected_objects[0]
-            # Verifica se l'oggetto selezionato è quello di interesse
-            if selected_object.name == name:
-                # Esegui la funzione passata come argomento
-                function(selected_object)
+def align_local_axes(obj, v1, v2, v3):
+    # Verifica se l'oggetto non è presente nella collezione corrente
+    if obj.name not in bpy.context.collection.objects.keys():
+        temp_collection = True
+        bpy.context.collection.objects.link(obj)
+    else:
+        temp_collection = False
+    
+    # Prep
+    bpy.context.view_layer.objects.active = obj
+    #deselect all but this object
+    bpy.ops.object.select_all(action='DESELECT')
 
-    # Verifica se l'handler è già presente
-    if selection_handler not in bpy.app.handlers.depsgraph_update_post:
-        # Aggiungi l'handler per monitorare i cambiamenti nella selezione
-        bpy.app.handlers.depsgraph_update_post.append(selection_handler)
+    obj.select_set(True)#needed to apply rotation et al
+    bpy.ops.object.origin_set(type='ORIGIN_CENTER_OF_VOLUME', center='MEDIAN')#set origin to the center of volume
+    original_location = obj.location.copy()
 
-    # Ritorna la funzione handler per poterla rimuovere se necessario
-    return selection_handler
+    #DEBUG:
+    if False:
+        bpy.data.collections.get("temp").objects.link(draw_segment(obj.location,obj.location+v1))
+        bpy.data.collections.get("temp").objects.link(draw_segment(obj.location,obj.location+v2))
+        bpy.data.collections.get("temp").objects.link(draw_segment(obj.location,obj.location+v3))
+    obj.show_axis=True
+    #print item rotation:
+    
+    # 1)rotation to align v1,v2,v3 with global axes:
+    rotation_matrix_4x4 = mathutils.Matrix((v1, v2, v3)).transposed().inverted().to_4x4()
+    obj.matrix_world = rotation_matrix_4x4 @ obj.matrix_world
+    obj.location = original_location
+    #bpy.context.view_layer.update()
+    rot_0 = "*" if (obj.rotation_euler[0] + obj.rotation_euler[1] + obj.rotation_euler[2])!=0 else "O"
+    # 2)apply rotation 
+    
+    active_name=bpy.context.view_layer.objects.active.name
+    bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)    
+    #bpy.context.view_layer.update()#allows to see the rotation  
+    rot_1 = "*" if (obj.rotation_euler[0] + obj.rotation_euler[1] + obj.rotation_euler[2])!=0 else "O"
+    # 3)counter rotation
+    obj.matrix_world = rotation_matrix_4x4.inverted() @ obj.matrix_world
+    bpy.context.view_layer.update()
+    rot_2 = "*" if (obj.rotation_euler[0] + obj.rotation_euler[1] + obj.rotation_euler[2])!=0 else "O"        
+    print(f"rotations: {rot_0}{rot_1}{rot_2} ({obj.rotation_euler})")  # Debug: stampa la rotazione finale
+    obj.location = original_location
+    if temp_collection: #remove from temp collection
+        bpy.context.collection.objects.unlink(obj)
+    #update
+    bpy.context.view_layer.update()
+    return obj
 
-def remove_handler(handler):
-    try:
-        bpy.app.handlers.depsgraph_update_post.remove(handler)
-    except ValueError:
-        print("Handler non trovato nella lista.")
 
-# Esempio di utilizzo
-def my_custom_function(obj):
-    print(f"L'oggetto {obj.name} è stato cliccato!")
 
-# Associa la funzione all'oggetto con nome "NomeOggettoInteresse"
-#handler = on_click("NomeOggettoInteresse", my_custom_function)
+#CESTINO:
 
+import random
+def create_and_align_object(n_cases=1):
+    objects=[]
+    v1s=[]
+    v2s=[]
+    v3s=[]
+    for i in range(n_cases):
+        # Crea un nuovo cubo
+        bpy.ops.mesh.primitive_cube_add(size=0.4)
+        #sposta di quantità casuale entro 1 metro:
+        new_obj = bpy.context.active_object
+        new_obj.select_set(True)
+        new_obj.location = (random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-1, 1))
+        # Genera tre vettori casuali
+        v1 = mathutils.Vector((random.random(), random.random(), random.random())).normalized()
+        pre_v2 = mathutils.Vector((random.random(), random.random(), random.random())).normalized()
+        v2 = v1.cross(pre_v2).normalized()  # Assicurati che v3 sia ortogonale a v1 e v2
+        v3 = v1.cross(v2).normalized()
+        
+        new_obj.show_axis = True
+        rotation_matrix_3x3 = mathutils.Matrix((v1, v2, v3)).transposed()
+        rotation_matrix_4x4 = rotation_matrix_3x3.to_4x4()
+        original_location = new_obj.location.copy()
+        
+        new_obj.matrix_world = rotation_matrix_4x4 @ new_obj.matrix_world
+        bpy.context.view_layer.objects.active = new_obj
+        
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
+        
+        new_obj.location = original_location
+        if False:
+            bpy.data.collections.get("temp").objects.link(draw_segment(new_obj.location,new_obj.location+v1))
+            bpy.data.collections.get("temp").objects.link(draw_segment(new_obj.location,new_obj.location+v2))
+            bpy.data.collections.get("temp").objects.link(draw_segment(new_obj.location,new_obj.location+v3))
+    
+        objects.append(new_obj)
+        v1s.append(v1)
+        v2s.append(v2)
+        v3s.append(v3)
+
+        for j in range(n_cases):
+            print(f"***********{new_obj.name} ha rotazione {new_obj.rotation_euler}")
+            align_local_axes(new_obj,v1s[i],v2s[i],v3s[i])
+            print(f"{new_obj.name} ha rotazione {new_obj.rotation_euler}\n\n")
+    return objects  
 
 

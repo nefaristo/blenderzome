@@ -25,9 +25,7 @@ if script_path not in sys.path:
 import blender_base as bb
 importlib.reload(bb)
 from blender_base import *
-import helper
-importlib.reload(helper)
-from helper import *  # Reimporta per aggiornare i simboli
+
 
 
 def draw_polygon(name, vertices, only_edges=False):
@@ -121,38 +119,34 @@ def rnd_poly_vertices(number_of_vertices, radius, on_xy_plane=False):
     return vertices
 
 
-
-#boolean_union_selected("unioned")
-def main():
-    bb.set_collection(delete_root=True)#cancella tutto
-
+def test_polygon():
     
-    # Crea un cubo
-    bpy.ops.mesh.primitive_cube_add(size=2)
-    cube = bpy.context.active_object
-    cube["info"] = "TEST"  # Imposta la proprietà personalizzata
 
     #varie liste di vertici:
-    #rnd_rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=False)
+    rnd_rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=False)
     #rpv=[(0.3999148699053098, -0.00825208026010272, 0), (0.29867582132566467, 0.2660690770372229, 0), (0.014141169299956707, 0.39974995601104196, 0), (-0.29997214364181013, 0.26460671389618445, 0), (-0.3992668030203351, 0.02420785008878145, 0), (-0.2848712346911126, -0.2807995364055309, 0), (0.008147981801640931, -0.39991700438035904, 0), (0.28189451733450505, -0.28378773951097047, 0)]
-    rpv=[(0.9969599828435831, -0.0778646193251266, 0.0019866387923732753), (0.6025715717786836, 0.798037568386693, -0.0046657921493871825), (-0.24053233303458307, 0.9705893856582063, -0.007086560762670025), (-0.8651826267999024, 0.5014121734843402, -0.004735685664424331), (-0.9382626040849168, -0.34592068610809945, 0.0010403470236673938), (-0.18556277229080098, -0.9825887254163675, 0.006551796147353777), (0.6647647279942153, -0.747002151275522, 0.006149817169094832)]
+    rpv=[(0.6025715717786836, 0.798037568386693, -0.0046657921493871825), (-0.24053233303458307, 0.9705893856582063, -0.007086560762670025), (-0.8651826267999024, 0.5014121734843402, -0.004735685664424331), (-0.9382626040849168, -0.34592068610809945, 0.0010403470236673938), (-0.18556277229080098, -0.9825887254163675, 0.006551796147353777), (0.6647647279942153, -0.747002151275522, 0.006149817169094832),(0.996959928435831, -0.0778646193251266, 0.0019866387923732753)]
+    #altra lista con un lato verticale:
     #print(rpv)
     
     #crea un beam polygon:
     beam_poly=bb.beams_polygon(
-                    collection=bb.set_collection("its_collection"),
                     beam_name="first",
-                    polyverts=rpv,
+                    polyverts=rnd_rpv,
                     TW=0.2,
                     TT=0.06,
                     method="butt joint ccw",
-                    TT_sink_fraction=0)   
-    
+                    TT_sink_fraction=0,
+                    add_to_collection=bb.set_collection("its_collection")
+                    )   
     #deseleziona tutto
-    
-    return
+    bpy.ops.object.select_all(action='DESELECT')
+    #realignment:
+    bb.set_collection(delete_root=True)#cancella tutto
+    bb.set_collection("temp")
+    #realign_axes(obj,v1,v2,v3)
+    test_polygon()
+    #obj1=bb.create_and_align_object(5)
+    #bb.constraints_chain(bpy.data.collections.get("its_collection").objects)
 
-bpy.ops.object.select_all(action='DESELECT')
-helper.register()#registra il gestore di eventi per mostrare le info degli oggetti
-    
 
