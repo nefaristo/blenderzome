@@ -5,7 +5,14 @@ import mathutils
 import copy
 import random
 import time
+import importlib
+
+import blender_base
+importlib.reload(blender_base)
 from blender_base import *
+import helpers
+importlib.reload(helpers)
+from helpers import *
 
 print("Zome module loaded - Version 1.0.12")
 #*******************POLYZOME CLASS************************************************
@@ -46,7 +53,8 @@ class Zome:
                 "friction": 0.8,
                 "spring_stiffness": 10,
                 "spring_damping": 0.5,
-            }
+            },
+            zome_output=None
         ):
         
         #basic parameters:
@@ -58,7 +66,7 @@ class Zome:
         self.structure = structure
         self.show = show
         self.modifications = modifications 
-        
+        self.zome_output = zome_output
         #derived parameters:
         self.H = self.ZH / (N / (M + 1))
         self.h = self.ZH / (M-1)
@@ -75,9 +83,9 @@ class Zome:
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         
         # Build the structure
-        self.print(f"\n***********\nZome '{self.name}'\n")
-        self.print(f"Geometria: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}\n")
-        self.print(f"Struttura: {self.structure}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\n***********\n")
+        self.print(type="report",text=f"\n***********\nZome '{self.name}'")
+        self.print(type="report",text=f"Geometria: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}")
+        self.print(type="report",text=f"Struttura: {self.structure}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\n***********")
         
         self.set_vertices()  # theoretical vertices
         self.modify_vertices() #modification of the vertices
@@ -85,8 +93,8 @@ class Zome:
         self.create_collection()  # actual blender collection w/ subcollections
                 
     def set_vertices(self):
+        tot_vertices=0
         self.vertices = []
-        self.print("Vertici: ")
         for layer_index in range(self.M): 
             vertices_layer = []              
             match layer_index:
@@ -113,13 +121,14 @@ class Zome:
                         D_vec = mathutils.Vector(D)
                         vertices_layer.append((D.x, D.y, D.z))         
             self.vertices.append(vertices_layer)
-            self.print(f"{len(vertices_layer)} ")            
+            tot_vertices += len(vertices_layer)
+            self.print(f"aggiunti {len(vertices_layer)} vertici")            
         self.vertices.reverse()
-        self.print("✔️\n")
+        self.print(type="report",text=f"✔️ {tot_vertices} vertici")
 
     def modify_vertices(self):
-        self.print("Alterazioni: ")
         #top reduction:
+        tot_modifications=0  
         if self.modifications["top_reduction_levels"] > 0: 
             delta_z=0
             for layer_index in range(self.M -  self.modifications["top_reduction_levels"], self.M):
@@ -127,12 +136,13 @@ class Zome:
                 #loop through the vertices of the layer and reduce their z by delta_z
                 for vertex_index, vertex in enumerate(self.vertices[layer_index]):
                     self.vertices[layer_index][vertex_index] = (vertex[0], vertex[1], vertex[2] + delta_z )
-                self.print(f"livello {layer_index}: {delta_z} ")                    
-        self.print("✔️\n")        
+                    tot_modifications+=1
+                self.print(f"modifiche livello {layer_index}: {delta_z} ")                    
+        self.print(type="report",text=f"✔️ {tot_modifications} modifiche ai vertici")        
 
     def set_derived_geometry(self):
         self.faces = []
-        self.print("Facce: ")
+        tot_faces=0
         for layer_index in range(len(self.vertices)): 
             new_faces_layer = []    
             count=len(self.vertices[layer_index])
@@ -153,8 +163,9 @@ class Zome:
                         new_faces_layer.append((B, C, D))
             if len(new_faces_layer) > 0:
                 self.faces.append(new_faces_layer)
+                tot_faces += len(new_faces_layer)
                 self.print(f"{len(new_faces_layer)} ")
-        self.print("✔️\n")
+        self.print(type="report",text=f"✔️ {tot_faces} facce")
         #update barycenter
         self.barycenter = (0,0,0)
         total_vertices = 0
@@ -164,10 +175,9 @@ class Zome:
                 total_vertices += 1
         if total_vertices > 0:
             self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
-        
+        self.print(type="report",text=f"✔️ baricentro: {round(self.barycenter[2],2)}")
     
     def create_collection(self):
-        self.print("Collections...")
         
         #points radius:
         points_radius = self.ZH / 100 
@@ -221,8 +231,6 @@ class Zome:
         main_collection = bpy.data.collections.new(self.name)
         bpy.context.scene.collection.children.link(main_collection)
 
-        self.print("✔️\n")
-
         # BASE:
         base_thickness = self.structure["base_thickness"] 
         if base_thickness > 0:
@@ -235,15 +243,15 @@ class Zome:
             obj.name = rename(f"{self.name}_base")
             main_collection.objects.link(obj)
             bpy.context.collection.objects.unlink(obj)
-            self.print("✔️\n")
+            self.print(type="report",text="❌ base: lavori in corso)")
             #set physics
             #set_physics(obj, active=False)
 
         # VERTICES:
         if self.show["vertices"] == 1:
-            self.print("Punti...")
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             main_collection.children.link(vertices_collection)
+            tot_vertices=0
             for layer_index, layer in enumerate(self.vertices):
                 for vertex_index, v in enumerate(layer):
                     bpy.ops.mesh.primitive_uv_sphere_add(radius=points_radius, location=v)
@@ -255,25 +263,55 @@ class Zome:
                     # Link the object to the vertices collection
                     vertices_collection.objects.link(obj)
                     bpy.context.collection.objects.unlink(obj)
-            self.print("✔️\n")
+                tot_vertices+=len(layer)
+            self.print(f"✔️ {tot_vertices} vertici")
 
         # EDGES:
         if self.show["edges"] == 1:
-            self.print("Bordi...")
             edges_collection = bpy.data.collections.new(rename(self.name+"_edges"))
             main_collection.children.link(edges_collection)
-            for layer_index, layer in enumerate(self.faces):
-                for poly_index, poly in enumerate(layer):
-                    obj=draw_polygon( name=rename(f"{self.name}_edge_{layer_index}_{poly_index}"), polyverts=poly, color=(1,0,0))
-                    edges_collection.objects.link(obj)
-                    bpy.context.collection.objects.unlink(obj)
-            self.print("✔️\n")
+            tot_edges=0
+            for layer_index, layer in enumerate(self.vertices):
+                if layer_index==self.M-1:
+                    self.print(f"triangle: {layer_index}")
+                    for i in range(0,self.N-1):  
+                        edges_collection.objects.link (bb.draw_segment(
+                            start=self.vertices[layer_index][0],
+                            end=self.vertices[layer_index-1][i],
+                            name=f"{self.name}_edge_{layer_index}_{0}_{i}")
+                        )
+                    tot_edges+=len(layer)
+                elif layer_index>0 : #2 vertices below, same and +1
+                    self.print(f"rhombus: {layer_index}")
+                    for poly_index, poly in enumerate(layer):                
+                        obj=bb.draw_segment(
+                            start=self.vertices[layer_index][poly_index],
+                            end=self.vertices[layer_index-1][poly_index],
+                            name=f"{self.name}_edge_{layer_index}_{poly_index*2}")
+                        edges_collection.objects.link(obj)
+                        obj=bb.draw_segment(
+                            start=self.vertices[layer_index][poly_index],
+                            end=self.vertices[layer_index-1][(poly_index-1)%self.N-1],
+                            name=f"{self.name}_edge_{layer_index}_{poly_index*2+1}")                   
+                        edges_collection.objects.link(obj)
+                    tot_edges+=2*len(layer)
+                elif layer_index==32130: #triangle base: 1 vertex same layer, next one
+                    self.print(f"triangle base: {layer_index}")
+                    for poly_index, poly in enumerate(layer):
+                        poly = layer[poly_index]
+                        obj=bb.draw_segment(
+                            start=self.vertices[layer_index][poly_index],
+                            end=self.vertices[layer_index][(poly_index+1)%self.N],
+                            name=f"{self.name}_edge_{layer_index}_{poly_index}_0")
+                        edges_collection.objects.link(obj)
+                    tot_edges+=len(layer)
+            self.print(type="report",text=f"✔️ {tot_edges} bordi")
 
         # FACES:
         if self.show["faces"] == 1:
-            self.print("Facce interne...")
             faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
             main_collection.children.link(faces_collection)
+            tot_faces=0
             for layer_index, layer in enumerate(self.faces):
                 for poly_index, poly in enumerate(layer):
                     # Create a new mesh and object for the polygon
@@ -290,20 +328,18 @@ class Zome:
                     mat = bpy.data.materials.new(name=f"Material_{layer_index}_{poly_index}")
                     mat.diffuse_color = colors[(poly_index) % len(colors)]
                     poly_object.data.materials.append(mat)
-            self.print("✔️\n")
+                tot_faces += len(layer)
+            self.print(type="report",text=f"✔️ {tot_faces} facce")
 
         # BEAMS:
         if self.show["beams"] == 1:
-            self.print("Assi...")
             beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
             main_collection.children.link(beams_collection)
-            #for each face,create a polygon with its vertices and its name:
-            for layer_index, layer in enumerate(self.faces):
-                
-                
+            tot_beams=0
+            for layer_index, layer in enumerate(self.faces):                
                 for poly_index, poly in enumerate(layer):
                     objects = beams_polygon(
-                        collection=beams_collection,
+                        add_to_collection=beams_collection,
                         beam_name=f"{self.name}_beam_polygon_{layer_index}_{poly_index}",
                         polyverts=poly,
                         TW=self.structure["TW"],
@@ -313,8 +349,9 @@ class Zome:
                     )
                     set_collection(name=beams_collection.name, 
                                 add_objects=objects,
-                                first_delete_objects=False)                    
-            self.print("✔️\n")
+                                first_delete_objects=False) 
+                tot_beams+=len(layer)                   
+            self.print(type="report",text=f"✔️ {tot_beams} tavole")
 
             if False:
                 #PHYSICS:
@@ -322,9 +359,6 @@ class Zome:
                 for obj in beams_collection.objects:
                     set_physics(obj, density=self.structure["beam_density"],active=True)
                 self.print("✔️\n")
-
-            
-            self.connect_beams(objects)
             
 
 
@@ -332,32 +366,10 @@ class Zome:
         
         
     #UTILITY FUNCTIONS:
-    def print(self, message):
-        # Nome della collezione e dell'oggetto di testo
-        collection_name = f"{self.name}_messages"
-        text_object_name = f"{self.name}_text"
-
-        # Controlla se la collezione esiste, altrimenti la crea
-        if collection_name not in bpy.data.collections:
-            new_collection = bpy.data.collections.new(collection_name)
-            bpy.context.scene.collection.children.link(new_collection)
-        else:
-            new_collection = bpy.data.collections[collection_name]
-
-        # Controlla se l'oggetto di testo esiste, altrimenti lo crea
-        text_obj = bpy.data.objects.get(text_object_name)
-        if not text_obj:
-            # Usa la funzione add_text_object per creare un nuovo oggetto di testo
-            text_obj = add_text_object(message, location=(0, 0, 0))
-            text_obj.name = text_object_name
-            new_collection.objects.link(text_obj)
-            bpy.context.collection.objects.unlink(text_obj)
-        else:
-            # Aggiungi il nuovo messaggio al testo esistente
-            text_obj.data.body += "\n" + message
-        #scrive anche su canale normal
-        print(message,end="")
-
+    def print(self, text="",type="info"):
+        print(text)
+        if self.zome_output:
+            self.zome_output(type=type,text=text)
 
 def add_constraint(obj, to_obj):
     # takes for granted that both objects have physics active

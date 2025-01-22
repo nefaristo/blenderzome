@@ -15,8 +15,8 @@ class ZomePanel(bpy.types.Panel):
 
         # Sezione Geometria Base
         box = layout.box()
-        box.prop(scene, "expand_geometria", text="Dati base", icon="TRIA_DOWN" if scene.expand_geometria else "TRIA_RIGHT", emboss=False)
-        if scene.expand_geometria:
+        box.prop(scene, "expand_geometry", text="Dati base", icon="TRIA_DOWN" if scene.expand_geometry else "TRIA_RIGHT", emboss=False)
+        if scene.expand_geometry:
             row = box.row()
             row.label(text="Nome:")
             row.prop(scene, "name", text="")
@@ -42,40 +42,10 @@ class ZomePanel(bpy.types.Panel):
             row = box.row()
             row.label(text="Trasparenza:")
             row.prop(scene, "face_transparency", text="")
-        # Sezione Costruttivi
-        box = layout.box()
-        box.prop(scene, "expand_construction_method", text="Costruttivi", icon="TRIA_DOWN" if scene.expand_construction_method else "TRIA_RIGHT", emboss=False)
-        if scene.expand_construction_method:
-            
-  
-
-           
-            #row = box.row()
-            #row.label(text="Base (cm):")
-            #row.prop(scene, "base_thickness", text="")
-
-            # Travi: Larghezza e Spessore
-            row = box.row()
-            
-            row.prop(scene, "show_beams", text="")
-            row.label(text="Tavole:")
-
-            row = box.row()
-            row.label(text="Largh. (cm):")
-            row.prop(scene, "beam_width", text="")
-            row = box.row()
-            row.label(text="Spess. (cm):")
-            row.prop(scene, "beam_thickness", text="")
-
-            row = box.row()
-            row.label(text="Densità tavole (kg/m3):")
-            row.prop(scene, "beam_density", text="")
-
-
 
         # Sezione Modifiche
         box = layout.box()
-        box.prop(scene, "expand_modifications", text="Modifiche", icon="TRIA_DOWN" if scene.expand_modifications else "TRIA_RIGHT", emboss=False)
+        box.prop(scene, "expand_modifications", text="Modifiche geometria", icon="TRIA_DOWN" if scene.expand_modifications else "TRIA_RIGHT", emboss=False)
         if scene.expand_modifications:
             # Aggiungi un'etichetta per "Riduzione Top"
             box.label(text="Riduzione Top")
@@ -86,27 +56,63 @@ class ZomePanel(bpy.types.Panel):
 
             row = box.row()
             row.label(text="N° livelli:")
-            row.prop(scene, "top_reduction_levels", text="")
+            row.prop(scene, "top_reduction_levels", text="")  
+
+        # Sezione Costruttivi
+        box = layout.box()
+        box.prop(scene, "expand_construction_method", text="Costruttivi", icon="TRIA_DOWN" if scene.expand_construction_method else "TRIA_RIGHT", emboss=False)
+        if scene.expand_construction_method:
+            row = box.row()
+            row.prop(scene, "show_beams", text="")
+            row.label(text="Tavole:")
+            row = box.row()
+            row.label(text="Largh. (cm):")
+            row.prop(scene, "beam_width", text="")
+            row = box.row()
+            row.label(text="Spess. (cm):")
+            row.prop(scene, "beam_thickness", text="")
+
+        #sezione physics chiudibile:
+        box = layout.box()
+        box.prop(scene, "expand_physics", text="Fisica e vincoli", icon="TRIA_DOWN" if scene.expand_physics else "TRIA_RIGHT", emboss=False)
+        if scene.expand_physics:
+            row = box.row()
+            row.label(text="Densità tavole (kg/m3):")
+            row.prop(scene, "beam_density", text="")
 
         # Pulsante Crea Zome nel pannello principale
-        layout.operator("object.call_zome", text="Crea Zome")
+        layout.operator("object.call_zome", text="Crea zome")
 
-class VIEW3D_PT_BooleanUnionPanel(bpy.types.Panel):
-    bl_label = "Boolean Union"
-    bl_idname = "VIEW3D_PT_boolean_union"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Tool'
+        # Sezione Info
+        box = layout.box()
+        box.prop(scene, "expand_info", text="Info", icon="TRIA_DOWN" if scene.expand_info else "TRIA_RIGHT", emboss=False)
+        if scene.expand_info:
+            for i, line in enumerate(scene.info_text.split("\n")):
+                row = box.row()
+                row.scale_y = 0.5  # Riduce l'altezza della riga
+                row.label(text=line)
+        
+        #Sezione Report
+        box = layout.box()
+        box.prop(scene, "expand_report", text="Report", icon="TRIA_DOWN" if scene.expand_report else "TRIA_RIGHT", emboss=False)
+        if scene.expand_report:
+            for i, line in enumerate(scene.report_text.split("\n")):
+                row = box.row()
+                row.scale_y = 0.5  # Riduce l'altezza della riga
+                row.label(text=line)
 
-    def draw(self, context):
-        layout = self.layout
-        layout.operator("object.boolean_union")
+        
 
 def register():
     result=True
     try:
         bpy.utils.register_class(ZomePanel)
-        bpy.utils.register_class(VIEW3D_PT_BooleanUnionPanel)
+        bpy.types.Scene.expand_geometry = bpy.props.BoolProperty(default=False)
+        bpy.types.Scene.expand_construction_method = bpy.props.BoolProperty(default=False)
+        bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=False)
+        bpy.types.Scene.expand_physics = bpy.props.BoolProperty(default=False)
+        bpy.types.Scene.expand_report = bpy.props.BoolProperty(default=False)
+        bpy.types.Scene.expand_info = bpy.props.BoolProperty(default=False)
         bpy.types.Scene.N = bpy.props.IntProperty(
             default=8,
             description="Numero di lati del poligono di base"
@@ -156,9 +162,7 @@ def register():
             default=True,
             description="Mostra i travi"
         )
-        bpy.types.Scene.expand_geometria = bpy.props.BoolProperty(default=True)
-        bpy.types.Scene.expand_construction_method = bpy.props.BoolProperty(default=True)
-        bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=True)
+
         bpy.types.Scene.base_thickness = bpy.props.FloatProperty(
             default=0.0,
             description="Spessore della base in centimetri"
@@ -197,6 +201,18 @@ def register():
             min=0.0,
             max=1.0
         )
+        bpy.types.Scene.info_text = bpy.props.StringProperty(
+            name="Info",
+            description="Testo del info",
+            default=""
+        )
+        
+        bpy.types.Scene.report_text = bpy.props.StringProperty(
+            name="Report",
+            description="Testo del report",
+            default=""
+        )
+
     except RuntimeError as e:
         print(f"Errore durante la registrazione dei pannelli: {e}")
         result=False
@@ -206,7 +222,6 @@ def unregister():
     result=True
     try:
         bpy.utils.unregister_class(ZomePanel)
-        bpy.utils.unregister_class(VIEW3D_PT_BooleanUnionPanel)
         del bpy.types.Scene.N
         del bpy.types.Scene.M
         del bpy.types.Scene.theta
@@ -218,11 +233,16 @@ def unregister():
         del bpy.types.Scene.show_base
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.show_beams
-        del bpy.types.Scene.expand_geometria
+        del bpy.types.Scene.expand_geometry
         del bpy.types.Scene.expand_construction_method
         del bpy.types.Scene.beam_width
         del bpy.types.Scene.beam_thickness
         del bpy.types.Scene.base_thickness
+        del bpy.types.Scene.info_text
+        del bpy.types.Scene.expand_info
+        del bpy.types.Scene.expand_physics
+        del bpy.types.Scene.report_text
+        del bpy.types.Scene.expand_report
     except RuntimeError as e:
         print(f"Errore durante la deregistrazione dei pannelli: {e}")
         result=False

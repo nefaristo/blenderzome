@@ -1,71 +1,62 @@
+#IMPORT:
 import os
 import sys
 import importlib
 import shutil
 import bpy
-
-# Esegui la pulizia della cache
-
-# Percorso dello script
 script_path = bpy.path.abspath("//scripts")
 if not os.path.exists(script_path):
     raise Exception(f"Directory degli script non trovata in: {script_path}")
 if script_path not in sys.path:
     sys.path.append(script_path)
 
-# Importa il modulo blender_base e ricaricalo 
+#reloadings
 import blender_base
 importlib.reload(blender_base)
 from blender_base import *
-
-clear_console()
+clear_console()#other import could write to console
 #importa zome
 import zome
 importlib.reload(zome)
 from zome import *
-# Importa operatori e pannelli
 import zome_operators
 importlib.reload(zome_operators)
 from zome_operators import *
-from zome_operators import register as register_operators, unregister as unregister_operators
 import zome_panels
 importlib.reload(zome_panels)
 from zome_panels import *
-from zome_panels import register as register_panels, unregister as unregister_panels
+import helpers
+importlib.reload(helpers)
+from helpers import *
 
-# Usa le funzioni importate
-#set_collection("")
 print("Script importati (percorso:", script_path, ")")
-print("Impostazione pannello")
 
-# Registra gli operatori e i pannelli
-def register():
+#FUNCTIONS:
+
+def all_register():
     zome_operators.register()
     zome_panels.register()
+    helpers.register()
 
-def unregister():
+def all_unregister():
     zome_operators.unregister()
     zome_panels.unregister()
+    helpers.unregister()
+
+#REGISTRATIONS:
 
 
 
-# Esegui la deregistrazione e poi la registrazione se il file è eseguito come script principale
+# Does the deregistration and then the registration if the file is executed as the main script
 if __name__ == "__main__":
-    print("Script eseguito come principale")
-    #unregister_operators() 
-    #register_operators()
+    print("Registrazioni")
+    all_unregister() 
+    all_register()
     
-    #unregister_panels()
-    #register_panels()
-    def my_custom_function(obj):
-        #delete
-        bpy.data.objects.remove(obj)
-    register()
-    #registra il click su un oggetto di nome "NomeOggettoInteresse"e esegue la funzione my_custom_function che stampa un messaggio
-    handler = on_click("Philippe mod_text", my_custom_function)
-
-
+    
     # Deseleziona tutti gli oggetti
     bpy.ops.object.select_all(action='DESELECT')
+    #show_message_box(f"Pannello caricato; premere 'N' dalla vista 3D per visualizzare/nascondere i pannelli", "Blenderzome",'INFO')
+    
 
 

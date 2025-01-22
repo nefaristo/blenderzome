@@ -4,7 +4,14 @@ import blender_base as bb
 import random
 
 print("\n***\n")
-print("helper.py loaded - Version 1.0.0")
+print("helpers.py loaded - Version 1.0.0")
+
+def show_message_box(message="", title="Messaggio", icon='INFO'):
+    def draw(self, context):
+        self.layout.label(text=message)
+
+    bpy.context.window_manager.popup_menu(draw, title=title, icon=icon)
+
 
 def unregister():
     result=""
@@ -63,7 +70,7 @@ def label(obj, over_by=0.1, TTL=4):
     #creates a collection for labels if not exists
     if "labels" not in bpy.data.collections:
         labels_collection = bpy.data.collections.new("labels")
-        bpy.context.scene.collection.children.append(labels_collection)
+        bpy.context.scene.collection.children.link(labels_collection)
     else:
         labels_collection = bpy.data.collections["labels"]
 
