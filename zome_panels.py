@@ -35,13 +35,13 @@ class ZomePanel(bpy.types.Panel):
 
             row = box.row()
             row.prop(scene, "show_vertices", text="Vertici")
-            row.prop(scene, "show_edges", text="Bordi")
             row.prop(scene, "show_barycenter", text="Baricentro")
             row.prop(scene, "show_faces", text="Facce")
+            row.prop(scene, "fill_faces", text="Piene")
 
             row = box.row()
-            row.label(text="Trasparenza:")
-            row.prop(scene, "face_transparency", text="")
+            row.label(text="Opacità:")
+            row.prop(scene, "geometry_alpha", text="")
 
         # Sezione Modifiche
         box = layout.box()
@@ -135,21 +135,16 @@ def register():
         )
         bpy.types.Scene.show_vertices = bpy.props.BoolProperty(
             default=False,
-            description="Mostra i vertici"
-        )
-        bpy.types.Scene.show_edges = bpy.props.BoolProperty(
-            default=False,
-            description="Mostra i bordi"
-        )
-        bpy.types.Scene.join_edges = bpy.props.BoolProperty(
-            default=True,
-            description="Unifica i bordi"
+            description="Mostra i vertici (richiede qualche secondo)"
         )
         bpy.types.Scene.show_faces = bpy.props.BoolProperty(
             default=False,
             description="Mostra le facce"
         )
-
+        bpy.types.Scene.fill_faces = bpy.props.BoolProperty(
+            default=False,
+            description="Riempie le facce"
+        )
         bpy.types.Scene.show_base = bpy.props.BoolProperty(
             default=False,
             description="Mostra la base"
@@ -194,7 +189,7 @@ def register():
             max=5,
             description="Livelli:"
         )
-        bpy.types.Scene.face_transparency = bpy.props.FloatProperty(
+        bpy.types.Scene.geometry_alpha = bpy.props.FloatProperty(
             name="Trasparenza",
             description="Controlla la trasparenza delle facce",
             default=1.0,
@@ -228,8 +223,8 @@ def unregister():
         del bpy.types.Scene.ZH
         del bpy.types.Scene.name
         del bpy.types.Scene.show_vertices
-        del bpy.types.Scene.show_edges
         del bpy.types.Scene.show_faces
+        del bpy.types.Scene.fill_faces        
         del bpy.types.Scene.show_base
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.show_beams

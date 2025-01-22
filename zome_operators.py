@@ -38,9 +38,9 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             },
             show={
                 "vertices": 1 if context.scene.show_vertices else 0,
-                "edges": 1 if context.scene.show_edges else 0,
                 "faces": 1 if context.scene.show_faces else 0,
-                "face_transparency": context.scene.face_transparency,
+                "fill_faces": 1 if context.scene.fill_faces else 0,
+                "geometry_alpha": context.scene.geometry_alpha,
                 "barycenter": 1 if context.scene.show_barycenter else 0,
                 "beams": 1 if context.scene.show_beams else 0
             },
