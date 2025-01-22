@@ -135,8 +135,7 @@ class Zome:
                         D_vec = mathutils.Vector(D)
                         vertices_layer.append((D.x, D.y, D.z))         
             self.vertices.append(vertices_layer)
-            tot_vertices += len(vertices_layer)
-            self.print(f"aggiunti {len(vertices_layer)} vertici")            
+            tot_vertices += len(vertices_layer)           
         self.vertices.reverse()
         self.print(type="report",text=f"✔️ {tot_vertices} vertici")
 
@@ -282,7 +281,7 @@ class Zome:
                             add_objects=objects,
                             first_delete_objects=False) 
             tot_beams+=len(layer)                   
-            self.print(type="report",text=f"✔️ {tot_beams} tavole")
+        self.print(type="report",text=f"✔️ {tot_beams} tavole")
 
     def draw_base(self):        
         base_thickness = self.structure["base_thickness"] 
@@ -297,9 +296,6 @@ class Zome:
             self.main_collection.objects.link(obj)
             bpy.context.collection.objects.unlink(obj)
             self.print(type="report",text="❌ base: lavori in corso)")
-
-      
-
 
                     
     #UTILITY FUNCTIONS:
