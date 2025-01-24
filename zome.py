@@ -66,7 +66,7 @@ class Zome:
         #basic parameters:
         self.name = name if name != "" else "zome " + str(random.randint(1000, 9999))
         self.N = N if N > 0 else 8
-        self.M = M if M > 0 and M < N else N-1
+        self.M = M if M > 0 and M < N else N-1 
         self.theta = theta if theta > 0 and theta < 180 else 45
         self.ZH = ZH if ZH > 0 else 1   
         # REMINDER: the operator ** joins the two dictionaries so that the values of the second dictionary overwrite the first only if present
@@ -231,8 +231,7 @@ class Zome:
                         )  
                         #copy the vertices of the top zome to the main zome:
                         for layer in top_zome.vertices:
-                            self.vertices.extend(layer)
-                        
+                            self.vertices.append(layer)                       
                 case _:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
         #position modifications:
@@ -247,39 +246,32 @@ class Zome:
     def set_derived_geometry(self):
         self.faces = []
         tot_faces=0
-        min_distance=0.05 #over this distance, two points are considered different (see below)
-        for layer_index,layer in enumerate(self.vertices): 
-            new_faces_layer = []            
-            #LAYERS COUNT (-1=>no adjacent = end of layers) 
+        half_h=self.h/2
+        for layer_index in range(len(self.vertices)): 
+            new_faces_layer = []    
             this_count=len(self.vertices[layer_index])
             prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
             next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])
-            #LAYER MODIFICATIONS TYPE:
-            if len(self.modifications["layer_types"])>layer_index:
-                mod_type=self.modifications["layer_types"][layer_index]
-            else:
-                mod_type=None
-            #LOOP OVER THE LAYER:
-            for radial_index in range(this_count):
-                A=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%prev_count]
-                B=None if this_count==1 else self.vertices[layer_index][radial_index%this_count]
-                C=None if this_count==1 else self.vertices[layer_index][(radial_index+1) % this_count]
-                D=None if next_count==-1 else self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
-                if B is not None:#not an apex|antiapex
+            if this_count>1:
+                for radial_index in range(this_count):                    
+                    A=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
+                    B=self.vertices[layer_index][radial_index%this_count]
+                    C=self.vertices[layer_index][(radial_index+1) % this_count]
+                    D=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%prev_count]
+                    if A is not None and abs(A[2]-B[2])<half_h:
+                        break
+                    if D is not None and abs(D[2]-B[2])<half_h:
+                        break
                     if A is not None and D is not None:#rhombus
-                        new_faces_layer.append((A, C, D, B))
-                        self.print(type="report",text=f"layer {layer_index} :rhombus")
+                        new_faces_layer.append((D, C, A, B))
                     elif A is not None: #triangle
-                        new_faces_layer.append((A, C, B))
-                        self.print(type="report",text=f"layer {layer_index} :triangle")
+                        new_faces_layer.append((B, C, A))
                     elif D is not None: #upside down triangle
-                        new_faces_layer.append((B, C, D))
-                        self.print(type="report",text=f"layer {layer_index} :upside down triangle")
-            #ADDING FACES:
+                        new_faces_layer.append((D, B, C))
             if len(new_faces_layer) > 0:
                 self.faces.append(new_faces_layer)
                 tot_faces += len(new_faces_layer)
-        #self.print(type="report",text=f"✔️ {tot_faces} facce")
+        self.print(type="report",text=f"✔️ {tot_faces} facce")
         #update barycenter
         self.barycenter = (0,0,0)
         total_vertices = 0
@@ -486,7 +478,7 @@ def find_theta(N,M,ZH,target_value,type="base_area"):
             theta_step/=2
         last_sign=sign
         theta-=float(theta_step*sign)
-        print(theta)     
+        #print(theta)     
         #print(f"tentativo {counter}: theta={theta}")
         #print(f"WARNING: {type} = {round(actual_value*100,2)} , target {type} = {round(target_value*100,2)} , difference>target error ({round(delta*100,2)}>{round(max_error*100,2)}) ")
     return theta

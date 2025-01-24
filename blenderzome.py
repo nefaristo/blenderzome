@@ -36,12 +36,13 @@ print("Script importati (percorso:", script_path, ")")
 def all_register():
     zome_operators.register()
     zome_panels.register()
-    helpers.register()
+    #helpers.register()
 
 def all_unregister():
-    zome_operators.unregister()
-    zome_panels.unregister()
-    helpers.unregister()
+    pass
+    #zome_operators.unregister()
+    #zome_panels.unregister()
+    #helpers.unregister()
 
 #REGISTRATIONS:
 
@@ -49,7 +50,7 @@ def all_unregister():
 def main():
     # Does the deregistration and then the registration if the file is executed as the main script
     if __name__ == "__main__":
-        print("Registrazioni")
+        print("Registrazioni:")
         all_unregister() 
         all_register()
         
@@ -62,6 +63,8 @@ def main():
 
     vertices = [[-0.5,-0.5,0],[0.5,-0.5,0],[0,0.5,0]]
     draw_polygon(name="dummy_polygon2423qwe",polyverts=vertices,fill=True,add_to_collection=dummy_collection)
-
+    if False:#list all operators
+        for op in dir(bpy.ops.object):
+            print(">operator:",op)
 main()
 

@@ -18,30 +18,37 @@ class ZomePanel(bpy.types.Panel):
         box.prop(scene, "expand_geometry", text="Dati base", icon="TRIA_DOWN" if scene.expand_geometry else "TRIA_RIGHT", emboss=False)
         if scene.expand_geometry:
             row = box.row()
-            row.label(text="Nome:")
+            row.label(text="Nome")
             row.prop(scene, "name", text="")
 
+            box.row().label(text="______" * 20)
+
             row = box.row()
-            row.label(text="N:")
+            row.label(text="N")
             row.prop(scene, "N", text="")
-            row.label(text="M:")
+            row.label(text="M")
             row.prop(scene, "M", text="")
 
-            row=box.row()
-            row.label(text="Ө °")
-            row.prop(scene, "theta", text="")
-            row.label(text="H (m):")
+            row = box.row()
+            row.label(text="H")
             row.prop(scene, "ZH", text="")
+            row.label(text="Ө°")
+            row.prop(scene, "theta", text="")
 
             row = box.row()
-            row.prop(scene, "show_vertices", text="Vertici")
-            row.prop(scene, "show_barycenter", text="Baricentro")
-            row.prop(scene, "show_faces", text="Facce")
-            if scene.show_faces:
-                row.prop(scene, "fill_faces", text="Piene")
+            row.label(text="Area*:")
+            row.prop(scene, "base_area", text="")
+            
+            box.row().label(text="______" * 20)
 
             row = box.row()
-            row.label(text="Opacità:")
+            row.label(text="visualizza:")
+            row.prop(scene, "show_faces", text="facce") 
+            row.prop(scene, "borders", text="bordi")
+            row.prop(scene, "show_vertices", text="vertici")
+
+            row = box.row()
+            row.label(text="opacità")
             row.prop(scene, "geometry_alpha", text="")
 
         # Sezione Modifiche
@@ -55,9 +62,10 @@ class ZomePanel(bpy.types.Panel):
             row.label(text="Modifica punta:")
             row.prop(scene, "top_modifications_type", text="")    
             
-            row = box.row()
-            row.label(text="N° livelli:")
-            row.prop(scene, "top_modifications_levels", text="")  
+            if scene.top_modifications_type == "cut" or scene.top_modifications_type == "scale":
+                row = box.row()
+                row.label(text="N° livelli:")
+                row.prop(scene, "top_modifications_levels", text="")  
 
             if scene.top_modifications_type == "scale":
                 row = box.row()
@@ -113,27 +121,7 @@ def register():
     result=True
     try:
         bpy.utils.register_class(ZomePanel)
-        bpy.types.Scene.expand_geometry = bpy.props.BoolProperty(default=False)
-        bpy.types.Scene.name = bpy.props.StringProperty(
-            default="[nome]",
-            description="Nome dello zome. Gli elementi dello zome andranno in una collection con questo nome"
-        )
-        bpy.types.Scene.N = bpy.props.IntProperty(
-            default=8,
-            description="Numero di lati del poligono di base"
-        )
-        bpy.types.Scene.M = bpy.props.IntProperty(
-            default=5,
-            description="Numero di livelli, inclusi triangoli"
-        )
-        bpy.types.Scene.theta = bpy.props.FloatProperty(
-            default=60,
-            description="Angolo tra i rombi e la verticale"
-        )
-        bpy.types.Scene.ZH = bpy.props.FloatProperty(
-            default=3,
-            description="Altezza in metri"
-        )
+        
         bpy.types.Scene.show_vertices = bpy.props.BoolProperty(
             default=False,
             description="Mostra i vertici (richiede qualche secondo)"
@@ -146,7 +134,7 @@ def register():
             default=False,
             description="Mostra le facce"
         )
-        bpy.types.Scene.fill_faces = bpy.props.BoolProperty(
+        bpy.types.Scene.borders = bpy.props.BoolProperty(
             default=False,
             description="Riempie le facce"
         )
@@ -226,10 +214,11 @@ def unregister():
         del bpy.types.Scene.M
         del bpy.types.Scene.theta
         del bpy.types.Scene.ZH
+        del bpy.types.Scene.base_area
         del bpy.types.Scene.name
         del bpy.types.Scene.show_vertices
         del bpy.types.Scene.show_faces
-        del bpy.types.Scene.fill_faces        
+        del bpy.types.Scene.borders        
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.show_beams
         del bpy.types.Scene.expand_geometry
