@@ -70,7 +70,6 @@ def set_collection(name="", delete_root=False, first_delete_objects=True, first_
 
     return collection
 
-
 def set_visibility(name, visibility):
     #for bjects OR collections: 
     item = bpy.data.collections.get(name)
@@ -84,7 +83,6 @@ def set_visibility(name, visibility):
         bpy.context.view_layer.update()
     else:
         print(f"No item {name} found")    
-
 
 def rename(new_name): #resets name avoiding the ".001" suffix
     #Check if the new name is already used by an object or a collection
@@ -151,6 +149,22 @@ def draw_polygon(name="polygon", polyverts=[], material=None, fill=False, add_to
 
     return obj
 
+def area_polygon(verts=[]):
+    n = len(verts)
+    area = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area += verts[i][0] * verts[j][1]
+        area -= verts[j][0] * verts[i][1]
+    area = abs(area) / 2.0
+    return area
+
+def check_complanarity(verts=[]):
+    first_normal=mathutils.geometry.normal(verts[0],verts[1],verts[2])
+    for i in range(3,len(verts)):
+        if first_normal.angle(mathutils.geometry.normal(verts[(i-1)%len(verts)],verts[i],verts[(i+1)%len(verts)]))>0.01:
+            return False
+    return True
 
 # OBJECTS:
 
@@ -195,7 +209,6 @@ def boolean_union_selected(new_object_name):
  
     bpy.context.view_layer.update() 
     print(f"Boolean union created: {active_obj.name}")
-
 
 def beams_polygon(polyverts, 
                   TW, TT,TT_sink_fraction=0.01, 
@@ -256,8 +269,10 @@ def beams_polygon(polyverts,
             add_to_collection=add_to_collection)
 
         #set origin
+        obj["beams_polygon_index"]=i
         result.append(obj)  # Aggiungi l'oggetto alla lista        
     return result  # Restituisci la lista degli oggetti creati
+
 def create_parallelepiped(vertices, name="",add_to_collection=None):
     collection=add_to_collection if add_to_collection else bpy.context.collection
     #VERTICES RELATED:
@@ -291,7 +306,6 @@ def create_parallelepiped(vertices, name="",add_to_collection=None):
 
     align_local_axes(obj,v1,v2,v3)#also set origin to the center of volume
     return obj 
-
 
 def align_local_axes(obj, v1, v2, v3):
     # Collection is needed. If the object is not in the current collection, add it to a temp collection (the current one)

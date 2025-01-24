@@ -46,23 +46,22 @@ def all_unregister():
 #REGISTRATIONS:
 
 
-
-# Does the deregistration and then the registration if the file is executed as the main script
-if __name__ == "__main__":
-    print("Registrazioni")
-    all_unregister() 
-    all_register()
-    
-    
-    # Deseleziona tutti gli oggetti
+def main():
+    # Does the deregistration and then the registration if the file is executed as the main script
+    if __name__ == "__main__":
+        print("Registrazioni")
+        all_unregister() 
+        all_register()
+        
     bpy.ops.object.select_all(action='DESELECT')
-    #show_message_box(f"Pannello caricato; premere 'N' dalla vista 3D per visualizzare/nascondere i pannelli", "Blenderzome",'INFO')
-    
-# fa una lista di tre vertici sul piano xy e poi chiama draw_polygon con fill=True e lo mette i n "dummy"
-dummy_collection = bpy.data.collections.get("dummy")
-if not dummy_collection:
-    dummy_collection = bpy.data.collections.new("dummy")
-    bpy.context.scene.collection.children.link(dummy_collection)
-vertices = [[0,0,0],[1,0,0],[0,1,0]]
-draw_polygon(name="dummy_polygon2423qwe",polyverts=vertices,fill=True,add_to_collection=dummy_collection)
+    #bb.set_collection(delete_root=True) #DELETE ALL COLLECTIONS
+    dummy_collection = bpy.data.collections.get("dummy")
+    if dummy_collection is None:
+        dummy_collection = bpy.data.collections.new("dummy")    
+        bpy.context.scene.collection.children.link(dummy_collection)
+
+    vertices = [[-0.5,-0.5,0],[0.5,-0.5,0],[0,0.5,0]]
+    draw_polygon(name="dummy_polygon2423qwe",polyverts=vertices,fill=True,add_to_collection=dummy_collection)
+
+main()
 
