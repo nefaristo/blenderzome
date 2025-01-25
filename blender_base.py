@@ -214,7 +214,9 @@ def beams_polygon(polyverts,
                   TW, TT,TT_sink_fraction=0.01, 
                   method="butt joint ccw", 
                   beam_name="beam",
-                  add_to_collection=None):
+                  add_to_collection=None,
+                  physics_type="",
+                  physics_density=1):
     result = []
     z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2])#normal to the plane
 
@@ -270,6 +272,8 @@ def beams_polygon(polyverts,
 
         #set origin
         obj["beams_polygon_index"]=i
+        if physics_type!="":
+            set_physics(obj,type=physics_type, density=physics_density)
         result.append(obj)  # Aggiungi l'oggetto alla lista        
     return result  # Restituisci la lista degli oggetti creati
 
@@ -339,19 +343,19 @@ def align_local_axes(obj, v1, v2, v3):
     return obj
 
 # PHYSICS:
-def set_physics(obj, density=1,active=True):
+def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.7,active=True):
     # Assegna il corpo rigido attivo
     bpy.context.view_layer.objects.active = obj
     bpy.ops.rigidbody.object_add()
-    obj.rigid_body.type = 'ACTIVE' if active else 'PASSIVE'
+    obj.rigid_body.type = type
     if "volume" in obj:
         obj.rigid_body.mass = density * obj["volume"]
     else:
         print("volume not found in object",obj.name)
     obj.rigid_body.restitution = 0.1 #elasticity
-    obj.rigid_body.linear_damping = 0.7
-    obj.rigid_body.angular_damping = 0.7
-    obj.rigid_body.friction = 0.8  # principalmente contro il pavimento
+    obj.rigid_body.linear_damping = damping
+    obj.rigid_body.angular_damping = damping
+    obj.rigid_body.friction = friction  # principalmente contro il pavimento
     #custom properties:
     obj["density"] = density
 

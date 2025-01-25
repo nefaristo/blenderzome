@@ -13,36 +13,36 @@ class ZomePanel(bpy.types.Panel):
         layout = self.layout
         scene = context.scene
 
+        box = layout.box()
+        if scene.is_updating:
+            box.label(text="...")
+
+
+        row = layout.row()
+        row.operator("object.call_zome", text="Crea zome con nome:")        
+        row.prop(scene, "name", text="")
         # Sezione Geometria Base
         box = layout.box()
         box.prop(scene, "expand_geometry", text="Dati base", icon="TRIA_DOWN" if scene.expand_geometry else "TRIA_RIGHT", emboss=False)
         if scene.expand_geometry:
             row = box.row()
-            row.label(text="Nome")
-            row.prop(scene, "name", text="")
-
-            box.row().label(text="______" * 20)
-
-            row = box.row()
             row.label(text="N")
             row.prop(scene, "N", text="")
-            row.label(text="M")
-            row.prop(scene, "M", text="")
+            row.label(text="S")
+            row.prop(scene, "S", text="")
 
             row = box.row()
-            row.label(text="H")
+            row.label(text="H (m)")
             row.prop(scene, "ZH", text="")
             row.label(text="Ө°")
             row.prop(scene, "theta", text="")
 
             row = box.row()
-            row.label(text="Area*:")
+            row.label(text="Area alla base m2:")
             row.prop(scene, "base_area", text="")
             
-            box.row().label(text="______" * 20)
-
             row = box.row()
-            row.label(text="visualizza:")
+            row.label(text="Mostra:")
             row.prop(scene, "show_faces", text="facce") 
             row.prop(scene, "borders", text="bordi")
             row.prop(scene, "show_vertices", text="vertici")
@@ -62,15 +62,15 @@ class ZomePanel(bpy.types.Panel):
             row.label(text="Modifica punta:")
             row.prop(scene, "top_modifications_type", text="")    
             
-            if scene.top_modifications_type == "cut" or scene.top_modifications_type == "scale":
+            if scene.top_modifications_type == "cut" or scene.top_modifications_type == "reduction":
                 row = box.row()
                 row.label(text="N° livelli:")
                 row.prop(scene, "top_modifications_levels", text="")  
 
-            if scene.top_modifications_type == "scale":
+            if scene.top_modifications_type == "reduction":
                 row = box.row()
-                row.label(text="Modifica in altezza (cm):")
-                row.prop(scene, "top_delta_height", text="")
+                row.label(text="Nuova altezza (m):")
+                row.prop(scene, "top_new_height", text="")
 
         # Sezione Costruttivi
         box = layout.box()
@@ -78,33 +78,49 @@ class ZomePanel(bpy.types.Panel):
         if scene.expand_construction_method:
             row = box.row()
             row.prop(scene, "show_beams", text="")
-            row.label(text="Tavole:")
-            row = box.row()
-            row.label(text="Largh. (cm):")
+            row.label(text="Tavole (cm):")
             row.prop(scene, "beam_width", text="")
-            row = box.row()
-            row.label(text="Spess. (cm):")
             row.prop(scene, "beam_thickness", text="")
+            box.label(text="...")
 
         #sezione physics chiudibile:
         box = layout.box()
         box.prop(scene, "expand_physics", text="Fisica e vincoli", icon="TRIA_DOWN" if scene.expand_physics else "TRIA_RIGHT", emboss=False)
         if scene.expand_physics:
             row = box.row()
+
+            #                "active": False,
+            row.label(text="Attiva fisica:")
+            row.prop(scene, "physics_active", text="") 
+
             row.label(text="Densità tavole (kg/m3):")
-            row.prop(scene, "beam_density", text="")
+            row.prop(scene, "beam_density", text="") 
+
+            # Aggiungi le nuove proprietà
+            row = box.row()
+            row.label(text="Frizione:")
+            row.prop(scene, "friction", text="")
+
+            row = box.row()
+            row.label(text="Rigidità:")
+            row.prop(scene, "spring_stiffness", text="")
+
+            row = box.row()
+            row.label(text="Smorzamento:")
+            row.prop(scene, "spring_damping", text="")
 
         # Pulsante Crea Zome nel pannello principale
-        layout.operator("object.call_zome", text="Crea zome")
+        
 
         # Sezione Info
-        box = layout.box()
-        box.prop(scene, "expand_info", text="Info", icon="TRIA_DOWN" if scene.expand_info else "TRIA_RIGHT", emboss=False)
-        if scene.expand_info:
-            for i, line in enumerate(scene.info_text.split("\n")):
-                row = box.row()
-                row.scale_y = 0.5  # Riduce l'altezza della riga
-                row.label(text=line)
+        if False:
+            box = layout.box()
+            box.prop(scene, "expand_info", text="Info", icon="TRIA_DOWN" if scene.expand_info else "TRIA_RIGHT", emboss=False)
+            if scene.expand_info:
+                for i, line in enumerate(scene.info_text.split("\n")):
+                    row = box.row()
+                    row.scale_y = 0.5  # Riduce l'altezza della riga
+                    row.label(text=line)
         
         #Sezione Report
         box = layout.box()
@@ -121,7 +137,11 @@ def register():
     result=True
     try:
         bpy.utils.register_class(ZomePanel)
-        
+
+        bpy.types.Scene.is_updating = bpy.props.BoolProperty(default=False)
+        if hasattr(bpy.types.Scene, "is_updating"):
+            bpy.context.scene.is_updating = False
+         
         bpy.types.Scene.show_vertices = bpy.props.BoolProperty(
             default=False,
             description="Mostra i vertici (richiede qualche secondo)"
@@ -152,7 +172,7 @@ def register():
             items=[
                 ('none', "Nessuna", "Nessuna modifica"),
                 ('cut', "Taglio", "Applica un taglio"),
-                ('scale', "Riduzione", "Applica una riduzione")
+                ('reduction', "Riduzione", "Applica una riduzione")
             ],
             default='none'
         )
@@ -162,12 +182,7 @@ def register():
             max=10,
             description="Livelli:"
         )
-        bpy.types.Scene.top_delta_height = bpy.props.IntProperty(
-            default=0,
-            min=-200,
-            max=200,
-            description="Modifica in altezza (cm; solo riduzione)"
-        )
+
         bpy.types.Scene.expand_construction_method = bpy.props.BoolProperty(default=False)
         bpy.types.Scene.show_beams = bpy.props.BoolProperty(
             default=True,
@@ -200,6 +215,30 @@ def register():
             description="Testo del report",
             default=""
         )
+        bpy.types.Scene.physics_active = bpy.props.BoolProperty(
+            name="Attiva fisica",
+            description="Attiva fisica (vincoli, gravità e forze esterne)",
+            default=False
+        )
+        bpy.types.Scene.friction = bpy.props.FloatProperty(
+            name="Frizione",
+            description="Coefficiente di frizione",
+            default=0.8,
+            min=0.0,
+            max=1.0
+        )
+        bpy.types.Scene.spring_stiffness = bpy.props.FloatProperty(
+            name="Rigidità",
+            description="Rigidità della molla",
+            default=10.0,
+            min=0.0
+        )
+        bpy.types.Scene.spring_damping = bpy.props.FloatProperty(
+            name="Smorzamento",
+            description="Smorzamento della molla",
+            default=0.5,
+            min=0.0
+        )
 
     except RuntimeError as e:
         print(f"Errore durante la registrazione dei pannelli: {e}")
@@ -210,8 +249,9 @@ def unregister():
     result=True
     try:
         bpy.utils.unregister_class(ZomePanel)
+        del bpy.types.Scene.is_updating
         del bpy.types.Scene.N
-        del bpy.types.Scene.M
+        del bpy.types.Scene.S
         del bpy.types.Scene.theta
         del bpy.types.Scene.ZH
         del bpy.types.Scene.base_area
@@ -229,13 +269,17 @@ def unregister():
         del bpy.types.Scene.expand_modifications
         del bpy.types.Scene.top_modifications_type
         del bpy.types.Scene.top_modifications_levels
-        del bpy.types.Scene.top_delta_height
+        del bpy.types.Scene.top_new_height
         del bpy.types.Scene.expand_physics
         del bpy.types.Scene.beam_density
+        del bpy.types.Scene.physics_active
         del bpy.types.Scene.expand_info
         del bpy.types.Scene.expand_report
         del bpy.types.Scene.info_text
         del bpy.types.Scene.report_text
+        del bpy.types.Scene.friction
+        del bpy.types.Scene.spring_stiffness
+        del bpy.types.Scene.spring_damping
 
     except RuntimeError as e:
         print(f"Errore durante la deregistrazione dei pannelli: {e}")

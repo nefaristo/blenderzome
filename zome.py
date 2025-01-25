@@ -28,7 +28,7 @@ class Zome:
     def __init__(
             self, 
             name="",
-            N=8, M=7, theta=45, ZH=1, 
+            N=8, S=7, theta=45, ZH=1, 
             show={ 
                 "vertices": 0,
                 "faces": 0, 
@@ -39,7 +39,7 @@ class Zome:
             },
             modifications={
                 "top_modifications_type": "none",
-                "top_delta_height": 0,
+                "top_new_height": None,
                 "top_modifications_levels": 0,     
                 "position": (0,0,0),
                 "rotation": (0,0,0), 
@@ -66,14 +66,14 @@ class Zome:
         #basic parameters:
         self.name = name if name != "" else "zome " + str(random.randint(1000, 9999))
         self.N = N if N > 0 else 8
-        self.M = M if M > 0 and M < N else N-1 
+        self.S = S if S > 0 and S < N else N # steps from the base up. S=M(zooOomes) =rhombi layers n.+1 = len(len(vertices)) -1
         self.theta = theta if theta > 0 and theta < 180 else 45
         self.ZH = ZH if ZH > 0 else 1   
         # REMINDER: the operator ** joins the two dictionaries so that the values of the second dictionary overwrite the first only if present
         self.modifications = {**{
             "top_modifications_type": "none",            
             "top_modifications_levels": 0,
-            "top_delta_height": 0,
+            "top_new_height": None,
             "spin": 0,
             "position": (0,0,0),
             "rotation": (0,0,0), 
@@ -92,10 +92,16 @@ class Zome:
             "TT":0.03,
             "base_thickness": 0.0,  # Spessore della base in centimetri
         }, **build}
-
+        self.physics = {**{
+            "active": False,
+            "density": 1,
+            "friction": 0.8,
+            "spring_stiffness": 10,
+            "spring_damping": 0.5,
+        }, **physics}
         #derived parameters:
-        self.H = self.ZH / (N / (M + 1))
-        self.h = self.ZH / (M-1)
+        self.H = self.ZH / (N / S) #N=S => complete polyhedron
+        self.h = self.ZH / (S)
         self.l = self.h / math.cos(math.radians(self.theta))
         self.alpha = 360.0 / N        
         self.show["beams"] = self.show["beams"] and (self.build["TW"] > 0 and self.build["TT"] > 0)
@@ -114,8 +120,8 @@ class Zome:
 
         # Build the structure
         self.print(type="report",text=f"\n***********\nZome '{self.name}'")
-        self.print(type="report",text=f"Geometria: N={self.N}, M={self.M}, θ={self.theta:.2f}, ZH={self.ZH:.2f}")
-        self.print(type="report",text=f"Struttura: {self.build}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\n***********")
+        self.print(type="report",text=f"Geometria: N={self.N}, steps={self.S}, θ={self.theta:.2f}, ZH={self.ZH:.2f}")
+        self.print(type="report",text=f"Struttura: {self.build}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\nFisica: {self.physics}\n***********")
         
         self.print(type="report",text=f"Calcolo geometria ")
         self.set_vertices()  # theoretical vertices
@@ -168,20 +174,21 @@ class Zome:
     def set_vertices(self):
         tot_vertices=0
         self.vertices = []
-        for layer_index in range(self.M): 
-            vertices_layer = []              
+        for layer_index in range(self.S+1): 
+            vertices_layer = []  
             match layer_index:
-                case _ if layer_index==0 or layer_index==self.N-1:  # APEX or possibly ANTIPODAL APEX
+                case _ if layer_index==0 :  # APEX 
                     vertices_layer.append((0, 0, self.ZH))  # appends to the layer a tuple with the apex
                 case 1:  # FIRST LAYER - arbitrary orientation
                     for radial_index in range(self.N):
-                        x = self.l * math.sin(math.radians(self.theta)) * math.cos(math.radians(radial_index * self.alpha+self.spin))
-                        y = self.l * math.sin(math.radians(self.theta)) * math.sin(math.radians(radial_index * self.alpha+self.spin))
+                        x = self.l * math.sin(math.radians(self.theta)) * math.cos(math.radians(radial_index * self.alpha))
+                        y = self.l * math.sin(math.radians(self.theta)) * math.sin(math.radians(radial_index * self.alpha))
                         z = self.ZH - self.h
                         vertices_layer.append((x, y, z))
-                case _ if 2 <= layer_index <= self.M+1:  # RHOMBI 
-                    for radial_index in range(self.N):
-                        A = self.vertices[0][0] if layer_index == 2 else self.vertices[(layer_index-2)%self.M][(radial_index+1) % self.N]
+                case _ if 2 <= layer_index <= self.S:  # RHOMBI 
+                    for radial_index in range(self.N): #from 0 to N-1                        
+                        #goes back by 2 layers to find the A vertex to project for the new D vertex of the rhombus
+                        A = self.vertices[0][0] if layer_index == 2 else self.vertices[layer_index-2][(radial_index+1) % self.N]
                         B = self.vertices[layer_index-1][radial_index]
                         C = self.vertices[layer_index-1][(radial_index+1) % self.N]
                         M = (mathutils.Vector(B) + mathutils.Vector(C)) / 2  # Punto medio di B e C
@@ -192,8 +199,10 @@ class Zome:
                         B_vec = mathutils.Vector(B)
                         C_vec = mathutils.Vector(C)
                         D_vec = mathutils.Vector(D)
-                        vertices_layer.append((D.x, D.y, D.z))         
+                        vertices_layer.append((D.x, D.y, D.z))     
+                        tot_vertices += 1    
             self.vertices.append(vertices_layer)
+            self.print(type="report",text=f"layer {layer_index} vertices: {len(vertices_layer)}")
             tot_vertices += len(vertices_layer)           
         self.vertices.reverse()
         self.print(type="report",text=f"✔️ {tot_vertices} vertici")
@@ -203,35 +212,39 @@ class Zome:
         if modifications is None:
             modifications=self.modifications        
         #top modifications:
-        if modifications["top_modifications_levels"] > 0 and modifications["top_modifications_levels"] < self.M: 
+        if modifications["top_modifications_levels"] > 0 and modifications["top_modifications_levels"] < self.S+1: 
             match modifications["top_modifications_type"]:
                 case "cut":
-                    self.print(type="report",text=f"Loop su {modifications['top_modifications_levels']} livelli da {self.M-2-modifications['top_modifications_levels']} a {self.M-2}")
                     del self.vertices[-modifications["top_modifications_levels"]:]
-                case "scale":            
-                    if modifications["top_delta_height"] != 0: 
+                case "reduction":            
+                    if modifications["top_new_height"] != None:
+                        bottom_height=self.h*(self.S-modifications["top_modifications_levels"])                        
                         #cut the top of the zome out:
                         self.modify_vertices(modifications={
                             "top_modifications_type": "cut", 
                             "top_modifications_levels": modifications["top_modifications_levels"],
                             })  
                         top_zome_area=self.layer_data("polygon_area",len(self.vertices)-1) #area of top is the last layer of the main zome
+                        top_zome_theta, top_zome_theta_spread=find_theta(N=self.N, 
+                                             S=self.modifications["top_modifications_levels"], 
+                                             ZH=modifications["top_new_height"]-bottom_height, 
+                                             target_value=top_zome_area, 
+                                             type="base_area")
                         top_zome=Zome(
                             name=f"{self.name}_top_zome",
-                            N=self.N, M=self.modifications["top_modifications_levels"]+1, 
-                            theta=find_theta(N=self.N, 
-                                             M=self.modifications["top_modifications_levels"]+1, 
-                                             ZH=modifications["top_delta_height"], 
-                                             target_value=top_zome_area, 
-                                             type="base_area"), 
-                            ZH=modifications["top_delta_height"],
+                            N=self.N, S=self.modifications["top_modifications_levels"], 
+                            theta=top_zome_theta,
+                            ZH=modifications["top_new_height"]-bottom_height,
                             #show={"vertices": self.show["vertices"] , "faces": self.show["faces"], "fill_faces": self.show["fill_faces"], "beams": self.show["beams"]},
-                            modifications={"position": (0,0,self.h*(self.M-modifications["top_modifications_levels"]-1)), "rotation": (0,0,0)},
+                            modifications={"position": (0,0,bottom_height), "rotation": (0,0,0)},
                             #zome_output=self.print
+                            silent=True
                         )  
                         #copy the vertices of the top zome to the main zome:
+                        self.print(type="report",text=f"vertici prima: {len(self.vertices)}; vertici add: {len(top_zome.vertices)}")
                         for layer in top_zome.vertices:
                             self.vertices.append(layer)                       
+                        self.print(type="report",text=f"vertici dopo: {len(self.vertices)}")
                 case _:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
         #position modifications:
@@ -246,28 +259,29 @@ class Zome:
     def set_derived_geometry(self):
         self.faces = []
         tot_faces=0
-        half_h=self.h/2
+        half_h=self.h/10
+        print(f"half_h: {half_h}")
         for layer_index in range(len(self.vertices)): 
             new_faces_layer = []    
             this_count=len(self.vertices[layer_index])
             prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
             next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])
             if this_count>1:
-                for radial_index in range(this_count):                    
+                for radial_index in range(this_count):     
                     A=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
                     B=self.vertices[layer_index][radial_index%this_count]
                     C=self.vertices[layer_index][(radial_index+1) % this_count]
                     D=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%prev_count]
-                    if A is not None and abs(A[2]-B[2])<half_h:
-                        break
-                    if D is not None and abs(D[2]-B[2])<half_h:
-                        break
-                    if A is not None and D is not None:#rhombus
+                    if A is not None and abs(A[2]-B[2])<half_h:#overlapping layers with A (the next): upside down triangle
+                        new_faces_layer.append((D, C, B))                        
+                    elif D is not None and abs(D[2]-B[2])<half_h:#overlapping layers with D (the previous): upside down triangle
+                        new_faces_layer.append((B, C, A))                        
+                    elif A is not None and D is not None:#all 4 are there: rhombus
                         new_faces_layer.append((D, C, A, B))
-                    elif A is not None: #triangle
+                    elif A is not None: #upper is missing: triangle
                         new_faces_layer.append((B, C, A))
-                    elif D is not None: #upside down triangle
-                        new_faces_layer.append((D, B, C))
+                    elif A is None and D is not None: #lower is missing: upside down triangle
+                        new_faces_layer.append((D, C, B))
             if len(new_faces_layer) > 0:
                 self.faces.append(new_faces_layer)
                 tot_faces += len(new_faces_layer)
@@ -293,7 +307,17 @@ class Zome:
             (1.0, 0.0, 1.0, alpha),  # Magenta
             (0.0, 1.0, 1.0, alpha),   # Cyan
             (1.0, 1.0, 1.0, alpha),   # White
-            (0.0, 0.0, 0.0, alpha)    # Black
+            (0.0, 0.0, 0.0, alpha),   # Black
+            (0.5, 0.5, 0.5, alpha),   # Gray
+            (1.0, 0.5, 0.5, alpha),   # Pink
+            (0.6, 0.4, 0.0, alpha),   # Brown
+            (0.0, 0.5, 0.0, alpha),   # Dark Green
+            (0.0, 0.0, 0.5, alpha),   # Dark Blue
+            (0.5, 0.0, 0.0, alpha),   # Dark Red
+            (0.5, 0.5, 0.0, alpha),   # Dark Yellow
+            (0.5, 0.0, 0.5, alpha),   # Dark Magenta
+            (0.0, 0.5, 0.5, alpha),   # Dark Cyan
+            (0.5, 0.5, 0.5, alpha),   # Light Gray
         ]        
         for i, color in enumerate(colors):
             mat = bpy.data.materials.new(name=f"Material_{i}")
@@ -354,7 +378,9 @@ class Zome:
                 TT=self.build["TT"],
                 method="butt joint ccw",
                 TT_sink_fraction=0,
-                    )
+                physics_type="" if self.physics["active"] else "ACTIVE",
+                physics_density=self.physics["density"],
+                )
             # a copy of collection objects, to avoid looping over the collection you will add to (beams_collection)
             original_beams.append(poly_beams)#M layers of 1 polygon (3-4 beams)
         #every beam is duplicated and rotated in place.
@@ -454,7 +480,7 @@ class Zome:
             case "circumscribed_circle_area":
                 return  math.sqrt(layer[0][0]**2 + layer[0][1]**2 + layer[0][2]**2)**2*math.pi
 
-def find_theta(N,M,ZH,target_value,type="base_area"):
+def find_theta(N,S,ZH,target_value,type="base_area"):
     #finds theta to the specified error with numeric method, by starting from theta0
     theta=60.0
     print(theta)
@@ -463,27 +489,30 @@ def find_theta(N,M,ZH,target_value,type="base_area"):
     max_iterations=100    
     last_sign=0
     counter=0
-    delta=50 if type=="base_area" else 1 #more typical value for area  or side respectively
-    while abs(delta)>max_error and counter<max_iterations:
+    spread=50 #more typical value for area  or side respectively
+    while abs(spread)>max_error and counter<max_iterations:
         counter+=1
-        zome=Zome(name="dummy",N=N,M=M,theta=theta,ZH=ZH,silent=True)
+        zome=Zome(name="dummy",N=N,S=S,theta=theta,ZH=ZH,silent=True)
         if type=="base_area":
             actual_value=zome.layer_data("polygon_area",0)
         elif type=="base_side":
             actual_value=zome.layer_data("polygon_side",0)
         else:
             actual_value=0
-        sign=math.copysign(1,actual_value-target_value)
+        spread=actual_value-target_value
+        sign=math.copysign(1,spread)
         if sign!=last_sign:
             theta_step/=2
         last_sign=sign
         theta-=float(theta_step*sign)
         #print(theta)     
         #print(f"tentativo {counter}: theta={theta}")
-        #print(f"WARNING: {type} = {round(actual_value*100,2)} , target {type} = {round(target_value*100,2)} , difference>target error ({round(delta*100,2)}>{round(max_error*100,2)}) ")
-    return theta
+        #print(f"WARNING: {type} = {round(actual_value*100,2)} , target {type} = {round(target_value*100,2)} , difference>target error ({round(spread*100,2)}>{round(max_error*100,2)}) ")
+    return theta, spread
         
     #TODO:
+
+#TODO:
 
 def add_constraint(obj, to_obj):
     # takes for granted that both objects have physics active
