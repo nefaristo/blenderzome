@@ -56,15 +56,18 @@ def main():
         
     bpy.ops.object.select_all(action='DESELECT')
     #bb.set_collection(delete_root=True) #DELETE ALL COLLECTIONS
-    dummy_collection = bpy.data.collections.get("dummy")
-    if dummy_collection is None:
-        dummy_collection = bpy.data.collections.new("dummy")    
-        bpy.context.scene.collection.children.link(dummy_collection)
+    if False:
+        dummy_collection = bpy.data.collections.get("dummy")
+        if dummy_collection is None:
+            dummy_collection = bpy.data.collections.new("dummy")    
+            bpy.context.scene.collection.children.link(dummy_collection)
+        vertices = [[-0.5,-0.5,0],[0.5,-0.5,0],[0,0.5,0]]
+        draw_polygon(name="dummy_polygon2423qwe",polyverts=vertices,fill=True,add_to_collection=dummy_collection)
 
-    vertices = [[-0.5,-0.5,0],[0.5,-0.5,0],[0,0.5,0]]
-    draw_polygon(name="dummy_polygon2423qwe",polyverts=vertices,fill=True,add_to_collection=dummy_collection)
     if False:#list all operators
         for op in dir(bpy.ops.object):
             print(">operator:",op)
+
+    display_paths()
 main()
 

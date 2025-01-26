@@ -49,6 +49,7 @@ class Zome:
                 "TW":0.1,
                 "TT":0.03,
                 "base_thickness": 3.0,  # Spessore della base in centimetri
+                "material_name": "",
             },
             physics={
                 "active": False,
@@ -113,6 +114,7 @@ class Zome:
         self.vertices = []
         self.faces = []
         self.beams = []
+        self.beams_strip = [] # 1 exemplar of polygon per layer (for analysis and operations)
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         
         #others:
@@ -202,7 +204,6 @@ class Zome:
                         vertices_layer.append((D.x, D.y, D.z))     
                         tot_vertices += 1    
             self.vertices.append(vertices_layer)
-            self.print(type="report",text=f"layer {layer_index} vertices: {len(vertices_layer)}")
             tot_vertices += len(vertices_layer)           
         self.vertices.reverse()
         self.print(type="report",text=f"✔️ {tot_vertices} vertici")
@@ -259,8 +260,7 @@ class Zome:
     def set_derived_geometry(self):
         self.faces = []
         tot_faces=0
-        half_h=self.h/10
-        print(f"half_h: {half_h}")
+        half_h=self.h/10#for heavily reduced top modifications, actual half height could be not enough
         for layer_index in range(len(self.vertices)): 
             new_faces_layer = []    
             this_count=len(self.vertices[layer_index])
@@ -328,7 +328,20 @@ class Zome:
         size=self.ZH*proportional_size
         time_0=time.time()
         vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
-        self.main_collection.children.link(vertices_collection)
+        self.main_collection.children.link(vertices_collection)        
+        #barycenter cube:
+        bpy.ops.mesh.primitive_cube_add(size=size, location=self.barycenter)
+        obj = bpy.context.object
+        obj.name = rename(f"{self.name}_barycenter")
+        vertices_collection.objects.link(obj)
+        bpy.context.collection.objects.unlink(obj)
+        #origin cube:
+        bpy.ops.mesh.primitive_cube_add(size=size, location=(0,0,0))
+        obj = bpy.context.object
+        obj.name = rename(f"{self.name}_origin")
+        vertices_collection.objects.link(obj)
+        bpy.context.collection.objects.unlink(obj)
+        #other vertices:
         tot_vertices=0
         for layer_index, layer in enumerate(self.vertices):
             for vertex_index, v in enumerate(layer):
@@ -368,7 +381,8 @@ class Zome:
         t_0=time.time()
         #total time with complete loop for beams w/o physics: 23+-1 sec
         #original_beams contains the first beam of each kind
-        original_beams = []
+        self.beams_strip = []
+        material_name=self.build["material_name"]
         for layer_index, layer in enumerate(self.faces):
             poly_beams = beams_polygon(
                 add_to_collection=beams_collection,
@@ -378,14 +392,16 @@ class Zome:
                 TT=self.build["TT"],
                 method="butt joint ccw",
                 TT_sink_fraction=0,
-                physics_type="" if self.physics["active"] else "ACTIVE",
-                physics_density=self.physics["density"],
+                #physics_type="" if self.physics["active"] else "ACTIVE",
+                #physics_density=self.physics["density"],
                 )
+            if material_name != "":
+                assign_material(obj=poly_beams, material_name=material_name)
             # a copy of collection objects, to avoid looping over the collection you will add to (beams_collection)
-            original_beams.append(poly_beams)#M layers of 1 polygon (3-4 beams)
+            self.beams_strip.append(poly_beams)#M layers of 1 polygon (3-4 beams)
         #every beam is duplicated and rotated in place.
         tot_beams=0
-        for layer_index,layer in enumerate(original_beams):
+        for layer_index,layer in enumerate(self.beams_strip):
             tot_beams+=len(layer)*(self.N-1)
             for beam in layer:
                 beam_index = beam["beams_polygon_index"] # index within the polygon (stored in the beam object at the creation by beams_polygon() )
@@ -445,40 +461,89 @@ class Zome:
 
     def info(self,type="all",precision=2    ):
         info=""
-        types=["layers"]
+        types=["basic","physics","global","layers"]
         if type=="all":
             for type in types:
-                info+=f"{type}:\n{self.layer_data(type,0)}\n"
+                info+=f"{type}:\n{self.info(type,0)}\n"
         else:
             match type:
+                case "basic":
+                    types=["N","S","theta","ZH","h","l"]
+                    types_names=["n° lati","n° livelli","angolo","altezza","altezza","lato"]
+                    types_units=["","","°","m","m","m"]
+                    for type_index,type in enumerate(types):
+                        info+=f"    {types_names[type_index]} {round(getattr(self,type),precision)} {types_units[type_index]} \n"
+                case "physics":
+                    types=["TW","TT"]
+                    types_names=["larghezza tavola","spessore tavola"]
+                    types_units=["cm","cm"]
+                    for type_index,type in enumerate(types):
+                        info+=f"    {types_names[type_index]} {round(self.build[type],precision)} {types_units[type_index]} \n"
+                case "global":
+                    types=["internal_volume","beams_volume","beams_mass"]    
+                    types_names=["volume","volume","massa"]
+                    types_units=["m3","m3","kg"]
+                    for type_index,type in enumerate(types):
+                        info+=f"    {types_names[type_index]} {round(self.global_data(type),precision)} {types_units[type_index]} \n"
                 case "layers":
-                    for layer_index in range(len(self.vertices)):
-                        info+=f"*layer {layer_index}:\n"
-                        info+=f"    area {round(self.layer_data('area',layer_index),precision)} m2 \n"
-                        info+=f"    raggio maggiore {round(self.layer_data('circumscribed_circle_radius',layer_index),precision)} m \n"
-                        info+=f"    raggio minore {round(self.layer_data('inscribed_circle_radius',layer_index),precision)} m \n"
-                        info+=f"    area c.circoscritto {round(self.layer_data('circumscribed_circle_area',layer_index),precision)} m2 \n"
-                        info+=f"    area c.inscritto {round(self.layer_data('inscribed_circle_area',layer_index),precision)} m2 \n"
+                    types=["height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
+                    types_names=["altezza","lato poligono","area poligono","raggio maggiore","area c.circoscritto","volume"]
+                    types_units=["m","m","m2","m","m2","m3"]
+                    for layer_index in range(len(self.vertices)-1):
+                        info+=f"*livello {layer_index}:\n"
+                        for type_index,type in enumerate(types):
+                            print(f"layer_index: {layer_index}, type: {type}")
+                            info+=f"    {types_names[type_index]} {round(self.layer_data(type,layer_index),precision)} {types_units[type_index]} \n"
         return info
-            
-    def layer_data(self,type="",layer_index=0):#area of the layer_index-th layer (regular polygon of self.N vertices/sides):
-        layer = self.vertices[layer_index] 
-        types=["polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area"]
+
+    def global_data(self,type=""):
+        types=["internal_volume"]
+        match type:
+            case "internal_volume":
+                return self.layer_data("approx_volume_to_layer",len(self.vertices)-1)
+            case "beams_volume":
+                beams_volume=0
+                for layer in self.beams_strip:
+                    for beam in layer:
+                        beams_volume+=beam["volume"]
+                return beams_volume
+            case "beams_mass":
+                return self.global_data("beams_volume")*self.physics["density"]
+        pass
+    
+    def layer_data(self,type="",target_index=0):#area of the layer_index-th layer (regular polygon of self.N vertices/sides):
+        layer = self.vertices[target_index] 
+        types=["height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
         if type not in types: #returns a list of dictionaries of all the types
             result=[]
             for type in types:
-                result.append({type:self.layer_data(type,layer_index)})
+                result.append({type:self.layer_data(type,target_index)})
             return result
-
-        match type:                           
+        match type:   
+            case "height":
+                return layer[0][2]
             case "polygon_side":
-                return math.sqrt((layer[1][0]-layer[0][0])**2 + (layer[1][1]-layer[0][1])**2 + (layer[1][2]-layer[0][2])**2)
+                return math.sqrt((layer[target_index][0]-layer[target_index-1][0])**2 + (layer[target_index][1]-layer[target_index-1][1])**2 + (layer[target_index][2]-layer[target_index-1][2])**2)
             case "polygon_area":
                 return area_polygon(layer)
             case "circumscribed_circle_radius":
-                return math.sqrt(layer[0][0]**2 + layer[0][1]**2 + layer[0][2]**2)
+                return math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)
             case "circumscribed_circle_area":
-                return  math.sqrt(layer[0][0]**2 + layer[0][1]**2 + layer[0][2]**2)**2*math.pi
+                return  math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)**2*math.pi
+            case "approx_volume_to_layer":
+                if target_index==0:
+                    return 0
+                volume=0
+                areas=[];steps=[] #not necessarily constant because of the top modifications
+                for layer_index,layer in enumerate(self.vertices[:(target_index)]):
+                    areas.append(self.layer_data("polygon_area",layer_index))    
+                    if isinstance(layer[0], tuple) and len(layer[0]) > 2:
+                        steps.append(layer[0][2])
+                    else:
+                        print(f"Errore: layer[{layer_index}][0] non è una tupla valida: {layer[0]}")
+                for layer_index,layer in enumerate(self.vertices[:(target_index-1)]):
+                    volume+=(areas[layer_index]+areas[layer_index+1])*(steps[layer_index])/2    
+                return volume
 
 def find_theta(N,S,ZH,target_value,type="base_area"):
     #finds theta to the specified error with numeric method, by starting from theta0

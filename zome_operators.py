@@ -10,7 +10,6 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
     
     def execute(self, context):
-        bpy.context.scene.expand_info = True
         bpy.context.scene.expand_report = True
         bpy.context.scene.report_text = ""
         bpy.context.scene.is_updating = True
@@ -35,6 +34,7 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "TT": context.scene.beam_thickness / 100.0,
                 #"base_thickness": context.scene.base_thickness/ 100.0,
                 "beam_density": context.scene.beam_density,
+                "material_name": "abete rosso",#SVSV
             },
             physics={
                 "active": context.scene.physics_active,
@@ -53,23 +53,19 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             },
             zome_output= self.zome_input
         )
+        bpy.context.scene.report_text=zome1.info("all") 
         bpy.context.scene.is_updating = False
-        #print ("INFO:")
-        #print(zome1.info())
         return {'FINISHED'}
 
-    
     #receives and manages messages from zome
     def zome_input(self,type="info",text=""):
-        match type:
-            case "info":
-                bpy.context.scene.info_text = text      
+        return #SVSV
+        match type:   
             case "report":
                 bpy.context.scene.report_text += text + "\n"
         for area in bpy.context.screen.areas:
             if area.type == 'VIEW_3D':
                     area.tag_redraw()
-
 
 def limit_data(scene): #called after updates
     scene.N=max(2,min(20,scene.N))
@@ -81,7 +77,7 @@ def limit_data(scene): #called after updates
 def area_updated(self, context): #called after theta update
     scene=context.scene
     is_updating=getattr(scene,"is_updating",False)
-    print(f"area_updated called, is updateing={is_updating}")
+    print(f"area_updated called, is updating={is_updating}")
     if is_updating:
         return
     scene.is_updating = True
@@ -92,13 +88,16 @@ def area_updated(self, context): #called after theta update
 def basic_data_updated(self, context): #called after any basic data update besides theta
     scene=context.scene
     is_updating=getattr(scene,"is_updating",False)
-    print(f"basic_data_updated called, is updateing={is_updating}")
+    print(f"basic_data_updated called, is updating={is_updating}")
     if is_updating:
         return
     scene.is_updating = True
     limit_data(scene)
+    print(f"...now, updating={is_updating}")
     zome=Zome(N=scene.N, S=scene.S, ZH=scene.ZH, theta=scene.theta, name="zome_for_base_area",silent=True)
-    scene.base_area=zome.layer_data(type="polygon_area",layer_index=0)
+    
+    print(f"...and now, updating={is_updating}")
+    scene.base_area=zome.layer_data(type="polygon_area",target_index=0)
     scene.is_updating = False    
 
 def register():

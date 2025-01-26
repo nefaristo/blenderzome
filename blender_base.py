@@ -168,6 +168,59 @@ def check_complanarity(verts=[]):
 
 # OBJECTS:
 
+import bpy
+import bpy
+
+def display_paths():
+    # Display material paths
+    print("=== Material Paths ===")
+    for material in bpy.data.materials:
+        if material.use_nodes:
+            for node in material.node_tree.nodes:
+                if node.type == 'TEX_IMAGE' and node.image:
+                    print(f"Material: {material.name}, Texture Path: {node.image.filepath}")
+                elif node.type == 'BSDF_PRINCIPLED':
+                    print(f"Material: {material.name}, Base Color: {node.inputs['Base Color'].default_value}")
+
+    # Display HDRI texture paths in the world
+    print("\n=== HDRI Texture Paths in World ===")
+    world = bpy.context.scene.world
+    if world and world.use_nodes:
+        for node in world.node_tree.nodes:
+            if node.type == 'TEX_ENVIRONMENT' and node.image:
+                print(f"World: {world.name}, Environment Texture Path: {node.image.filepath}")
+            elif node.type == 'BACKGROUND':
+                print(f"World: {world.name}, Background Color: {node.inputs[0].default_value}")
+
+    # Display other common external references (if present)
+    print("\n=== Other External References ===")
+    for texture in bpy.data.images:
+        if texture.filepath:
+            print(f"Texture: {texture.name}, Path: {texture.filepath}")
+
+
+def assign_material(obj, material_name):
+    if obj is None or obj.type != 'MESH':
+        print("Object not a mesh.")
+        return
+    print("Assigning material:",material_name,"to",obj.name)
+    # Cerca il materiale per nome
+    material = bpy.data.materials.get(material_name)
+    
+    # Se il materiale non esiste, segnala e termina
+    if material is None:
+        print(f"Material not found: '{material_name}'.")
+        return
+
+    # Assicura che l'oggetto abbia uno slot materiale
+    if len(obj.data.materials) == 0:
+        obj.data.materials.append(material)
+    else:
+        obj.data.materials[0] = material
+    
+    print(f"Material '{material_name}' assigned to '{obj.name}'.")
+
+
 def boolean_union_selected(new_object_name):
     # Ottieni gli oggetti selezionati
     selected_objects = [obj for obj in bpy.context.selected_objects if obj.type == 'MESH']

@@ -32,10 +32,12 @@ class ZomePanel(bpy.types.Panel):
             row.prop(scene, "S", text="")
 
             row = box.row()
-            row.label(text="H (m)")
-            row.prop(scene, "ZH", text="")
             row.label(text="Ө°")
             row.prop(scene, "theta", text="")
+            
+            row.label(text="H (m)")
+            row.prop(scene, "ZH", text="")
+
 
             row = box.row()
             row.label(text="Area alla base m2:")
@@ -112,15 +114,7 @@ class ZomePanel(bpy.types.Panel):
         # Pulsante Crea Zome nel pannello principale
         
 
-        # Sezione Info
-        if False:
-            box = layout.box()
-            box.prop(scene, "expand_info", text="Info", icon="TRIA_DOWN" if scene.expand_info else "TRIA_RIGHT", emboss=False)
-            if scene.expand_info:
-                for i, line in enumerate(scene.info_text.split("\n")):
-                    row = box.row()
-                    row.scale_y = 0.5  # Riduce l'altezza della riga
-                    row.label(text=line)
+
         
         #Sezione Report
         box = layout.box()
@@ -203,12 +197,7 @@ def register():
             max=1000,
             description="Densità legno (kg/m3)"
         )
-        bpy.types.Scene.expand_info = bpy.props.BoolProperty(default=False)
-        bpy.types.Scene.info_text = bpy.props.StringProperty(
-            name="Info",
-            description="Testo del info",
-            default=""
-        )
+
         bpy.types.Scene.expand_report = bpy.props.BoolProperty(default=False)
         bpy.types.Scene.report_text = bpy.props.StringProperty(
             name="Report",
@@ -273,9 +262,7 @@ def unregister():
         del bpy.types.Scene.expand_physics
         del bpy.types.Scene.beam_density
         del bpy.types.Scene.physics_active
-        del bpy.types.Scene.expand_info
         del bpy.types.Scene.expand_report
-        del bpy.types.Scene.info_text
         del bpy.types.Scene.report_text
         del bpy.types.Scene.friction
         del bpy.types.Scene.spring_stiffness
