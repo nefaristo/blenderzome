@@ -123,7 +123,9 @@ class Zome:
         #structures used to build the polyzome:
         self.vertices = []
         self.faces = []
+        self.face_types = []#["triangle","rhombus","upside_down_triangle"] set by set_derived_geometry
         self.beams = []
+        self.beams_collection = None
         self.beams_strip = [] # 1 exemplar of polygon per layer (for analysis and operations)
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         
@@ -273,7 +275,8 @@ class Zome:
         tot_faces=0
         half_h=self.h/10#for heavily reduced top modifications, actual half height could be not enough
         for layer_index in range(len(self.vertices)): 
-            new_faces_layer = []    
+            new_faces_layer = []  
+            new_face_types = []
             this_count=len(self.vertices[layer_index])
             prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
             next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])
@@ -282,23 +285,29 @@ class Zome:
                 # for everything but the upside down triangles, firth beam is N-E, ergo the first vertex is E 
                 # for ud triangles, it starts from N 
                 # 
-                for radial_index in range(this_count):#A is north, B is      
-                    A=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
-                    B=self.vertices[layer_index][radial_index%this_count]
-                    C=self.vertices[layer_index][(radial_index+1) % this_count]
-                    D=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%prev_count]
-                    if A is not None and abs(A[2]-B[2])<half_h:#overlapping layers with A (the next): upside down triangle
-                        new_faces_layer.append((D, C, B))                        
-                    elif D is not None and abs(D[2]-B[2])<half_h:#overlapping layers with D (the previous): upside down triangle
-                        new_faces_layer.append((B, C, A))                        
-                    elif A is not None and D is not None:#all 4 are there: rhombus
-                        new_faces_layer.append((D, C, A, B))
-                    elif A is not None: #upper is missing: triangle
-                        new_faces_layer.append((B, C, A))
-                    elif A is None and D is not None: #lower is missing: upside down triangle
-                        new_faces_layer.append((D, C, B))
+                for radial_index in range(this_count):#A is north, W is      
+                    N=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
+                    W=self.vertices[layer_index][radial_index%this_count]
+                    E=self.vertices[layer_index][(radial_index+1) % this_count]
+                    S=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%prev_count]
+                    if N is not None and abs(N[2]-W[2])<half_h:#overlapping layers with N (the next): upside down triangle
+                        new_faces_layer.append((E, W, S))                        
+                        new_face_types= "middle_upside_down_triangle"
+                    elif S is not None and abs(S[2]-W[2])<half_h:#overlapping layers with S (the previous):  triangle
+                        new_faces_layer.append((E, N, W))                        
+                        new_face_types= "middle_triangle"
+                    elif N is not None and S is not None:#all 4 are there: rhombus
+                        new_faces_layer.append((E, N, W, S))
+                        new_face_types= "middle_rhombus" if layer_index<len(self.vertices)-1 else "top_rhombus"
+                    elif N is not None: #lower is missing: triangle (bottom)
+                        new_faces_layer.append((E, N, W))
+                        new_face_types= "bottom_triangle"
+                    elif N is None and S is not None: #lower is missing: upside down triangle (top)
+                        new_faces_layer.append((E, W, S))
+                        new_face_types= "top_upside_down_triangle"
             if len(new_faces_layer) > 0:
                 self.faces.append(new_faces_layer)
+                self.face_types.append(new_face_types)
                 tot_faces += len(new_faces_layer)
         self.print(type="report",text=f"✔️ {tot_faces} facce")
         #update barycenter
@@ -389,8 +398,8 @@ class Zome:
         self.print(type="report",text=f"✔️ {tot_faces} facce")
     
     def draw_beams(self):
-        beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
-        self.main_collection.children.link(beams_collection)
+        self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
+        self.main_collection.children.link(self.beams_collection)
         rotation_matrix = mathutils.Matrix.Rotation(math.radians(self.alpha), 4, 'Z')
 
         #total time with complete loop for beams w/o physics: 23+-1 secs
@@ -401,21 +410,33 @@ class Zome:
         tot_beams=0
         t_0=time.time()
         #FIRST STRIP:
+        beam_names={
+            "bottom_triangle":["NE","NW","S"],
+            "middle_rhombus":["NE","NW","SW","SE"],
+            "top_upside_down_triangle":["N","SW","SE"],
+            "middle_upside_down_triangle":["N","SW","SE"],
+            "middle_triangle":["NE","NW","S"],
+            "top_rhombus":["NE","NW","SW","SE"]
+        }
         for layer_index, layer in enumerate(self.faces):                
-            physics_type="ACTIVE" if self.physics["on"] else ""            
+            physics_type="ACTIVE" if self.physics["on"] else ""  
             poly_beams = beams_polygon(
-                add_to_collection=beams_collection,
-                beam_name=f"{self.name}_beam_polygon_{layer_index}_{0}",
+                add_to_collection=self.beams_collection,
+                poly_name=f"{self.name}_beam_polygon_{layer_index}_{0}",
+                beam_names=beam_names[self.face_types[layer_index]],
                 polyverts=layer[0],
                 TW=self.beam["TW"],
                 TT=self.beam["TT"],
                 method="butt joint ccw",
-                TT_sink_fraction=0, #SVSV delete - i hoped a union of the beams with some sinking would take the extra vertices away, but it doesnt work
+                TT_sink_fraction=0, #SVSV delete 
                 material_name=material_name
                 )
+            if self.physics["internal_type"]!="":
+                print(poly_beams,self.face_types[layer_index])
+                constraints_chain(poly_beams)
             self.beams_strip.append(poly_beams)# one polygon per layer)
         #set physics
-        for beam in beams_collection.objects:
+        for beam in self.beams_collection.objects:
             bpy.context.view_layer.objects.active = beam
             bpy.ops.rigidbody.object_add()
             beam.rigid_body.type = "ACTIVE"
@@ -431,42 +452,94 @@ class Zome:
             beam["density"] = self.physics["density"]
         #OTHER BEAMS
         tot_beams=0
-        for poly_index,poly in enumerate(self.beams_strip):#loop over layers; 1 layer=1  polygon prototype                       
+        for layer_index,layer in enumerate(self.beams_strip):#loop over layers; 1 layer=1  polygon prototype                       
             last_poly=None # this is to always use the same matrix for the rotation                
-            tot_beams+=len(poly)*(self.N-1)  
-            for i in range(self.N):# b) loop over N angles
-                if i==0:#prototype poly 
-                    self.beams.append(poly)#this layer is already done
-                    last_poly=poly
+            tot_beams+=len(layer)*(self.N-1)  
+            for alpha_index in range(self.N):# b) loop over N angles
+                if alpha_index==0:#prototype poly 
+                    self.beams.append(layer)#this layer is already done
+                    last_poly=layer
                 else:#
                     new_poly=[]
-                    for last_beam in last_poly:# c) loop over polygon beams
-                        beam_index=last_beam["beams_polygon_index"] # index within the polygon (stored in the beam object at the creation by beams_polygon() )
+                    for beam_index,last_beam in enumerate(last_poly):# c) loop over polygon beams
                         #duplicate and rotate the homologous beam
                         new_beam = last_beam.copy()
-                        new_beam["beams_polygon_index"]=beam_index
-                        new_beam.name = rename(f"{self.name}_beam_polygon_{poly_index}_{i}_{beam_index}")
-                        beams_collection.objects.link(new_beam)  
+                        new_beam.name = rename(f"{self.name}_beam_polygon_{layer_index}_{alpha_index}_{beam_names[self.face_types[layer_index]][beam_index]}")
+                        self.beams_collection.objects.link(new_beam)  
                         new_beam.matrix_world = rotation_matrix @ new_beam.matrix_world
                         new_poly.append(new_beam)
+                    #now the poly is completed, it can rewrite the target object for rigid body constraints:
+                    if self.physics["internal_type"]!="":
+                        for beam_index,beam in enumerate(new_poly):
+                            bpy.context.view_layer.objects.active = beam
+                            beam.rigid_body_constraint.object2 = new_poly[(beam_index+1)%len(new_poly)]
                     last_poly=new_poly
                     self.beams.append(new_poly)            
         self.print(type="report",text=f"✔️ {tot_beams} tavole ({time.time()-t_0:.2f}s)")
         
     def add_constraints(self):
         if (self.physics["on"]):
-            if self.physics["internal_type"]=="spring":
+            if self.physics["internal_type"]=="spring": #SVSV DELETE
                 #INTERNAL CONSTRAINTS: 16+-1 sec
                 t_0=time.time()
                 for layer_index, layer in enumerate(self.beams):
-                    constraints_chain(layer)
-                self.print(type="report",text=f"✔️ vincoli interni: ({time.time()-t_0:.2f}s)") 
+                    pass#constraints_chain(layer)
+                #self.print(type="report",text=f"✔️ vincoli interni: ({time.time()-t_0:.2f}s)") 
             if self.physics["external_type"]=="spring":
-                #EXTERNAL CONSTRAINTS: ??
+                for layer_index, layer in enumerate(self.beams[0:0]):#first layer only for now
+                    layer_type=self.face_types[layer_index]                    
+                    for i in range(len(layer)): #horizontal loop
+                        obj_list=[]
+                        if layer_type=="bottom_triangle" or layer_type=="middle_rhombus":
+                            pos=self.vertices[layer_index][i]
+                            rot=mathutils.Euler((0,0,math.atan2(pos[1]-self.barycenter[1],pos[0]-self.barycenter[0]))).to_matrix()
+                            #obj=the beam named "self.name_beam_polygon_{layer_index}_{i}_NE" to the list:
+                            obj_list.append(
+                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"],
+                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NW"],
+                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{i}_SE"],
+                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{i}_SW"],
+                                )                       
+                        if obj_list:
+                            self.add_interpoly_constraint(name=f"{self.name}_beam_polygon_{layer_index}_{i}", xyz=beam.location, obj_list=obj_list, stiffness=self.physics["stiffness"], damping=self.physics["damping"])
                 t_0=time.time()
                 #WIP
                 self.print(type="report",text=f"✔️ vincoli esterni: ({time.time()-t_0:.2f}s)") 
-                    
+
+    def add_interpoly_constraint(self, name, loc,rot, obj_list, stiffness, damping):
+        if len(obj_list) < 2:
+            print("Devi fornire almeno due oggetti per creare il constraint.")
+            return
+
+        # Crea un oggetto empty
+        bpy.ops.object.empty_add(type='PLAIN_AXES', location=loc, rotation=rot)
+        empty = bpy.context.object
+        empty.name = name
+        return
+        # Aggiungi il Rigid Body Constraint all'empty
+        bpy.ops.rigidbody.constraint_add()
+        constraint = empty.rigid_body_constraint
+        constraint.type = 'GENERIC_SPRING'
+        
+        # Collega gli oggetti al constraint
+        for obj in obj_list:
+            constraint.object1 = obj
+
+        # Configura il constraint
+        constraint.use_spring_z = True
+        constraint.limit_lin_z_lower = -0.1
+        constraint.limit_lin_z_upper = 0.1
+        constraint.spring_stiffness_z = stiffness
+        constraint.spring_damping_z = damping
+        
+        # Blocca gli assi di movimento non richiesti
+        constraint.use_limit_lin_x = True
+        constraint.use_limit_lin_y = True
+        constraint.use_limit_lin_z = True
+        constraint.use_limit_ang_x = True
+        constraint.use_limit_ang_y = True
+        constraint.use_limit_ang_z = True
+
     #UTILITY FUNCTIONS:
     def print(self, text="",type="info"):
         if not self.silent:
@@ -479,7 +552,7 @@ class Zome:
         types=["basic","physics","global","layers"]
         if type=="all":
             for type in types:
-                info+=f"{type}:\n{self.info(type,0)}\n"
+                info+=f"{type}:\n{self.info(type,precision)}\n"
         else:
             match type:
                 case "basic":
@@ -501,13 +574,14 @@ class Zome:
                     for type_index,type in enumerate(types):
                         info+=f"    {types_names[type_index]} {round(self.global_data(type),precision)} {types_units[type_index]} \n"
                 case "layers":
-                    types=["height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
-                    types_names=["altezza","lato poligono","area poligono","raggio maggiore","area c.circoscritto","volume"]
-                    types_units=["m","m","m2","m","m2","m3"]
+                    types=["face_type","height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
+                    types_names=["tipo","altezza","lato poligono","area poligono","raggio maggiore","area c.circoscritto","volume"]
+                    types_units=["","m","m","m2","m","m2","m3"]
                     for layer_index in range(len(self.vertices)-1):
                         info+=f"*livello {layer_index}:\n"
                         for type_index,type in enumerate(types):
-                            info+=f"    {types_names[type_index]} {round(self.layer_data(type,layer_index),precision)} {types_units[type_index]} \n"
+                            value=(str(round(self.layer_data(type,layer_index),precision))+types_units[type_index]) if types_units[type_index]!="" else self.layer_data(type,layer_index)
+                            info+=f"    {types_names[type_index]} {value} \n"
         return info
 
     def global_data(self,type=""):
@@ -527,13 +601,15 @@ class Zome:
     
     def layer_data(self,type="",target_index=0):#area of the layer_index-th layer (regular polygon of self.N vertices/sides):
         layer = self.vertices[target_index] 
-        types=["height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
+        types=["face_type","height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
         if type not in types: #returns a list of dictionaries of all the types
             result=[]
             for type in types:
                 result.append({type:self.layer_data(type,target_index)})
             return result
         match type:   
+            case "face_type":
+                return self.face_types[target_index]
             case "height":
                 return layer[0][2]
             case "polygon_side":
@@ -593,19 +669,7 @@ def find_theta(N,S,ZH,target_value,type="base_area"):
 
 #TODO:
 
-def add_constraint(obj, to_obj):
-    # takes for granted that both objects have physics active
 
-    # Crea il vincolo di tipo molla
-    bpy.ops.object.select_all(action='DESELECT')
-    bpy.context.view_layer.objects.active = obj
-    obj.select_set(True)
-    bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
-
-    # Configura il vincolo
-    constraint = obj.rigid_body_constraint
-    constraint.object1 = obj
-    constraint.object2 = to_obj
 
     # Abilita le molle per le traslazioni sugli assi X, Y e Z
     constraint.use_spring_x = True

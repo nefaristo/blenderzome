@@ -168,9 +168,6 @@ def check_complanarity(verts=[]):
 
 # OBJECTS:
 
-import bpy
-import bpy
-
 def display_paths():
     # Display material paths
     print("=== Material Paths ===")
@@ -198,7 +195,6 @@ def display_paths():
         if texture.filepath:
             print(f"Texture: {texture.name}, Path: {texture.filepath}")
 
-
 def assign_material(obj, material_name):
     if obj is None or obj.type != 'MESH':
         print("Object not a mesh.")
@@ -219,7 +215,6 @@ def assign_material(obj, material_name):
         obj.data.materials[0] = material
     
     print(f"Material '{material_name}' assigned to '{obj.name}'.")
-
 
 def boolean_union_selected(new_object_name):
     # Ottieni gli oggetti selezionati
@@ -266,11 +261,13 @@ def boolean_union_selected(new_object_name):
 def beams_polygon(polyverts, 
                   TW, TT,TT_sink_fraction=0.01, 
                   method="butt joint ccw", 
-                  beam_name="beam",
+                  poly_name="poly",
+                  beam_names=[],
                   add_to_collection=None,
                   material_name=""):
     result = []
     z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2])#normal to the plane
+
 
     for i in range(len(polyverts)):
         #prep: edge (beam length), thickness (in the plane), adjiacents edges data
@@ -283,7 +280,7 @@ def beams_polygon(polyverts,
         next_edge_norm = (mathutils.Vector(polyverts[(i + 2) % len(polyverts)]) - edge_1).normalized()
         alpha_0 = edge.angle(prev_edge_norm)
         alpha_1 = edge.angle(next_edge_norm)        
-
+        beam_name=beam_names[i] if beam_names else f"{poly_name}_{i}"
         #calc lower vertices depending on method
         if method == "butt joint ccw": #cut on the ccw side (left)
             delta_0=TT / (math.sin(alpha_0) if alpha_0!=0 else 1)
@@ -319,12 +316,10 @@ def beams_polygon(polyverts,
             outer_low_0, outer_low_1, outer_high_1, outer_high_0,
             inner_low_0, inner_high_0, inner_high_1, inner_low_1
             ],
-            name=f"{beam_name}_{i}",
+            name=f"{poly_name}_{beam_name}",
             material_name=material_name,
             add_to_collection=add_to_collection)
 
-        #set origin
-        obj["beams_polygon_index"]=i
         result.append(obj)  # Aggiungi l'oggetto alla lista        
     return result  # Restituisci la lista degli oggetti creati
 
@@ -496,7 +491,6 @@ def constraints_chain(obj_list,loop=True):
                 spring_constraint.spring_damping_z = damping_lin_z
 
     return  
-
 
 #CESTINO:
 

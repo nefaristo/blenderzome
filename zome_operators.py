@@ -57,12 +57,14 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             },
             zome_output= self.zome_input
         )
-        bpy.context.scene.report_text=zome1.info("all") 
+        info=zome1.info("all")
+        bpy.context.scene.report_text=info
+        #print(info)
         bpy.context.scene.is_updating = False
         return {'FINISHED'}
 
     #receives and manages messages from zome
-    def zome_input(self,type="info",text=""):
+    def zome_input(self,type="info",text="",precision=2):
         return #SVSV
         match type:   
             case "report":
