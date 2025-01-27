@@ -268,8 +268,7 @@ def beams_polygon(polyverts,
                   method="butt joint ccw", 
                   beam_name="beam",
                   add_to_collection=None,
-                  physics_type="",
-                  physics_density=1):
+                  material_name=""):
     result = []
     z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2])#normal to the plane
 
@@ -321,19 +320,24 @@ def beams_polygon(polyverts,
             inner_low_0, inner_high_0, inner_high_1, inner_low_1
             ],
             name=f"{beam_name}_{i}",
+            material_name=material_name,
             add_to_collection=add_to_collection)
 
         #set origin
         obj["beams_polygon_index"]=i
-        if physics_type!="":
-            set_physics(obj,type=physics_type, density=physics_density)
         result.append(obj)  # Aggiungi l'oggetto alla lista        
     return result  # Restituisci la lista degli oggetti creati
 
-def create_parallelepiped(vertices, name="",add_to_collection=None):
+def create_parallelepiped(vertices, name="",material_name="",add_to_collection=None):
     collection=add_to_collection if add_to_collection else bpy.context.collection
     #VERTICES RELATED:
     mesh = bpy.data.meshes.new(name)
+    mat = bpy.data.materials.get(material_name)
+    if mat is not None:
+        if mesh.materials:
+            mesh.materials[0] = mat
+        else:
+            mesh.materials.append(mat)
     obj = bpy.data.objects.new(rename(name), mesh)
     # create object from mesh:
     bm = bmesh.new()
@@ -357,10 +361,23 @@ def create_parallelepiped(vertices, name="",add_to_collection=None):
     v2 = (bm_verts[7].co - bm_verts[1].co).normalized()  # Edge lungo Y
     v2 = v3.cross(v1).normalized()
     bm.free()
-    collection.objects.link(obj)#needed to select it, needed to apply rotation 
-    #draw v1 starting from obj.location:
-     
 
+    collection.objects.link(obj)#needed to select it, needed to apply rotation 
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    # Entra in modalità modifica
+    bpy.ops.object.mode_set(mode='EDIT')
+
+    # Seleziona tutte le facce
+    bpy.ops.mesh.select_all(action='SELECT')
+
+    # Srotola le UV
+    bpy.ops.uv.smart_project()
+
+    # Torna in modalità oggetto
+    bpy.ops.object.mode_set(mode='OBJECT') 
+    #
     align_local_axes(obj,v1,v2,v3)#also set origin to the center of volume
     return obj 
 
@@ -396,7 +413,7 @@ def align_local_axes(obj, v1, v2, v3):
     return obj
 
 # PHYSICS:
-def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.7,active=True):
+def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.8,active=True):
     # Assegna il corpo rigido attivo
     bpy.context.view_layer.objects.active = obj
     bpy.ops.rigidbody.object_add()
@@ -415,78 +432,70 @@ def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.7,active=T
 def constraints_chain(obj_list,loop=True):
     active=False
     for index, obj in enumerate(obj_list):
-        print(f"{obj.name}:")
-        #apply scale and rotation
-        #makes it physical
-        
-        if not active: #TEMP: FIRST PASSIVE TO GIVE A REFERENCE POINT
-            active=True
-        #add a generic constraint to the next one (last one as well if loop=True)
-        if index < len(obj_list) - 1 or loop:
-            # Ottieni il prossimo oggetto nella lista, o il primo se è un loop
-            next_obj = obj_list[(index + 1) % len(obj_list)] if loop else obj_list[index + 1]
+        if obj and obj.type=="MESH":   
+            #apply scale and rotation
+            #makes it physical                
+            if not active: #TEMP: FIRST PASSIVE TO GIVE A REFERENCE POINT
+                active=True
+            #add a generic constraint to the next one (last one as well if loop=True)
+            if index < len(obj_list) - 1 or loop:
+                # Ottieni il prossimo oggetto nella lista, o il primo se è un loop
+                next_obj = obj_list[(index + 1) % len(obj_list)] if loop else obj_list[index + 1]
+                # Aggiungi un constraint di tipo "Rigid Body Constraint"
+                bpy.ops.object.select_all(action='DESELECT')  # Deseleziona tutti gli oggetti
+                obj.select_set(True)  # Seleziona l'oggetto corrente
+                next_obj.select_set(True)  # Seleziona il prossimo oggetto
+                bpy.context.view_layer.objects.active = obj  # Imposta l'oggetto corrente come attivo
 
-            # Aggiungi un constraint di tipo "Rigid Body Constraint"
-            bpy.ops.object.select_all(action='DESELECT')  # Deseleziona tutti gli oggetti
-            obj.select_set(True)  # Seleziona l'oggetto corrente
-            next_obj.select_set(True)  # Seleziona il prossimo oggetto
-            bpy.context.view_layer.objects.active = obj  # Imposta l'oggetto corrente come attivo
+                # Aggiungi il constraint
+                bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
+                spring_constraint = bpy.context.object.rigid_body_constraint
 
-            # Aggiungi il constraint
-            bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
-            spring_constraint = bpy.context.object.rigid_body_constraint
+                # Imposta le proprietà del constraint
+                spring_constraint.object1 = obj  # Primo oggetto
+                spring_constraint.object2 = next_obj  # Secondo oggetto
 
-            # Imposta le proprietà del constraint
-            spring_constraint.object1 = obj  # Primo oggetto
-            spring_constraint.object2 = next_obj  # Secondo oggetto
+                limit_ang_plane=0 #fixed
+                limit_lin_plane=0 #fixed
 
-            limit_ang_plane=0 #fixed
-            limit_lin_plane=0 #fixed
-
-            limit_ang_z=3.14/90 #1 degree
-            limit_lin_z=0.01
-            stiffness_ang_z=10
-            damping_ang_z=0.5
-            stiffness_lin_z=10
-            damping_lin_z=0.5
-           
-            spring_constraint.use_limit_ang_x=True
-            spring_constraint.limit_ang_x_lower = -limit_ang_plane #unità: rad
-            spring_constraint.limit_ang_x_upper = limit_ang_plane
-            spring_constraint.use_limit_ang_y=True
-            spring_constraint.limit_ang_y_lower = -limit_ang_plane #unità: rad
-            spring_constraint.limit_ang_y_upper = limit_ang_plane
-            spring_constraint.use_limit_ang_z = True
-            spring_constraint.limit_ang_z_lower = -limit_ang_z #unità: rad
-            spring_constraint.limit_ang_z_upper = limit_ang_z
-
+                limit_ang_z=3.14/90 #1 degree
+                limit_lin_z=0.01
+                stiffness_ang_z=10
+                damping_ang_z=0.5
+                stiffness_lin_z=10
+                damping_lin_z=0.5
             
-            spring_constraint.use_limit_lin_x=True
-            spring_constraint.limit_lin_x_lower = -limit_lin_plane
-            spring_constraint.limit_lin_x_upper = limit_lin_plane
-            spring_constraint.use_limit_lin_y=True
-            spring_constraint.limit_lin_y_lower = -limit_lin_plane
-            spring_constraint.limit_lin_y_upper = limit_lin_plane
-            spring_constraint.use_limit_lin_z = True
-            spring_constraint.limit_lin_z_lower = -limit_lin_z
-            spring_constraint.limit_lin_z_upper = limit_lin_z
+                spring_constraint.use_limit_ang_x=True
+                spring_constraint.limit_ang_x_lower = -limit_ang_plane #unità: rad
+                spring_constraint.limit_ang_x_upper = limit_ang_plane
+                spring_constraint.use_limit_ang_y=True
+                spring_constraint.limit_ang_y_lower = -limit_ang_plane #unità: rad
+                spring_constraint.limit_ang_y_upper = limit_ang_plane
+                spring_constraint.use_limit_ang_z = True
+                spring_constraint.limit_ang_z_lower = -limit_ang_z #unità: rad
+                spring_constraint.limit_ang_z_upper = limit_ang_z
+
+                
+                spring_constraint.use_limit_lin_x=True
+                spring_constraint.limit_lin_x_lower = -limit_lin_plane
+                spring_constraint.limit_lin_x_upper = limit_lin_plane
+                spring_constraint.use_limit_lin_y=True
+                spring_constraint.limit_lin_y_lower = -limit_lin_plane
+                spring_constraint.limit_lin_y_upper = limit_lin_plane
+                spring_constraint.use_limit_lin_z = True
+                spring_constraint.limit_lin_z_lower = -limit_lin_z
+                spring_constraint.limit_lin_z_upper = limit_lin_z
 
 
-            spring_constraint.use_spring_ang_z = True  # Abilita la molla sull'asse Z
-            spring_constraint.spring_stiffness_ang_z = stiffness_ang_z
-            spring_constraint.spring_damping_ang_z = damping_ang_z
-            
-            spring_constraint.use_spring_z = True  # Abilita la molla sull'asse Z
-            spring_constraint.spring_stiffness_z = stiffness_lin_z
-            spring_constraint.spring_damping_z = damping_lin_z
+                spring_constraint.use_spring_ang_z = True  # Abilita la molla sull'asse Z
+                spring_constraint.spring_stiffness_ang_z = stiffness_ang_z
+                spring_constraint.spring_damping_ang_z = damping_ang_z
+                
+                spring_constraint.use_spring_z = True  # Abilita la molla sull'asse Z
+                spring_constraint.spring_stiffness_z = stiffness_lin_z
+                spring_constraint.spring_damping_z = damping_lin_z
 
     return  
-
-
-
-
-
-
 
 
 #CESTINO:

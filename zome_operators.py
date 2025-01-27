@@ -29,19 +29,23 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "barycenter": 1 if context.scene.show_vertices else 0,
                 "beams": 1 if context.scene.show_beams else 0
             },
-            build={
+            beam={
                 "TW": context.scene.beam_width / 100.0,
                 "TT": context.scene.beam_thickness / 100.0,
-                #"base_thickness": context.scene.base_thickness/ 100.0,
-                "beam_density": context.scene.beam_density,
                 "material_name": "abete rosso",#SVSV
             },
             physics={
-                "active": context.scene.physics_active,
+                "on": context.scene.physics_on,
+                "type":"ACTIVE",
+                "type_first_beam":"PASSIVE",
                 "density": context.scene.beam_density,
                 "friction": context.scene.friction,
-                "spring_stiffness": context.scene.spring_stiffness,
-                "spring_damping": context.scene.spring_damping,
+                "internal_type": context.scene.internal_type,
+                "internal_spring_stiffness": context.scene.internal_spring_stiffness,
+                "internal_spring_damping": context.scene.internal_spring_damping,
+                "external_type": context.scene.external_type,
+                "external_spring_stiffness": context.scene.external_spring_stiffness,
+                "external_spring_damping": context.scene.external_spring_damping,
             },
             modifications={
                 "top_modifications_type": context.scene.top_modifications_type,

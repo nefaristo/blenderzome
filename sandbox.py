@@ -78,6 +78,7 @@ def draw_polygon(name, vertices, only_edges=False):
         bm.free()
         
         return obj
+
 def rnd_poly_vertices(number_of_vertices, radius, on_xy_plane=False):
     vertices = []
     
@@ -118,10 +119,7 @@ def rnd_poly_vertices(number_of_vertices, radius, on_xy_plane=False):
     
     return vertices
 
-
 def test_polygon():
-    
-
     #varie liste di vertici:
     rnd_rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=False)
     #rpv=[(0.3999148699053098, -0.00825208026010272, 0), (0.29867582132566467, 0.2660690770372229, 0), (0.014141169299956707, 0.39974995601104196, 0), (-0.29997214364181013, 0.26460671389618445, 0), (-0.3992668030203351, 0.02420785008878145, 0), (-0.2848712346911126, -0.2807995364055309, 0), (0.008147981801640931, -0.39991700438035904, 0), (0.28189451733450505, -0.28378773951097047, 0)]

@@ -45,18 +45,23 @@ class Zome:
                 "rotation": (0,0,0), 
                 "layer_types": [],#[None|"H"|"V"]| [] 
             },
-            build={
+            beam={
                 "TW":0.1,
                 "TT":0.03,
-                "base_thickness": 3.0,  # Spessore della base in centimetri
                 "material_name": "",
             },
             physics={
-                "active": False,
+                "on": False,
+                "type":"ACTIVE",
+                "type_first_beam":"PASSIVE",
                 "density": 1,
                 "friction": 0.8,
-                "spring_stiffness": 10,
-                "spring_damping": 0.5,
+                "internal_type": "none",
+                "internal_spring_stiffness": 10,
+                "internal_spring_damping": 0.5,
+                "external_type": "none",
+                "external_spring_stiffness": 10,
+                "external_spring_damping": 0.5,
             },
             silent=False,
             zome_output=None
@@ -69,7 +74,7 @@ class Zome:
         self.N = N if N > 0 else 8
         self.S = S if S > 0 and S < N else N # steps from the base up. S=M(zooOomes) =rhombi layers n.+1 = len(len(vertices)) -1
         self.theta = theta if theta > 0 and theta < 180 else 45
-        self.ZH = ZH if ZH > 0 else 1   
+        self.ZH = ZH if ZH > 0 else 1        
         # REMINDER: the operator ** joins the two dictionaries so that the values of the second dictionary overwrite the first only if present
         self.modifications = {**{
             "top_modifications_type": "none",            
@@ -88,25 +93,30 @@ class Zome:
             "barycenter": 0 ,
             "beams": 0
         }, **show}     
-        self.build = {**{
+        self.beam = {**{
             "TW":0.1,
             "TT":0.03,
-            "base_thickness": 0.0,  # Spessore della base in centimetri
-        }, **build}
+            "material_name": "",
+        }, **beam}
         self.physics = {**{
-            "active": False,
+            "on": False,
+            "type":"ACTIVE",
+            "type_first_beam":"PASSIVE",
             "density": 1,
             "friction": 0.8,
-            "spring_stiffness": 10,
-            "spring_damping": 0.5,
+            "internal_type": "none",
+            "internal_spring_stiffness": 10,
+            "internal_spring_damping": 0.5,
+            "external_type": "none",
+            "external_spring_stiffness": 10,
+            "external_spring_damping": 0.5,
         }, **physics}
         #derived parameters:
         self.H = self.ZH / (N / S) #N=S => complete polyhedron
         self.h = self.ZH / (S)
         self.l = self.h / math.cos(math.radians(self.theta))
         self.alpha = 360.0 / N        
-        self.show["beams"] = self.show["beams"] and (self.build["TW"] > 0 and self.build["TT"] > 0)
-        self.show["base"] = self.build["base_thickness"] > 0    
+        self.show["beams"] = self.show["beams"] and (self.beam["TW"] > 0 and self.beam["TT"] > 0)   
         self.spin = 0 #how much the first layer is rotated
         self.silent=silent
 
@@ -123,7 +133,7 @@ class Zome:
         # Build the structure
         self.print(type="report",text=f"\n***********\nZome '{self.name}'")
         self.print(type="report",text=f"Geometria: N={self.N}, steps={self.S}, θ={self.theta:.2f}, ZH={self.ZH:.2f}")
-        self.print(type="report",text=f"Struttura: {self.build}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\nFisica: {self.physics}\n***********")
+        self.print(type="report",text=f"Struttura: {self.beams}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\nFisica: {self.physics}\n***********")
         
         self.print(type="report",text=f"Calcolo geometria ")
         self.set_vertices()  # theoretical vertices
@@ -136,9 +146,10 @@ class Zome:
         if self.show["vertices"] == 1:
             self.draw_vertices()  
         if self.show["faces"] == 1:
-            self.draw_faces()              
+            self.draw_faces()  
         if self.show["beams"] == 1:
             self.draw_beams() 
+        self.add_constraints()
         self.print(type="report",text=f"Zome '{self.name}' completato")
         #deselect all objects
         bpy.ops.object.select_all(action='DESELECT')
@@ -172,12 +183,12 @@ class Zome:
         if self.show["vertices"] or self.show["faces"] or self.show["beams"]:
             self.main_collection = bpy.data.collections.new(self.name)
             bpy.context.scene.collection.children.link(self.main_collection)        
-                
+
     def set_vertices(self):
         tot_vertices=0
         self.vertices = []
         for layer_index in range(self.S+1): 
-            vertices_layer = []  
+            vertices_layer = []              
             match layer_index:
                 case _ if layer_index==0 :  # APEX 
                     vertices_layer.append((0, 0, self.ZH))  # appends to the layer a tuple with the apex
@@ -201,7 +212,7 @@ class Zome:
                         B_vec = mathutils.Vector(B)
                         C_vec = mathutils.Vector(C)
                         D_vec = mathutils.Vector(D)
-                        vertices_layer.append((D.x, D.y, D.z))     
+                        vertices_layer.append((D.x, D.y, D.z))         
                         tot_vertices += 1    
             self.vertices.append(vertices_layer)
             tot_vertices += len(vertices_layer)           
@@ -267,7 +278,11 @@ class Zome:
             prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
             next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])
             if this_count>1:
-                for radial_index in range(this_count):     
+                #the order of the vertices is important to eventually label the beams and in turn to connect them
+                # for everything but the upside down triangles, firth beam is N-E, ergo the first vertex is E 
+                # for ud triangles, it starts from N 
+                # 
+                for radial_index in range(this_count):#A is north, B is      
                     A=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
                     B=self.vertices[layer_index][radial_index%this_count]
                     C=self.vertices[layer_index][(radial_index+1) % this_count]
@@ -328,7 +343,7 @@ class Zome:
         size=self.ZH*proportional_size
         time_0=time.time()
         vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
-        self.main_collection.children.link(vertices_collection)        
+        self.main_collection.children.link(vertices_collection)
         #barycenter cube:
         bpy.ops.mesh.primitive_cube_add(size=size, location=self.barycenter)
         obj = bpy.context.object
@@ -377,80 +392,80 @@ class Zome:
         beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
         self.main_collection.children.link(beams_collection)
         rotation_matrix = mathutils.Matrix.Rotation(math.radians(self.alpha), 4, 'Z')
+
+        #total time with complete loop for beams w/o physics: 23+-1 secs
+        #this method (only one for polygon for type, then copying and rotating) is 6+-1 secs
+        self.beams_strip = []
+        self.beams = []
+        material_name=self.beam["material_name"]
         tot_beams=0
         t_0=time.time()
-        #total time with complete loop for beams w/o physics: 23+-1 sec
-        #original_beams contains the first beam of each kind
-        self.beams_strip = []
-        material_name=self.build["material_name"]
-        for layer_index, layer in enumerate(self.faces):
+        #FIRST STRIP:
+        for layer_index, layer in enumerate(self.faces):                
+            physics_type="ACTIVE" if self.physics["on"] else ""            
             poly_beams = beams_polygon(
                 add_to_collection=beams_collection,
-                beam_name=f"{self.name}_{layer_index}_{0}",
+                beam_name=f"{self.name}_beam_polygon_{layer_index}_{0}",
                 polyverts=layer[0],
-                TW=self.build["TW"],
-                TT=self.build["TT"],
+                TW=self.beam["TW"],
+                TT=self.beam["TT"],
                 method="butt joint ccw",
-                TT_sink_fraction=0,
-                #physics_type="" if self.physics["active"] else "ACTIVE",
-                #physics_density=self.physics["density"],
+                TT_sink_fraction=0, #SVSV delete - i hoped a union of the beams with some sinking would take the extra vertices away, but it doesnt work
+                material_name=material_name
                 )
-            if material_name != "":
-                assign_material(obj=poly_beams, material_name=material_name)
-            # a copy of collection objects, to avoid looping over the collection you will add to (beams_collection)
-            self.beams_strip.append(poly_beams)#M layers of 1 polygon (3-4 beams)
-        #every beam is duplicated and rotated in place.
+            self.beams_strip.append(poly_beams)# one polygon per layer)
+        #set physics
+        for beam in beams_collection.objects:
+            bpy.context.view_layer.objects.active = beam
+            bpy.ops.rigidbody.object_add()
+            beam.rigid_body.type = "ACTIVE"
+            if "volume" in beam:
+                beam.rigid_body.mass = self.physics["density"] * beam["volume"]
+            else:
+                print("volume not found in object",beam.name)
+            beam.rigid_body.restitution = 0.05 #bounciness on blender interface
+            beam.rigid_body.linear_damping = 0.0 #could be seen as friction with air
+            beam.rigid_body.angular_damping = 0.0 #could be seen as friction with air
+            beam.rigid_body.friction = 0.8  # principalmente contro il pavimento
+            #custom properties:
+            beam["density"] = self.physics["density"]
+        #OTHER BEAMS
         tot_beams=0
-        for layer_index,layer in enumerate(self.beams_strip):
-            tot_beams+=len(layer)*(self.N-1)
-            for beam in layer:
-                beam_index = beam["beams_polygon_index"] # index within the polygon (stored in the beam object at the creation by beams_polygon() )
-                last_beam=beam #so to apply always the same matrix to the next beam
-                for i in range(self.N)[1:]:
-                    #duplicate and rotate the homologous beam
-                    beam_dup = last_beam.copy()
-                    beam_dup.name = rename(f"{self.name}_beam_polygon_{layer_index}_{i}_{beam_index}")
-                    beams_collection.objects.link(beam_dup)  
-                    beam_dup.matrix_world = rotation_matrix @ beam_dup.matrix_world
-                    last_beam=beam_dup
+        for poly_index,poly in enumerate(self.beams_strip):#loop over layers; 1 layer=1  polygon prototype                       
+            last_poly=None # this is to always use the same matrix for the rotation                
+            tot_beams+=len(poly)*(self.N-1)  
+            for i in range(self.N):# b) loop over N angles
+                if i==0:#prototype poly 
+                    self.beams.append(poly)#this layer is already done
+                    last_poly=poly
+                else:#
+                    new_poly=[]
+                    for last_beam in last_poly:# c) loop over polygon beams
+                        beam_index=last_beam["beams_polygon_index"] # index within the polygon (stored in the beam object at the creation by beams_polygon() )
+                        #duplicate and rotate the homologous beam
+                        new_beam = last_beam.copy()
+                        new_beam["beams_polygon_index"]=beam_index
+                        new_beam.name = rename(f"{self.name}_beam_polygon_{poly_index}_{i}_{beam_index}")
+                        beams_collection.objects.link(new_beam)  
+                        new_beam.matrix_world = rotation_matrix @ new_beam.matrix_world
+                        new_poly.append(new_beam)
+                    last_poly=new_poly
+                    self.beams.append(new_poly)            
         self.print(type="report",text=f"✔️ {tot_beams} tavole ({time.time()-t_0:.2f}s)")
-
-    def draw_beams_legacy(self):
-        t_0=time.time()
-        beams_collection = bpy.data.collections.new(rename(self.name + "_beams_legacy"))
-        self.main_collection.children.link(beams_collection)
-        self.print(f"{beams_collection.name} created")
-        tot_beams=0
-        for layer_index, layer in enumerate(self.faces):                
-            for poly_index, poly in enumerate(layer):
-                objects = beams_polygon(
-                    add_to_collection=beams_collection,
-                    beam_name=f"{self.name}_beam_polygon_legacy_{layer_index}_{poly_index}",
-                    polyverts=poly,
-                    TW=self.build["TW"],
-                    TT=self.build["TT"],
-                    method="butt joint ccw",
-                    TT_sink_fraction=0,
-                )
-                set_collection(name=beams_collection.name, 
-                            add_objects=objects,
-                            first_delete_objects=False) 
-            tot_beams+=len(layer)*len(objects)                   
-        self.print(type="report",text=f"✔️ {tot_beams} tavole ({time.time()-t_0:.2f}s)")
-    
-    def draw_base(self):        
-        base_thickness = self.build["base_thickness"] 
-        if base_thickness > 0:
-            self.print("Base (base_thickness:{base_thickness})")
-            base_radius = math.sqrt(self.vertices[0][0][0]**2 + self.vertices[0][0][1]**2)
-            bpy.ops.mesh.primitive_cylinder_add(vertices=self.N, radius=base_radius, depth=base_thickness)
-            #moves it on z down by half of its height
-            obj = bpy.context.object
-            obj.location = (0, 0, -base_thickness / 2)
-            obj.name = rename(f"{self.name}_base")
-            self.main_collection.objects.link(obj)
-            bpy.context.collection.objects.unlink(obj)
-            self.print(type="report",text="❌ base: lavori in corso)")
+        
+    def add_constraints(self):
+        if (self.physics["on"]):
+            if self.physics["internal_type"]=="spring":
+                #INTERNAL CONSTRAINTS: 16+-1 sec
+                t_0=time.time()
+                for layer_index, layer in enumerate(self.beams):
+                    constraints_chain(layer)
+                self.print(type="report",text=f"✔️ vincoli interni: ({time.time()-t_0:.2f}s)") 
+            if self.physics["external_type"]=="spring":
+                #EXTERNAL CONSTRAINTS: ??
+                t_0=time.time()
+                #WIP
+                self.print(type="report",text=f"✔️ vincoli esterni: ({time.time()-t_0:.2f}s)") 
                     
     #UTILITY FUNCTIONS:
     def print(self, text="",type="info"):
@@ -478,7 +493,7 @@ class Zome:
                     types_names=["larghezza tavola","spessore tavola"]
                     types_units=["cm","cm"]
                     for type_index,type in enumerate(types):
-                        info+=f"    {types_names[type_index]} {round(self.build[type],precision)} {types_units[type_index]} \n"
+                        info+=f"    {types_names[type_index]} {round(self.beam[type],precision)} {types_units[type_index]} \n"
                 case "global":
                     types=["internal_volume","beams_volume","beams_mass"]    
                     types_names=["volume","volume","massa"]
@@ -492,7 +507,6 @@ class Zome:
                     for layer_index in range(len(self.vertices)-1):
                         info+=f"*livello {layer_index}:\n"
                         for type_index,type in enumerate(types):
-                            print(f"layer_index: {layer_index}, type: {type}")
                             info+=f"    {types_names[type_index]} {round(self.layer_data(type,layer_index),precision)} {types_units[type_index]} \n"
         return info
 

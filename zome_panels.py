@@ -1,6 +1,6 @@
 import bpy
 
-print("Zome panels loaded - Version 1.0.0")
+print("Zome panels loaded")
 
 class ZomePanel(bpy.types.Panel):
     bl_label = "Zome"
@@ -16,7 +16,6 @@ class ZomePanel(bpy.types.Panel):
         box = layout.box()
         if scene.is_updating:
             box.label(text="...")
-
 
         row = layout.row()
         row.operator("object.call_zome", text="Crea zome con nome:")        
@@ -93,7 +92,7 @@ class ZomePanel(bpy.types.Panel):
 
             #                "active": False,
             row.label(text="Attiva fisica:")
-            row.prop(scene, "physics_active", text="") 
+            row.prop(scene, "physics_on", text="") 
 
             row.label(text="Densità tavole (kg/m3):")
             row.prop(scene, "beam_density", text="") 
@@ -104,12 +103,24 @@ class ZomePanel(bpy.types.Panel):
             row.prop(scene, "friction", text="")
 
             row = box.row()
+            row.label(text="Vincoli interni:")
+            row.prop(scene, "internal_type", text="")
+
+            row = box.row()
             row.label(text="Rigidità:")
-            row.prop(scene, "spring_stiffness", text="")
+            row.prop(scene, "internal_spring_stiffness", text="")
 
             row = box.row()
             row.label(text="Smorzamento:")
-            row.prop(scene, "spring_damping", text="")
+            row.prop(scene, "internal_spring_damping", text="")
+
+            row = box.row()
+            row.label(text="Vincoli esterni:")
+            row.prop(scene, "external_type", text="")
+
+            row = box.row()
+            row.label(text="Rigidità:")
+            row.prop(scene, "external_spring_stiffness", text="")
 
         # Pulsante Crea Zome nel pannello principale
         
@@ -204,10 +215,20 @@ def register():
             description="Testo del report",
             default=""
         )
-        bpy.types.Scene.physics_active = bpy.props.BoolProperty(
+        bpy.types.Scene.physics_on = bpy.props.BoolProperty(
             name="Attiva fisica",
             description="Attiva fisica (vincoli, gravità e forze esterne)",
             default=False
+        )
+        bpy.types.Scene.internal_type = bpy.props.EnumProperty(
+            name="Vincoli interni",
+            description="Attiva vincoli tra le tavole del rombo/triangolo",
+            items=[
+                ('none', "Nessuno", "Nessuno"),
+                ('spring', "Flessibili", "Vincoli elastici tra le tavole che permettono piccole deformazioni"),
+                ('rigid', "Rigidi", "Vincoli rigidi (indistruttibili) tra le tavole"),
+            ],
+            default='none'
         )
         bpy.types.Scene.friction = bpy.props.FloatProperty(
             name="Frizione",
@@ -216,18 +237,41 @@ def register():
             min=0.0,
             max=1.0
         )
-        bpy.types.Scene.spring_stiffness = bpy.props.FloatProperty(
+        bpy.types.Scene.internal_spring_stiffness = bpy.props.FloatProperty(
             name="Rigidità",
-            description="Rigidità della molla",
+            description="Rigidità del vincolo interno",
             default=10.0,
             min=0.0
         )
-        bpy.types.Scene.spring_damping = bpy.props.FloatProperty(
+        bpy.types.Scene.internal_spring_damping = bpy.props.FloatProperty(
             name="Smorzamento",
-            description="Smorzamento della molla",
+            description="Smorzamento del vincolo interno",
+            default=0.5,
+            min=0.0
+            )
+        bpy.types.Scene.external_type = bpy.props.EnumProperty(
+            name="Vincoli esterni",
+            description="Attiva vincoli tra rombi/triangoli",
+            items=[
+                ('none', "Nessuno", "Nessuno"),
+                ('spring', "Flessibili", "Vincoli elastici tra le tavole che permettono piccole deformazioni"),
+                ('rigid', "Rigidi", "Vincoli rigidi (indistruttibili) tra i poligoni"),
+            ],
+            default='none'
+        )
+        bpy.types.Scene.external_spring_stiffness = bpy.props.FloatProperty(
+            name="Rigidità",
+            description="Rigidità del vincolo esterno",
+            default=10.0,
+            min=0.0
+        )
+        bpy.types.Scene.external_spring_damping = bpy.props.FloatProperty(
+            name="Smorzamento",
+            description="Smorzamento del vincolo esterno",
             default=0.5,
             min=0.0
         )
+
 
     except RuntimeError as e:
         print(f"Errore durante la registrazione dei pannelli: {e}")
@@ -261,7 +305,9 @@ def unregister():
         del bpy.types.Scene.top_new_height
         del bpy.types.Scene.expand_physics
         del bpy.types.Scene.beam_density
-        del bpy.types.Scene.physics_active
+        del bpy.types.Scene.physics_on
+        del bpy.types.Scene.internal_type
+        del bpy.types.Scene.external_type
         del bpy.types.Scene.expand_report
         del bpy.types.Scene.report_text
         del bpy.types.Scene.friction
