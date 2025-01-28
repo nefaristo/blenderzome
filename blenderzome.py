@@ -68,6 +68,6 @@ def main():
         for op in dir(bpy.ops.object):
             print(">operator:",op)
 
-    display_paths()
+    #display_paths()
 main()
 

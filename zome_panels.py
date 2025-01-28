@@ -122,6 +122,10 @@ class ZomePanel(bpy.types.Panel):
             row.label(text="Rigidità:")
             row.prop(scene, "external_spring_stiffness", text="")
 
+            row = box.row()
+            row.label(text="Smorzamento:")
+            row.prop(scene, "external_spring_damping", text="")
+
         # Pulsante Crea Zome nel pannello principale
         
 

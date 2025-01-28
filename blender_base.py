@@ -348,8 +348,8 @@ def create_parallelepiped(vertices, name="",material_name="",add_to_collection=N
     #mesh to object
     bm.to_mesh(mesh)
     #stores some data from vertices
-    obj["calc_volume"] = bm.calc_volume(signed=True)
-    obj["volume"] = (vertices[0]-vertices[4]).magnitude * (vertices[0]-vertices[1]).magnitude * (vertices[0]-vertices[3]).magnitude
+    obj["volume"] = bm.calc_volume(signed=True)
+  
     #local axes: 
     v1 = (bm_verts[1].co - bm_verts[0].co).normalized()  # Edge lungo X
     v3 = (bm_verts[2].co - bm_verts[1].co).normalized()  # Edge lungo Z
@@ -424,14 +424,12 @@ def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.8,active=T
     #custom properties:
     obj["density"] = density
 
-def constraints_chain(obj_list,loop=True):
-    active=False
+def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
+    alpha_deform=2 # ° of movement allowed
     for index, obj in enumerate(obj_list):
         if obj and obj.type=="MESH":   
             #apply scale and rotation
             #makes it physical                
-            if not active: #TEMP: FIRST PASSIVE TO GIVE A REFERENCE POINT
-                active=True
             #add a generic constraint to the next one (last one as well if loop=True)
             if index < len(obj_list) - 1 or loop:
                 # Ottieni il prossimo oggetto nella lista, o il primo se è un loop
@@ -444,51 +442,33 @@ def constraints_chain(obj_list,loop=True):
 
                 # Aggiungi il constraint
                 bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
-                spring_constraint = bpy.context.object.rigid_body_constraint
+                constraint = bpy.context.object.rigid_body_constraint
 
                 # Imposta le proprietà del constraint
-                spring_constraint.object1 = obj  # Primo oggetto
-                spring_constraint.object2 = next_obj  # Secondo oggetto
-
-                limit_ang_plane=0 #fixed
-                limit_lin_plane=0 #fixed
-
-                limit_ang_z=3.14/90 #1 degree
-                limit_lin_z=0.01
-                stiffness_ang_z=10
-                damping_ang_z=0.5
-                stiffness_lin_z=10
-                damping_lin_z=0.5
+                constraint.object1 = obj  # Primo oggetto
+                constraint.object2 = next_obj  # Secondo oggetto
             
-                spring_constraint.use_limit_ang_x=True
-                spring_constraint.limit_ang_x_lower = -limit_ang_plane #unità: rad
-                spring_constraint.limit_ang_x_upper = limit_ang_plane
-                spring_constraint.use_limit_ang_y=True
-                spring_constraint.limit_ang_y_lower = -limit_ang_plane #unità: rad
-                spring_constraint.limit_ang_y_upper = limit_ang_plane
-                spring_constraint.use_limit_ang_z = True
-                spring_constraint.limit_ang_z_lower = -limit_ang_z #unità: rad
-                spring_constraint.limit_ang_z_upper = limit_ang_z
-
-                
-                spring_constraint.use_limit_lin_x=True
-                spring_constraint.limit_lin_x_lower = -limit_lin_plane
-                spring_constraint.limit_lin_x_upper = limit_lin_plane
-                spring_constraint.use_limit_lin_y=True
-                spring_constraint.limit_lin_y_lower = -limit_lin_plane
-                spring_constraint.limit_lin_y_upper = limit_lin_plane
-                spring_constraint.use_limit_lin_z = True
-                spring_constraint.limit_lin_z_lower = -limit_lin_z
-                spring_constraint.limit_lin_z_upper = limit_lin_z
-
-
-                spring_constraint.use_spring_ang_z = True  # Abilita la molla sull'asse Z
-                spring_constraint.spring_stiffness_ang_z = stiffness_ang_z
-                spring_constraint.spring_damping_ang_z = damping_ang_z
-                
-                spring_constraint.use_spring_z = True  # Abilita la molla sull'asse Z
-                spring_constraint.spring_stiffness_z = stiffness_lin_z
-                spring_constraint.spring_damping_z = damping_lin_z
+                constraint.use_limit_lin_x=True
+                constraint.limit_lin_x_lower = 0
+                constraint.limit_lin_x_upper = 0
+                constraint.use_limit_lin_y=True
+                constraint.limit_lin_y_lower = 0
+                constraint.limit_lin_y_upper = 0
+                constraint.use_limit_lin_z=True
+                constraint.limit_lin_z_lower = 0
+                constraint.limit_lin_z_upper = 0
+                constraint.use_limit_ang_x=True
+                constraint.limit_ang_x_lower = 0
+                constraint.limit_ang_x_upper = 0
+                constraint.use_limit_ang_y=True
+                constraint.limit_ang_y_lower = 0
+                constraint.limit_ang_y_upper = 0
+                constraint.use_limit_ang_z = True
+                constraint.limit_ang_z_lower = -0.0349 * alpha_deform/2 
+                constraint.limit_ang_z_upper = 0.0349 * alpha_deform/2 
+                constraint.use_spring_ang_z = True  # Abilita la molla sull'asse Z
+                constraint.spring_stiffness_ang_z = stiffness
+                constraint.spring_damping_ang_z = damping
 
     return  
 

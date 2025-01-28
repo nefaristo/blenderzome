@@ -122,12 +122,14 @@ class Zome:
 
         #structures used to build the polyzome:
         self.vertices = []
+        self.origin=(0,0,0)
+        self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces = []
         self.face_types = []#["triangle","rhombus","upside_down_triangle"] set by set_derived_geometry
         self.beams = []
         self.beams_collection = None
         self.beams_strip = [] # 1 exemplar of polygon per layer (for analysis and operations)
-        self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
+       
         
         #others:
         self.materials = []
@@ -222,6 +224,9 @@ class Zome:
         self.print(type="report",text=f"✔️ {tot_vertices} vertici")
 
     def modify_vertices(self,modifications=None):
+        # SVSV self.modifications["position"] e rotation! TODO:
+        self.modifications["position"]=(0,0,0)
+        self.modifications["rotation"]=(0,0,0)
         t_0=time.time()
         if modifications is None:
             modifications=self.modifications        
@@ -255,10 +260,8 @@ class Zome:
                             silent=True
                         )  
                         #copy the vertices of the top zome to the main zome:
-                        self.print(type="report",text=f"vertici prima: {len(self.vertices)}; vertici add: {len(top_zome.vertices)}")
                         for layer in top_zome.vertices:
-                            self.vertices.append(layer)                       
-                        self.print(type="report",text=f"vertici dopo: {len(self.vertices)}")
+                            self.vertices.append(layer)          
                 case _:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
         #position modifications:
@@ -298,7 +301,7 @@ class Zome:
                         new_face_types= "middle_triangle"
                     elif N is not None and S is not None:#all 4 are there: rhombus
                         new_faces_layer.append((E, N, W, S))
-                        new_face_types= "middle_rhombus" if layer_index<len(self.vertices)-1 else "top_rhombus"
+                        new_face_types= "middle_rhombus" if layer_index<len(self.vertices)-2 else "top_rhombus"
                     elif N is not None: #lower is missing: triangle (bottom)
                         new_faces_layer.append((E, N, W))
                         new_face_types= "bottom_triangle"
@@ -415,7 +418,7 @@ class Zome:
             "middle_rhombus":["NE","NW","SW","SE"],
             "top_upside_down_triangle":["N","SW","SE"],
             "middle_upside_down_triangle":["N","SW","SE"],
-            "middle_triangle":["NE","NW","S"],
+            "middle_triangle":["NE","NW","S"], 
             "top_rhombus":["NE","NW","SW","SE"]
         }
         for layer_index, layer in enumerate(self.faces):                
@@ -431,23 +434,24 @@ class Zome:
                 TT_sink_fraction=0, #SVSV delete 
                 material_name=material_name
                 )
-            if self.physics["internal_type"]!="":
-                print(poly_beams,self.face_types[layer_index])
-                constraints_chain(poly_beams)
+            if self.physics["internal_type"]=="spring":#apply internal constraints, they can be copied to the other beams changing only the target 
+                constraints_chain(poly_beams,stiffness=self.physics["internal_spring_stiffness"],damping=self.physics["internal_spring_damping"])                
+                                
             self.beams_strip.append(poly_beams)# one polygon per layer)
         #set physics
         for beam in self.beams_collection.objects:
             bpy.context.view_layer.objects.active = beam
             bpy.ops.rigidbody.object_add()
             beam.rigid_body.type = "ACTIVE"
+            #beam.rigid_body.collision_collections[0] = False  # SVSV CHECK
             if "volume" in beam:
                 beam.rigid_body.mass = self.physics["density"] * beam["volume"]
             else:
                 print("volume not found in object",beam.name)
             beam.rigid_body.restitution = 0.05 #bounciness on blender interface
-            beam.rigid_body.linear_damping = 0.0 #could be seen as friction with air
-            beam.rigid_body.angular_damping = 0.0 #could be seen as friction with air
-            beam.rigid_body.friction = 0.8  # principalmente contro il pavimento
+            beam.rigid_body.linear_damping = self.physics["friction"] #could be seen as friction with air
+            beam.rigid_body.angular_damping = self.physics["friction"] #could be seen as friction with air
+            beam.rigid_body.friction = self.physics["friction"]  # principalmente contro il pavimento
             #custom properties:
             beam["density"] = self.physics["density"]
         #OTHER BEAMS
@@ -469,7 +473,7 @@ class Zome:
                         new_beam.matrix_world = rotation_matrix @ new_beam.matrix_world
                         new_poly.append(new_beam)
                     #now the poly is completed, it can rewrite the target object for rigid body constraints:
-                    if self.physics["internal_type"]!="":
+                    if self.physics["internal_type"]=="spring":
                         for beam_index,beam in enumerate(new_poly):
                             bpy.context.view_layer.objects.active = beam
                             beam.rigid_body_constraint.object2 = new_poly[(beam_index+1)%len(new_poly)]
@@ -485,60 +489,110 @@ class Zome:
                 for layer_index, layer in enumerate(self.beams):
                     pass#constraints_chain(layer)
                 #self.print(type="report",text=f"✔️ vincoli interni: ({time.time()-t_0:.2f}s)") 
+            
+            t_0=time.time()
             if self.physics["external_type"]=="spring":
-                for layer_index, layer in enumerate(self.beams[0:0]):#first layer only for now
-                    layer_type=self.face_types[layer_index]                    
-                    for i in range(len(layer)): #horizontal loop
-                        obj_list=[]
-                        if layer_type=="bottom_triangle" or layer_type=="middle_rhombus":
-                            pos=self.vertices[layer_index][i]
-                            rot=mathutils.Euler((0,0,math.atan2(pos[1]-self.barycenter[1],pos[0]-self.barycenter[0]))).to_matrix()
-                            #obj=the beam named "self.name_beam_polygon_{layer_index}_{i}_NE" to the list:
-                            obj_list.append(
-                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"],
-                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NW"],
-                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{i}_SE"],
-                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{i}_SW"],
-                                )                       
-                        if obj_list:
-                            self.add_interpoly_constraint(name=f"{self.name}_beam_polygon_{layer_index}_{i}", xyz=beam.location, obj_list=obj_list, stiffness=self.physics["stiffness"], damping=self.physics["damping"])
+                #create|clears a collection for empty objects w/ external constraints:
+                self.external_collection = bpy.data.collections.get(rename(self.name + "_ext_constraints"))
+                if self.external_collection is not None:
+                    self.external_collection.clear()
+                self.external_collection = bpy.data.collections.new(rename(self.name + "_ext_constraints"))
+                self.main_collection.children.link(self.external_collection)
+                #create a prototype of empty objects w/ external constraints w/o adding them to the collection:
+                
                 t_0=time.time()
-                #WIP
+                for layer_index, layer in enumerate(self.faces):
+                    layer_type=self.face_types[layer_index]                                    
+                    for i in range(len(layer)): #horizontal loop
+                        match layer_type:
+                            case "bottom_triangle"|"middle_rhombus"|"middle_triangle":
+                                #TODO delete this next line thtat temporarily puts every _0_i_S polygon as physically passive:
+                                if layer_index==0:
+                                    self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_S"].rigid_body.type="PASSIVE"
+                                self.empty_ang_constraint(
+                                    name_suffix="_ext",
+                                    obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"],
+                                    obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{(i+1)%len(layer)}_SW"],
+                                    axis_index=0,
+                                    stiffness=self.physics["external_spring_stiffness"],
+                                    damping=self.physics["external_spring_damping"]
+                                    )        
+                                self.empty_ang_constraint(
+                                    name_suffix="_ext",
+                                    obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NW"],
+                                    obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{(i)%len(layer)}_SE"],
+                                    axis_index=0,
+                                    stiffness=self.physics["external_spring_stiffness"],
+                                    damping=self.physics["external_spring_damping"]
+                                    )  
+                            case "top_rhombus":
+                                self.empty_ang_constraint(
+                                    name_suffix="_ext",
+                                    obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"],
+                                    obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{(i+1)%len(layer)}_NW"],
+                                    axis_index=0,
+                                    stiffness=self.physics["external_spring_stiffness"],
+                                    damping=self.physics["external_spring_damping"]
+                                    )  
+                                #even if you constrain two by two the adjacent beams, there are collisions between non adjacent beams (a more precise engine settings would be too expensive)
+                                #therefore, i disable the collisions. the only way in blender 4.3 is disable all the collision groups
+                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"].rigid_body.collision_collections[0] = False  
+                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NW"].rigid_body.collision_collections[0] = False                                  
                 self.print(type="report",text=f"✔️ vincoli esterni: ({time.time()-t_0:.2f}s)") 
-
-    def add_interpoly_constraint(self, name, loc,rot, obj_list, stiffness, damping):
-        if len(obj_list) < 2:
-            print("Devi fornire almeno due oggetti per creare il constraint.")
-            return
-
-        # Crea un oggetto empty
-        bpy.ops.object.empty_add(type='PLAIN_AXES', location=loc, rotation=rot)
+    
+    def constraint_strain(self,constr_obj):
+        alpha_1=math.acos(constr_obj.matrix_world.to_3x3().col[ constr_obj["constr_strain_axis"]]@constr_obj.matrix_world.to_3x3().col[ constr_obj["constr_pivot_axis"]])
+        return (alpha_1-constr_obj["alpha_0"])/constr_obj["alpha_0"]
+    
+    def empty_ang_constraint(self, name_suffix, obj1, obj2, axis_index, stiffness, damping,threshold=100):
+        
+        # creates an empty object rotated as obj1:
+        bpy.ops.object.empty_add(type='PLAIN_AXES',  location=obj1.location, rotation=obj1.rotation_euler)
         empty = bpy.context.object
-        empty.name = name
-        return
-        # Aggiungi il Rigid Body Constraint all'empty
-        bpy.ops.rigidbody.constraint_add()
+        empty.name = rename(obj1.name+name_suffix)
+        #saves custom properties to eventually estimate the strain:
+        empty["constr_pivot_axis"]=axis_index
+        empty["constr_strain_axis"]=0 if axis_index!=0 else 1 
+        empty["alpha_0"]=math.acos( obj1.matrix_world.to_3x3().col[ empty["constr_strain_axis"]]@obj2.matrix_world.to_3x3().col[ empty["constr_strain_axis"]])
+        self.external_collection.objects.link(empty)
+        bpy.context.collection.objects.unlink(empty)
+        #print(f"added {empty.name} constraining {obj1.name} to {obj2.name}")
+        #add a generic spring constraint to the new empty:
+        bpy.ops.rigidbody.constraint_add(type="GENERIC_SPRING")
         constraint = empty.rigid_body_constraint
-        constraint.type = 'GENERIC_SPRING'
-        
-        # Collega gli oggetti al constraint
-        for obj in obj_list:
-            constraint.object1 = obj
+        constraint.object1 = obj1
+        constraint.object2 = obj2
 
-        # Configura il constraint
-        constraint.use_spring_z = True
-        constraint.limit_lin_z_lower = -0.1
-        constraint.limit_lin_z_upper = 0.1
-        constraint.spring_stiffness_z = stiffness
-        constraint.spring_damping_z = damping
-        
-        # Blocca gli assi di movimento non richiesti
+        # constraint configuration: threshold, disable everything, reenable axis for angular movement
+        axis=["x","y","z"][axis_index]
+        if threshold>0:
+            constraint.use_breaking = True
+            constraint.breaking_threshold = threshold
+        #prevent any movement at all (at first:)
         constraint.use_limit_lin_x = True
+        constraint.limit_lin_x_lower = 0
+        constraint.limit_lin_x_upper = 0
         constraint.use_limit_lin_y = True
+        constraint.limit_lin_y_lower = 0
+        constraint.limit_lin_y_upper = 0
         constraint.use_limit_lin_z = True
+        constraint.limit_lin_z_lower = 0
+        constraint.limit_lin_z_upper = 0
         constraint.use_limit_ang_x = True
+        constraint.limit_ang_x_lower = 0
+        constraint.limit_ang_x_upper = 0
         constraint.use_limit_ang_y = True
+        constraint.limit_ang_y_lower = 0
+        constraint.limit_ang_y_upper = 0
         constraint.use_limit_ang_z = True
+        constraint.limit_ang_z_lower = 0
+        constraint.limit_ang_z_upper = 0
+
+        setattr(constraint,f"use_limit_ang_{axis}",True)
+        setattr(constraint,f"spring_stiffness_{axis}",stiffness)
+        setattr(constraint,f"spring_damping_{axis}",damping)
+
+        return empty
 
     #UTILITY FUNCTIONS:
     def print(self, text="",type="info"):
@@ -569,7 +623,7 @@ class Zome:
                         info+=f"    {types_names[type_index]} {round(self.beam[type],precision)} {types_units[type_index]} \n"
                 case "global":
                     types=["internal_volume","beams_volume","beams_mass"]    
-                    types_names=["volume","volume","massa"]
+                    types_names=["volume","volume","peso tavole"]
                     types_units=["m3","m3","kg"]
                     for type_index,type in enumerate(types):
                         info+=f"    {types_names[type_index]} {round(self.global_data(type),precision)} {types_units[type_index]} \n"
