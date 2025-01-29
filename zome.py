@@ -32,7 +32,7 @@ class Zome:
             show={ 
                 "vertices": 0,
                 "faces": 0, 
-                "fill_faces": 0,
+                "edges": 0,
                 "geometry_alpha": 0.5,
                 "barycenter": 0 ,
                 "beams": 0
@@ -126,38 +126,51 @@ class Zome:
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces = []
         self.face_types = []#["triangle","rhombus","upside_down_triangle"] set by set_derived_geometry
+        self.edges = []
         self.beams = []
         self.beams_collection = None
         self.beams_strip = [] # 1 exemplar of polygon per layer (for analysis and operations)
        
-        
-        #others:
+       #collections:
+        self.main_collection = None
+        self.vertices_collection = None
+        self.faces_collection = None
+        self.edges_mesh = None
+        self.beams_collection = None
+        self.external_collection = None
         self.materials = []
+        self.initialize_blender()
+        self.set_basic_materials()
+        self.main()
 
-        # Build the structure
-        self.print(type="report",text=f"\n***********\nZome '{self.name}'")
-        self.print(type="report",text=f"Geometria: N={self.N}, steps={self.S}, θ={self.theta:.2f}, ZH={self.ZH:.2f}")
-        self.print(type="report",text=f"Struttura: {self.beams}\nVisualizzazione: {self.show}\nModifiche: {self.modifications}\nFisica: {self.physics}\n***********")
-        
-        self.print(type="report",text=f"Calcolo geometria ")
+    def main(self):
+        #calculations:
         self.set_vertices()  # theoretical vertices
         self.modify_vertices() #modification of the vertices
         self.set_derived_geometry()  #  faces bary etc build upon modified vertices
-        
-        self.print(type="report",text=f"Disegno geometria ")
-        self.initialize_blender()
-        self.set_basic_materials()
+        self.post_production_modifications() #pos and rot of everything
+        #drawing:       
         if self.show["vertices"] == 1:
             self.draw_vertices()  
         if self.show["faces"] == 1:
             self.draw_faces()  
+        if self.show["edges"] == 1:
+            self.draw_edges()
         if self.show["beams"] == 1:
             self.draw_beams() 
-        self.add_constraints()
-        self.print(type="report",text=f"Zome '{self.name}' completato")
-        #deselect all objects
-        bpy.ops.object.select_all(action='DESELECT')
-    
+            self.add_constraints()        
+        bpy.ops.object.select_all(action='DESELECT')#deselect all objects
+
+        report="*****************ZOME DATA*****************\n"
+        #memoriazza la somma di tutit i vertici:
+        report+=f"{sum(len(vertex) for vertex in self.vertices)} vertici in {len(self.vertices)} strati:"
+        report+=f"{[len(vertex) for vertex in self.vertices]}\n"
+        report+=f"{sum(len(face) for face in self.faces)} facce in {len(self.faces)} strati:"
+        for i,face in enumerate(self.faces):
+            report+=f" {len(face)} {self.face_types[i]} "
+        report+=f"\n{sum(len(edge) for edge in self.edges)} spigoli: {[len(edge) for edge in self.edges]}\n"        
+        self.print(type="report",text=report)
+
     def initialize_blender(self):
         #if no object are  selected, select one if it exists:
         if len(bpy.context.selected_objects) == 0:
@@ -184,12 +197,11 @@ class Zome:
             bpy.data.collections.remove(collection_to_remove)
 
         # CREATE THE ROOT COLLECTION:
-        if self.show["vertices"] or self.show["faces"] or self.show["beams"]:
+        if self.show["vertices"] or self.show["faces"] or self.show["beams"] or self.show["edges"]:
             self.main_collection = bpy.data.collections.new(self.name)
             bpy.context.scene.collection.children.link(self.main_collection)        
 
     def set_vertices(self):
-        tot_vertices=0
         self.vertices = []
         for layer_index in range(self.S+1): 
             vertices_layer = []              
@@ -212,22 +224,13 @@ class Zome:
                         D = 2 * M - mathutils.Vector(A)  # Simmetrico di A rispetto a B-C
                         # if layer is M+1 and M<N-1, its' cutting rhombi to triangles and doesnt add the vertex
                         # in the other cases, adds the rhombi and, as for the vertices,
-                        A_vec = mathutils.Vector(A)
-                        B_vec = mathutils.Vector(B)
-                        C_vec = mathutils.Vector(C)
-                        D_vec = mathutils.Vector(D)
-                        vertices_layer.append((D.x, D.y, D.z))         
-                        tot_vertices += 1    
-            self.vertices.append(vertices_layer)
-            tot_vertices += len(vertices_layer)           
+                        if layer_index!=self.N or radial_index!=0:#if antiapex, add only the first vertex
+                            vertices_layer.append((D.x, D.y, D.z))      
+            self.vertices.append(vertices_layer)         
         self.vertices.reverse()
-        self.print(type="report",text=f"✔️ {tot_vertices} vertici")
 
     def modify_vertices(self,modifications=None):
         # SVSV self.modifications["position"] e rotation! TODO:
-        self.modifications["position"]=(0,0,0)
-        self.modifications["rotation"]=(0,0,0)
-        t_0=time.time()
         if modifications is None:
             modifications=self.modifications        
         #top modifications:
@@ -264,57 +267,66 @@ class Zome:
                             self.vertices.append(layer)          
                 case _:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
-        #position modifications:
-        if "position" in modifications and modifications["position"] != (0,0,0):
-            delta=modifications["position"]    
-            self.print(type="report",text=f"Traslazione di: {delta}")
-            for layer in self.vertices:
-                for i, vertex in enumerate(layer):
-                    layer[i] = (vertex[0] + delta[0], vertex[1] + delta[1], vertex[2] + delta[2])
-        self.print(type="report",text=f"✔️ modifiche ai vertici ({time.time()-t_0:.2f}s)")    
-
-    def set_derived_geometry(self):
+        
+    def set_derived_geometry(self):        
+        half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
         self.faces = []
+        self.edges = []
         tot_faces=0
-        half_h=self.h/10#for heavily reduced top modifications, actual half height could be not enough
+        tot_edges=0
+        #lowest layer (if not an apex):
+        if len(self.vertices[0])>1: #since edges are built upwards, the first layer is not added by the main cycle
+            new_layer_edges = []
+            for radial_index in range(len(self.vertices[0])):#horizontal edges of the base triangle
+                new_layer_edges.append((self.vertices[0][radial_index],self.vertices[0][(radial_index+1)%len(self.vertices[0])]))
+            self.edges.append(new_layer_edges)
+            tot_edges += len(new_layer_edges)
+        #main cycle:
         for layer_index in range(len(self.vertices)): 
-            new_faces_layer = []  
-            new_face_types = []
+            new_layer_faces = []  
+            new_layer_face_types = []
+            new_layer_edges = []
             this_count=len(self.vertices[layer_index])
             prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
-            next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])
-            if this_count>1:
-                #the order of the vertices is important to eventually label the beams and in turn to connect them
-                # for everything but the upside down triangles, firth beam is N-E, ergo the first vertex is E 
-                # for ud triangles, it starts from N 
-                # 
-                for radial_index in range(this_count):#A is north, W is      
+            next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])  
+            if(len(self.vertices[layer_index])>1):
+                for radial_index in range(this_count):#  
+                #the order of the vertices is important to eventually label the beams and that in turn is important to connect them
+                # faces: first side is N-E (first vertex = E). Exception: upside down triangles first side =S (first vertex=W)   
+                # edges: built upwards when applicable. Exception: pointy bottom, upside down triangles (horizontal edges), triangles (all)                
                     N=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
                     W=self.vertices[layer_index][radial_index%this_count]
                     E=self.vertices[layer_index][(radial_index+1) % this_count]
                     S=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%prev_count]
-                    if N is not None and abs(N[2]-W[2])<half_h:#overlapping layers with N (the next): upside down triangle
-                        new_faces_layer.append((E, W, S))                        
-                        new_face_types= "middle_upside_down_triangle"
-                    elif S is not None and abs(S[2]-W[2])<half_h:#overlapping layers with S (the previous):  triangle
-                        new_faces_layer.append((E, N, W))                        
-                        new_face_types= "middle_triangle"
-                    elif N is not None and S is not None:#all 4 are there: rhombus
-                        new_faces_layer.append((E, N, W, S))
-                        new_face_types= "middle_rhombus" if layer_index<len(self.vertices)-2 else "top_rhombus"
-                    elif N is not None: #lower is missing: triangle (bottom)
-                        new_faces_layer.append((E, N, W))
-                        new_face_types= "bottom_triangle"
+                    if N is not None and abs(N[2]-W[2])<half_h:# this layer is overlapping with N (the next one): upside down triangle
+                        new_layer_faces.append((E, W, S)) # triangle (starting from S side )      
+                        new_layer_edges.append((E, W)) #1 horizontal edge                 
+                        new_layer_face_types= "middle_upside_down_triangle"
+                    elif S is not None and abs(S[2]-W[2])<half_h:# this layer is overlapping with S (the previous one): middle triangle
+                        new_layer_faces.append((E, N, W)) #triangle (starting from NE side)
+                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
+                        new_layer_face_types= "middle_triangle"
+                    elif N is not None and S is not None: # all 4 are there: rhombus 
+                        new_layer_faces.append((E, N, W, S)) # rhombus (starting from NE side)
+                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
+                        new_layer_face_types= "middle_rhombus" if layer_index<len(self.vertices)-2 else "top_rhombus"
+                    elif N is not None and S is None: #lower is missing: bottom triangle 
+                        new_layer_faces.append((E, N, W)) # triangle (starting from NE side)
+                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
+                        new_layer_face_types= "bottom_triangle"
                     elif N is None and S is not None: #lower is missing: upside down triangle (top)
-                        new_faces_layer.append((E, W, S))
-                        new_face_types= "top_upside_down_triangle"
-            if len(new_faces_layer) > 0:
-                self.faces.append(new_faces_layer)
-                self.face_types.append(new_face_types)
-                tot_faces += len(new_faces_layer)
-        self.print(type="report",text=f"✔️ {tot_faces} facce")
-        #update barycenter
-        self.barycenter = (0,0,0)
+                        new_layer_faces.append((E, W, S)) # triangle (starting from S side)
+                        new_layer_edges.append((E, W)) #1 horizontal edge
+                        new_layer_face_types= "top_upside_down_triangle"
+            if len(new_layer_faces) > 0:
+                self.faces.append(new_layer_faces)
+                self.face_types.append(new_layer_face_types)
+                tot_faces += len(new_layer_faces)
+            if len(new_layer_edges) > 0:
+                self.edges.append(new_layer_edges)
+                tot_edges += len(new_layer_edges)
+        #BARYCENTER
+        self.barycenter = (0,0,0)      
         total_vertices = 0
         for layer in self.vertices:
             for vertex in layer:
@@ -322,8 +334,54 @@ class Zome:
                 total_vertices += 1
         if total_vertices > 0:
             self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
-        self.print(type="report",text=f"✔️ baricentro")
     
+    def post_production_modifications(self):#something in between uses "z" et al.
+        modifications=self.modifications
+        #position/rotation modifications:
+        rot_yn=True if "rotation" in modifications and modifications["rotation"] != (0,0,0) else False  
+        pos_yn=True if "position" in modifications and modifications["position"] != (0,0,0) else False
+        if rot_yn or pos_yn:
+            delta=modifications["rotation"]    
+            for layer in self.vertices:
+                new_layer=[]
+                for i, vertex in enumerate(layer):
+                    new_vertex=mathutils.Vector(vertex)
+                    if rot_yn:
+                        new_vertex.rotate(mathutils.Euler(delta, 'XYZ'))
+                    if pos_yn:
+                        new_vertex=tuple(new_vertex+mathutils.Vector(modifications["position"]))
+                    new_layer.append(new_vertex)
+                layer[:]=new_layer
+            for layer in self.faces:
+                new_layer=[]
+                for i, face in enumerate(layer):
+                    new_face=[]
+                    for vertex in face:#rotates:
+                        new_vertex=mathutils.Vector(vertex)
+                        if rot_yn:
+                            new_vertex.rotate(mathutils.Euler(delta, 'XYZ'))
+                        new_vertex=tuple(new_vertex+mathutils.Vector(modifications["position"]))
+                        new_face.append(new_vertex)
+                    new_layer.append(new_face)
+                layer[:]=new_layer
+            for layer in self.edges:
+                new_layer=[]
+                for i, edge in enumerate(layer):
+                    new_edge=[]
+                    for vertex in edge:
+                        new_vertex=mathutils.Vector(vertex)
+                        if rot_yn:
+                            new_vertex.rotate(mathutils.Euler(delta, 'XYZ'))
+                        new_vertex=tuple(new_vertex+mathutils.Vector(modifications["position"]))
+                        new_edge.append(new_vertex)
+                    new_layer.append(new_edge)
+                layer[:]=new_layer
+            bary=mathutils.Vector(self.barycenter)
+            if rot_yn:
+                bary.rotate(mathutils.Euler(delta, 'XYZ'))
+            bary=tuple(bary+mathutils.Vector(modifications["position"]))
+            self.barycenter=tuple(bary)
+                        
     def set_basic_materials(self):
         alpha=self.show["geometry_alpha"]
         colors = [
@@ -347,26 +405,25 @@ class Zome:
             (0.5, 0.5, 0.5, alpha),   # Light Gray
         ]        
         for i, color in enumerate(colors):
-            mat = bpy.data.materials.new(name=f"Material_{i}")
+            mat = bpy.data.materials.new(rename(f"Material_{i}"))
             mat.diffuse_color = color
             self.materials.append(mat)
 
     def draw_vertices(self,proportional_size=0.01):
         size=self.ZH*proportional_size
-        time_0=time.time()
-        vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
-        self.main_collection.children.link(vertices_collection)
+        self.vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
+        self.main_collection.children.link(self.vertices_collection)
         #barycenter cube:
         bpy.ops.mesh.primitive_cube_add(size=size, location=self.barycenter)
         obj = bpy.context.object
         obj.name = rename(f"{self.name}_barycenter")
-        vertices_collection.objects.link(obj)
+        self.vertices_collection.objects.link(obj)
         bpy.context.collection.objects.unlink(obj)
         #origin cube:
         bpy.ops.mesh.primitive_cube_add(size=size, location=(0,0,0))
         obj = bpy.context.object
         obj.name = rename(f"{self.name}_origin")
-        vertices_collection.objects.link(obj)
+        self.vertices_collection.objects.link(obj)
         bpy.context.collection.objects.unlink(obj)
         #other vertices:
         tot_vertices=0
@@ -376,15 +433,14 @@ class Zome:
                 obj = bpy.context.object
                 obj.name = rename(f"{self.name}_vertex_{layer_index}_{vertex_index}")
                 # Links/unlinks
-                vertices_collection.objects.link(obj)
+                self.vertices_collection.objects.link(obj)
                 bpy.context.collection.objects.unlink(obj)
             tot_vertices+=len(layer)
-        self.print(type="report",text=f"✔️ {tot_vertices} rappr. vertici ({time.time()-time_0:.2f}s)")
 
     def draw_faces(self):
         # FACES:
-        faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
-        self.main_collection.children.link(faces_collection)
+        self.faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
+        self.main_collection.children.link(self.faces_collection)
         tot_faces=0
         for layer_index, layer in enumerate(self.faces):
             for poly_index, poly in enumerate(layer):
@@ -392,14 +448,32 @@ class Zome:
                     name=f"{self.name}_face_{layer_index}_{poly_index}",
                     polyverts=poly,
                     material=self.materials[poly_index % len(self.materials)],
-                    fill=self.show["fill_faces"],
-                    add_to_collection=faces_collection
+                    add_to_collection=self.faces_collection,
+                    fill=True
                 )
                 if not check_complanarity(poly):
                     self.print(f"WARNING: face {self.name}_face_{layer_index}_{poly_index} is not coplanar")
             tot_faces += len(layer)
-        self.print(type="report",text=f"✔️ {tot_faces} facce")
     
+    def draw_edges(self):
+        self.edges_mesh = bpy.data.collections.new(rename(self.name+"_edges"))
+        self.main_collection.children.link(self.edges_mesh)
+        mesh = bpy.data.meshes.new(f"{self.name}_edges")
+        vertices = []
+        edges = []
+        vertex_index = 0
+        tot_edges = 0
+        for layer_index, layer in enumerate(self.edges):
+            for edge_index, edge in enumerate(layer):
+                vertices.extend([edge[0], edge[1]])
+                edges.append((vertex_index, vertex_index + 1))
+                vertex_index += 2
+                tot_edges += 1
+        mesh.from_pydata(vertices, edges, [])
+        mesh.update()
+        obj = bpy.data.objects.new(f"{self.name}_edges", mesh)
+        self.edges_mesh.objects.link(obj)
+
     def draw_beams(self):
         self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
         self.main_collection.children.link(self.beams_collection)
@@ -421,6 +495,7 @@ class Zome:
             "middle_triangle":["NE","NW","S"], 
             "top_rhombus":["NE","NW","SW","SE"]
         }
+        #FIRST STRIP:
         for layer_index, layer in enumerate(self.faces):                
             physics_type="ACTIVE" if self.physics["on"] else ""  
             poly_beams = beams_polygon(
@@ -435,8 +510,7 @@ class Zome:
                 material_name=material_name
                 )
             if self.physics["internal_type"]=="spring":#apply internal constraints, they can be copied to the other beams changing only the target 
-                constraints_chain(poly_beams,stiffness=self.physics["internal_spring_stiffness"],damping=self.physics["internal_spring_damping"])                
-                                
+                constraints_chain(poly_beams,stiffness=self.physics["internal_spring_stiffness"],damping=self.physics["internal_spring_damping"])                 
             self.beams_strip.append(poly_beams)# one polygon per layer)
         #set physics
         for beam in self.beams_collection.objects:
@@ -454,8 +528,15 @@ class Zome:
             beam.rigid_body.friction = self.physics["friction"]  # principalmente contro il pavimento
             #custom properties:
             beam["density"] = self.physics["density"]
-        #OTHER BEAMS
-        tot_beams=0
+        #OTHER STRIPS:
+        #prepare the transformation matrix: 1)to (0,0,0) 2) rotate around the axis 3) back to the position        
+        axis = (0,0,1)
+        axis=mathutils.Vector(axis)
+        axis.rotate(mathutils.Euler(self.modifications["rotation"], 'XYZ'))
+        T_inv = mathutils.Matrix.Translation(-mathutils.Vector(self.modifications["position"]))
+        R = mathutils.Matrix.Rotation(math.radians(self.alpha), 4, axis)
+        T = mathutils.Matrix.Translation(mathutils.Vector(self.modifications["position"]))
+        M = T @ R @ T_inv  
         for layer_index,layer in enumerate(self.beams_strip):#loop over layers; 1 layer=1  polygon prototype                       
             last_poly=None # this is to always use the same matrix for the rotation                
             tot_beams+=len(layer)*(self.N-1)  
@@ -466,11 +547,11 @@ class Zome:
                 else:#
                     new_poly=[]
                     for beam_index,last_beam in enumerate(last_poly):# c) loop over polygon beams
-                        #duplicate and rotate the homologous beam
                         new_beam = last_beam.copy()
                         new_beam.name = rename(f"{self.name}_beam_polygon_{layer_index}_{alpha_index}_{beam_names[self.face_types[layer_index]][beam_index]}")
+                        #duplicate and rotate the homologous beam
                         self.beams_collection.objects.link(new_beam)  
-                        new_beam.matrix_world = rotation_matrix @ new_beam.matrix_world
+                        new_beam.matrix_world = M @ new_beam.matrix_world
                         new_poly.append(new_beam)
                     #now the poly is completed, it can rewrite the target object for rigid body constraints:
                     if self.physics["internal_type"]=="spring":
@@ -479,18 +560,9 @@ class Zome:
                             beam.rigid_body_constraint.object2 = new_poly[(beam_index+1)%len(new_poly)]
                     last_poly=new_poly
                     self.beams.append(new_poly)            
-        self.print(type="report",text=f"✔️ {tot_beams} tavole ({time.time()-t_0:.2f}s)")
         
     def add_constraints(self):
-        if (self.physics["on"]):
-            if self.physics["internal_type"]=="spring": #SVSV DELETE
-                #INTERNAL CONSTRAINTS: 16+-1 sec
-                t_0=time.time()
-                for layer_index, layer in enumerate(self.beams):
-                    pass#constraints_chain(layer)
-                #self.print(type="report",text=f"✔️ vincoli interni: ({time.time()-t_0:.2f}s)") 
-            
-            t_0=time.time()
+        if (self.physics["on"]):            
             if self.physics["external_type"]=="spring":
                 #create|clears a collection for empty objects w/ external constraints:
                 self.external_collection = bpy.data.collections.get(rename(self.name + "_ext_constraints"))
@@ -556,7 +628,6 @@ class Zome:
         empty["alpha_0"]=math.acos( obj1.matrix_world.to_3x3().col[ empty["constr_strain_axis"]]@obj2.matrix_world.to_3x3().col[ empty["constr_strain_axis"]])
         self.external_collection.objects.link(empty)
         bpy.context.collection.objects.unlink(empty)
-        #print(f"added {empty.name} constraining {obj1.name} to {obj2.name}")
         #add a generic spring constraint to the new empty:
         bpy.ops.rigidbody.constraint_add(type="GENERIC_SPRING")
         constraint = empty.rigid_body_constraint
@@ -595,15 +666,15 @@ class Zome:
         return empty
 
     #UTILITY FUNCTIONS:
-    def print(self, text="",type="info"):
+    def print(self, text="", type="info"):
         if not self.silent:
-            print(f"{self.name}> {text}")
+            print(f"{self.name}> " + "\n".join(text.splitlines()))
         if self.zome_output:
-            self.zome_output(type=type,text=text)
+            self.zome_output(type=type, text=text)
 
     def info(self,type="all",precision=2    ):
         info=""
-        types=["basic","physics","global","layers"]
+        types=["basic","NO_physics","global","layers"]
         if type=="all":
             for type in types:
                 info+=f"{type}:\n{self.info(type,precision)}\n"
@@ -665,15 +736,15 @@ class Zome:
             case "face_type":
                 return self.face_types[target_index]
             case "height":
-                return layer[0][2]
+                return layer[0][2]-self.vertices[0][0][2]
             case "polygon_side":
-                return math.sqrt((layer[target_index][0]-layer[target_index-1][0])**2 + (layer[target_index][1]-layer[target_index-1][1])**2 + (layer[target_index][2]-layer[target_index-1][2])**2)
+                return 0#math.sqrt((layer[target_index][0]-layer[target_index-1][0])**2 + (layer[target_index][1]-layer[target_index-1][1])**2 + (layer[target_index][2]-layer[target_index-1][2])**2)
             case "polygon_area":
                 return area_polygon(layer)
             case "circumscribed_circle_radius":
-                return math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)
+                return 0#math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)
             case "circumscribed_circle_area":
-                return  math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)**2*math.pi
+                return  0#math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)**2*math.pi
             case "approx_volume_to_layer":
                 if target_index==0:
                     return 0
@@ -683,16 +754,13 @@ class Zome:
                     areas.append(self.layer_data("polygon_area",layer_index))    
                     if isinstance(layer[0], tuple) and len(layer[0]) > 2:
                         steps.append(layer[0][2])
-                    else:
-                        print(f"Errore: layer[{layer_index}][0] non è una tupla valida: {layer[0]}")
                 for layer_index,layer in enumerate(self.vertices[:(target_index-1)]):
-                    volume+=(areas[layer_index]+areas[layer_index+1])*(steps[layer_index])/2    
+                    volume+=0#(areas[layer_index]+areas[layer_index+1])*(steps[layer_index])/2    
                 return volume
 
 def find_theta(N,S,ZH,target_value,type="base_area"):
     #finds theta to the specified error with numeric method, by starting from theta0
     theta=60.0
-    print(theta)
     theta_step=1 #initial step in degrees
     max_error=0.001 #max error in %
     max_iterations=100    
@@ -713,10 +781,7 @@ def find_theta(N,S,ZH,target_value,type="base_area"):
         if sign!=last_sign:
             theta_step/=2
         last_sign=sign
-        theta-=float(theta_step*sign)
-        #print(theta)     
-        #print(f"tentativo {counter}: theta={theta}")
-        #print(f"WARNING: {type} = {round(actual_value*100,2)} , target {type} = {round(target_value*100,2)} , difference>target error ({round(spread*100,2)}>{round(max_error*100,2)}) ")
+        theta-=float(theta_step*sign)    
     return theta, spread
         
     #TODO:

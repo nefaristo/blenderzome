@@ -22,12 +22,12 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             ZH=context.scene.ZH,
             name=context.scene.name,
             show={
-                "vertices": 1 if context.scene.show_vertices else 0,
-                "faces": 1 if context.scene.show_faces or context.scene.borders else 0,
-                "fill_faces": 0 if context.scene.borders else 1,
+                "vertices": context.scene.show_vertices ,
+                "faces": context.scene.show_faces ,
+                "edges": context.scene.edges ,
                 "geometry_alpha": context.scene.geometry_alpha,
-                "barycenter": 1 if context.scene.show_vertices else 0,
-                "beams": 1 if context.scene.show_beams else 0
+                "barycenter": context.scene.show_barycenter ,
+                "beams": context.scene.show_beams 
             },
             beam={
                 "TW": context.scene.beam_width / 100.0,
@@ -51,17 +51,20 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "top_modifications_type": context.scene.top_modifications_type,
                 "top_modifications_levels": context.scene.top_modifications_levels,
                 "top_new_height": context.scene.top_new_height,                
-                "position": (0,0,0),
-                "rotation": (0,0,0),
+                "position": (0.4,0.5,0.6),
+                "rotation": (0,0,0) if not context.scene.rotation else (0,math.radians(90),0),
                 "layer_types": [],
             },
             zome_output= self.zome_input
         )
         info=zome1.info("all")
         bpy.context.scene.report_text=info
-        #print(info)
+        #HERE
+        print("*****************INFO*****************")
+        print(info)
         bpy.context.scene.is_updating = False
         return {'FINISHED'}
+
 
     #receives and manages messages from zome
     def zome_input(self,type="info",text="",precision=2):

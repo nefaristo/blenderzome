@@ -133,6 +133,7 @@ def draw_polygon(name="polygon", polyverts=[], material=None, fill=False, add_to
         for i in range(len(verts)):
             bm.edges.new((verts[i], verts[(i + 1) % len(verts)]))
 
+
     # Scrivi la geometria nel mesh
     bm.to_mesh(mesh)
     bm.free()
@@ -425,7 +426,7 @@ def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.8,active=T
     obj["density"] = density
 
 def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
-    alpha_deform=2 # ° of movement allowed
+    z_allowed=2 # ° of movement allowed tot
     for index, obj in enumerate(obj_list):
         if obj and obj.type=="MESH":   
             #apply scale and rotation
@@ -444,10 +445,10 @@ def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
                 bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
                 constraint = bpy.context.object.rigid_body_constraint
 
-                # Imposta le proprietà del constraint
+                
                 constraint.object1 = obj  # Primo oggetto
                 constraint.object2 = next_obj  # Secondo oggetto
-            
+                #limits:
                 constraint.use_limit_lin_x=True
                 constraint.limit_lin_x_lower = 0
                 constraint.limit_lin_x_upper = 0
@@ -464,8 +465,9 @@ def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
                 constraint.limit_ang_y_lower = 0
                 constraint.limit_ang_y_upper = 0
                 constraint.use_limit_ang_z = True
-                constraint.limit_ang_z_lower = -0.0349 * alpha_deform/2 
-                constraint.limit_ang_z_upper = 0.0349 * alpha_deform/2 
+                constraint.limit_ang_z_lower = -z_allowed/2 
+                constraint.limit_ang_z_upper = z_allowed/2 
+                #spring
                 constraint.use_spring_ang_z = True  # Abilita la molla sull'asse Z
                 constraint.spring_stiffness_ang_z = stiffness
                 constraint.spring_damping_ang_z = damping

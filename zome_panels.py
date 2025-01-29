@@ -45,7 +45,7 @@ class ZomePanel(bpy.types.Panel):
             row = box.row()
             row.label(text="Mostra:")
             row.prop(scene, "show_faces", text="facce") 
-            row.prop(scene, "borders", text="bordi")
+            row.prop(scene, "edges", text="bordi")
             row.prop(scene, "show_vertices", text="vertici")
 
             row = box.row()
@@ -56,7 +56,10 @@ class ZomePanel(bpy.types.Panel):
         box = layout.box()
         box.prop(scene, "expand_modifications", text="Modifiche geometria", icon="TRIA_DOWN" if scene.expand_modifications else "TRIA_RIGHT", emboss=False)
         if scene.expand_modifications:
-            # Aggiungi un'etichetta per "Riduzione Top"
+            # flag "rotation" ("ruota"):
+            row = box.row()
+            row.label(text="Ruota:")
+            row.prop(scene, "rotation", text="")
 
             #top_modifications_on_off:
             row = box.row()
@@ -128,9 +131,6 @@ class ZomePanel(bpy.types.Panel):
 
         # Pulsante Crea Zome nel pannello principale
         
-
-
-        
         #Sezione Report
         box = layout.box()
         box.prop(scene, "expand_report", text="Report", icon="TRIA_DOWN" if scene.expand_report else "TRIA_RIGHT", emboss=False)
@@ -146,11 +146,10 @@ def register():
     result=True
     try:
         bpy.utils.register_class(ZomePanel)
-
+        #BASIC/SHOW:
         bpy.types.Scene.is_updating = bpy.props.BoolProperty(default=False)
         if hasattr(bpy.types.Scene, "is_updating"):
             bpy.context.scene.is_updating = False
-         
         bpy.types.Scene.show_vertices = bpy.props.BoolProperty(
             default=False,
             description="Mostra i vertici (richiede qualche secondo)"
@@ -163,7 +162,7 @@ def register():
             default=False,
             description="Mostra le facce"
         )
-        bpy.types.Scene.borders = bpy.props.BoolProperty(
+        bpy.types.Scene.edges = bpy.props.BoolProperty(
             default=False,
             description="Riempie le facce"
         )
@@ -174,7 +173,14 @@ def register():
             min=0.0,
             max=1.0
         )
+        #MODIFICATIONS:
         bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=False)
+        bpy.types.Scene.rotation = bpy.props.BoolProperty(
+            name="Rotazione",
+            description="Rotazione del zome",
+            default=False,
+        )
+
         bpy.types.Scene.top_modifications_type = bpy.props.EnumProperty(
             name="Tipo di Modifica",
             description="Seleziona il tipo di modifica da applicare",
@@ -191,7 +197,7 @@ def register():
             max=10,
             description="Livelli:"
         )
-
+        #CONSTRUCTION:
         bpy.types.Scene.expand_construction_method = bpy.props.BoolProperty(default=False)
         bpy.types.Scene.show_beams = bpy.props.BoolProperty(
             default=True,
@@ -211,14 +217,8 @@ def register():
             min=0,
             max=1000,
             description="Densità legno (kg/m3)"
-        )
-
-        bpy.types.Scene.expand_report = bpy.props.BoolProperty(default=False)
-        bpy.types.Scene.report_text = bpy.props.StringProperty(
-            name="Report",
-            description="Testo del report",
-            default=""
-        )
+        )        
+        #PHYSICS:
         bpy.types.Scene.physics_on = bpy.props.BoolProperty(
             name="Attiva fisica",
             description="Attiva fisica (vincoli, gravità e forze esterne)",
@@ -275,7 +275,13 @@ def register():
             default=0.5,
             min=0.0
         )
-
+        #REPORT:
+        bpy.types.Scene.expand_report = bpy.props.BoolProperty(default=False)
+        bpy.types.Scene.report_text = bpy.props.StringProperty(
+            name="Report",
+            description="Testo del report",
+            default=""
+        )
 
     except RuntimeError as e:
         print(f"Errore durante la registrazione dei pannelli: {e}")
@@ -295,7 +301,7 @@ def unregister():
         del bpy.types.Scene.name
         del bpy.types.Scene.show_vertices
         del bpy.types.Scene.show_faces
-        del bpy.types.Scene.borders        
+        del bpy.types.Scene.edges        
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.show_beams
         del bpy.types.Scene.expand_geometry
@@ -304,9 +310,11 @@ def unregister():
         del bpy.types.Scene.beam_thickness
         del bpy.types.Scene.geometry_alpha
         del bpy.types.Scene.expand_modifications
+        del bpy.types.Scene.rotation
         del bpy.types.Scene.top_modifications_type
         del bpy.types.Scene.top_modifications_levels
         del bpy.types.Scene.top_new_height
+
         del bpy.types.Scene.expand_physics
         del bpy.types.Scene.beam_density
         del bpy.types.Scene.physics_on
