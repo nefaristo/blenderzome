@@ -3,6 +3,7 @@ import os
 import math
 import mathutils
 import bmesh
+import numpy as np
 from mathutils import Vector
 
 """
@@ -150,15 +151,99 @@ def draw_polygon(name="polygon", polyverts=[], material=None, fill=False, add_to
 
     return obj
 
-def area_polygon(verts=[]):
+def area_polygon(verts):
+    """
+    Calcola l'area di un poligono in 3D usando il metodo del doppio prodotto vettoriale.
+    
+    :param verts: Lista di punti (array-like) in 3D [(x, y, z), ...]
+    :return: Area del poligono
+    """
+    verts = np.array(verts)
     n = len(verts)
-    area = 0.0
+    
+    if n < 3:
+        return 0.0  # Non è un poligono valido
+    
+    normal = np.array([0.0, 0.0, 0.0])  # Somma dei prodotti vettoriali
+
     for i in range(n):
-        j = (i + 1) % n
-        area += verts[i][0] * verts[j][1]
-        area -= verts[j][0] * verts[i][1]
-    area = abs(area) / 2.0
+        v1, v2 = verts[i], verts[(i + 1) % n]  # Due vertici consecutivi
+        normal += np.cross(v1, v2)  # Somma dei prodotti vettoriali
+
+    return np.linalg.norm(normal) / 2.0  # L'area è metà della norma del vettore r
+
+def area_circumscribed_circle(verts=[]):
+    if len(verts) < 3:
+        return 0  # Un cerchio circoscritto richiede almeno 3 punti
+    
+    # Calcola il centroide (media dei vertici)
+    centroid = sum((Vector(v) for v in verts), Vector()) / len(verts)
+
+    # Trova il raggio massimo (distanza massima dal centroide)
+    max_radius = max((Vector(v) - centroid).length for v in verts)
+
+    # Calcola l'area del cerchio circoscritto
+    area = math.pi * (max_radius ** 2)
+
     return area
+
+def area_inscribed_circle(verts=[]):
+    if len(verts) < 3:
+        return 0  # Un cerchio inscritto richiede almeno 3 punti
+
+    centroid = sum((Vector(v) for v in verts), Vector()) / len(verts)
+    min_distance = float('inf')
+
+    for i in range(len(verts)):
+        v1, v2 = Vector(verts[i]), Vector(verts[(i + 1) % len(verts)])
+        edge_vec = v2 - v1
+        point_vec = centroid - v1
+        t = max(0, min(1, point_vec.dot(edge_vec) / edge_vec.dot(edge_vec)))
+        closest_point = v1 + t * edge_vec
+        distance = (centroid - closest_point).length
+        min_distance = min(min_distance, distance)
+
+    area = math.pi * (min_distance ** 2)
+    return area
+
+def radius_circumscribed_circle(verts=[]):
+    centroid = sum((Vector(v) for v in verts), Vector()) / len(verts)
+    return max((Vector(v) - centroid).length for v in verts)
+
+def radius_inscribed_circle(verts=[]):
+    centroid = sum((Vector(v) for v in verts), Vector()) / len(verts)
+    min_distance = float('inf')
+
+    for i in range(len(verts)):
+        v1, v2 = Vector(verts[i]), Vector(verts[(i + 1) % len(verts)])
+        edge_vec = v2 - v1
+        point_vec = centroid - v1
+        t = max(0, min(1, point_vec.dot(edge_vec) / edge_vec.dot(edge_vec)))
+        closest_point = v1 + t * edge_vec
+        distance = (centroid - closest_point).length
+        min_distance = min(min_distance, distance)
+
+    return min_distance
+
+def point_on_axis(point, axis_point, direction):
+    """
+    Trova la proiezione ortogonale di un punto su un asse definito da un punto e una direzione.
+    
+    :param point: np.array di coordinate (x, y, z) del punto da proiettare
+    :param axis_point: np.array di coordinate (x, y, z) di un punto sull'asse
+    :param direction: np.array di coordinate (x, y, z) che rappresentano la direzione dell'asse
+    :return: np.array con le coordinate della proiezione del punto sull'asse
+    """
+    point = np.array(point)
+    axis_point = np.array(axis_point)
+    direction = np.array(direction)
+
+    direction = direction / np.linalg.norm(direction)  # Normalizziamo la direzione
+
+    v = point - axis_point
+    projection = axis_point + np.dot(v, direction) * direction
+    
+    return projection
 
 def check_complanarity(verts=[]):
     first_normal=mathutils.geometry.normal(verts[0],verts[1],verts[2])
@@ -539,3 +624,5 @@ def update_text_from_file(text_object_name, file_path):
         print(f"Testo aggiornato per l'oggetto: {text_object_name}")
     else:
         print(f"Oggetto di testo non trovato o non è un oggetto di tipo FONT: {text_object_name}")
+
+

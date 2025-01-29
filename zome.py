@@ -119,10 +119,17 @@ class Zome:
         self.show["beams"] = self.show["beams"] and (self.beam["TW"] > 0 and self.beam["TT"] > 0)   
         self.spin = 0 #how much the first layer is rotated
         self.silent=silent
-
+        #references:        
+        self.origin = mathutils.Vector((0,0,0))
+        self.axis = mathutils.Vector((0,0,1))
+        self.axis.rotate(mathutils.Euler(self.modifications["rotation"], 'XYZ'))
+        self.T_inv = mathutils.Matrix.Translation(-mathutils.Vector(self.modifications["position"]))
+        self.R = mathutils.Matrix.Rotation(math.radians(self.alpha), 4, self.axis)
+        self.T = mathutils.Matrix.Translation(mathutils.Vector(self.modifications["position"]))
+        self.M = self.T @ self.R @ self.T_inv  
         #structures used to build the polyzome:
         self.vertices = []
-        self.origin=(0,0,0)
+        
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces = []
         self.face_types = []#["triangle","rhombus","upside_down_triangle"] set by set_derived_geometry
@@ -536,7 +543,7 @@ class Zome:
         T_inv = mathutils.Matrix.Translation(-mathutils.Vector(self.modifications["position"]))
         R = mathutils.Matrix.Rotation(math.radians(self.alpha), 4, axis)
         T = mathutils.Matrix.Translation(mathutils.Vector(self.modifications["position"]))
-        M = T @ R @ T_inv  
+        M = self.T @ self.R @ self.T_inv  
         for layer_index,layer in enumerate(self.beams_strip):#loop over layers; 1 layer=1  polygon prototype                       
             last_poly=None # this is to always use the same matrix for the rotation                
             tot_beams+=len(layer)*(self.N-1)  
@@ -674,7 +681,7 @@ class Zome:
 
     def info(self,type="all",precision=2    ):
         info=""
-        types=["basic","NO_physics","global","layers"]
+        types=["layers","basic","physics","global"]
         if type=="all":
             for type in types:
                 info+=f"{type}:\n{self.info(type,precision)}\n"
@@ -699,13 +706,13 @@ class Zome:
                     for type_index,type in enumerate(types):
                         info+=f"    {types_names[type_index]} {round(self.global_data(type),precision)} {types_units[type_index]} \n"
                 case "layers":
-                    types=["face_type","height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
-                    types_names=["tipo","altezza","lato poligono","area poligono","raggio maggiore","area c.circoscritto","volume"]
-                    types_units=["","m","m","m2","m","m2","m3"]
-                    for layer_index in range(len(self.vertices)-1):
+                    types=["face_type","height","polygon_side","circumscribed_circle_radius","inscribed_circle_radius","polygon_area","circumscribed_circle_area","inscribed_circle_area","approx_volume_to_layer"]
+                    types_names=["tipo","altezza","lato poligono","raggio maggiore","raggio minore","area poligono","area c.circoscritto","area c.inscritto","volume"]
+                    types_units=["","m","m","m","m","m2","m2","m2","m3"]
+                    for layer_index in range(len(self.vertices)):
                         info+=f"*livello {layer_index}:\n"
                         for type_index,type in enumerate(types):
-                            value=(str(round(self.layer_data(type,layer_index),precision))+types_units[type_index]) if types_units[type_index]!="" else self.layer_data(type,layer_index)
+                            value=(str(round(self.layer_data(type,layer_index),precision))+ " "+types_units[type_index]) if types_units[type_index]!="" else self.layer_data(type,layer_index)
                             info+=f"    {types_names[type_index]} {value} \n"
         return info
 
@@ -726,7 +733,7 @@ class Zome:
     
     def layer_data(self,type="",target_index=0):#area of the layer_index-th layer (regular polygon of self.N vertices/sides):
         layer = self.vertices[target_index] 
-        types=["face_type","height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","approx_volume_to_layer"]
+        types=["face_type","height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","inscribed_circle_radius","inscribed_circle_area","approx_volume_to_layer"]
         if type not in types: #returns a list of dictionaries of all the types
             result=[]
             for type in types:
@@ -734,18 +741,25 @@ class Zome:
             return result
         match type:   
             case "face_type":
-                return self.face_types[target_index]
+                return self.face_types[target_index] if len(self.face_types)>target_index else 0
             case "height":
-                return layer[0][2]-self.vertices[0][0][2]
+                #return layer[0][2]-self.vertices[0][0][2] not anymore for rotations: 
+                # now it's distance between the projections of the points on the axis
+                return np.linalg.norm(point_on_axis(layer[0], self.origin, self.axis) - point_on_axis(self.vertices[0][0], self.origin, self.axis))
             case "polygon_side":
-                return 0#math.sqrt((layer[target_index][0]-layer[target_index-1][0])**2 + (layer[target_index][1]-layer[target_index-1][1])**2 + (layer[target_index][2]-layer[target_index-1][2])**2)
-            case "polygon_area":
-                return area_polygon(layer)
+                return np.linalg.norm(mathutils.Vector(layer[0])-mathutils.Vector(layer[1])) if len(layer)>1 else 0
+            case "inscribed_circle_radius":
+                return blender_base.radius_inscribed_circle(layer) if len(layer)>1 else 0
             case "circumscribed_circle_radius":
-                return 0#math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)
+                return  radius_circumscribed_circle(layer)
+            case "polygon_area":
+                return area_polygon(layer) if len(layer)>1 else 0
             case "circumscribed_circle_area":
-                return  0#math.sqrt(layer[target_index][0]**2 + layer[target_index][1]**2 + layer[target_index][2]**2)**2*math.pi
+                return  area_circumscribed_circle(layer)
+            case "inscribed_circle_area":
+                return area_inscribed_circle(layer)
             case "approx_volume_to_layer":
+                return 0
                 if target_index==0:
                     return 0
                 volume=0
@@ -757,7 +771,8 @@ class Zome:
                 for layer_index,layer in enumerate(self.vertices[:(target_index-1)]):
                     volume+=0#(areas[layer_index]+areas[layer_index+1])*(steps[layer_index])/2    
                 return volume
-
+        return -1
+    
 def find_theta(N,S,ZH,target_value,type="base_area"):
     #finds theta to the specified error with numeric method, by starting from theta0
     theta=60.0
