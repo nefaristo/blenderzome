@@ -69,5 +69,24 @@ def main():
             print(">operator:",op)
 
     #display_paths()
-main()
 
+import bpy
+import bmesh
+from mathutils import Vector, geometry
+
+
+
+
+def test_sezione():
+    #deseleziona tutti gli oggetti
+    obj =bpy.data.objects.get("Gennaro_faces_join")
+    plane =bpy.data.objects.get("Plane")
+    verts=process_collection_intersection(obj, plane)
+    print(len(verts))
+    print(area_polygon(verts))
+
+    polygon = draw_polygon(name="dummy_polygon2423qwe",polyverts=verts,fill=False)
+    
+
+main()
+test_sezione()

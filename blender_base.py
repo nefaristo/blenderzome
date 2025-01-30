@@ -22,7 +22,7 @@ then rotating the object back to its original position. WHY such a convoluted an
     But seemingly there is a bug in blender that makes bpy.ops.transform.rotate not work when used with matrix (!!!).
 """
 
-print("Blender utilities loaded - Version 2.0.1")
+print("Blender utilities loaded - Version 2.0.2")
 
 # NON-GEOMETRY:
 
@@ -98,58 +98,8 @@ def rename(new_name): #resets name avoiding the ".001" suffix
     
     return new_name
 
-# DRAWING:
 
-def draw_segment(start, end, name="Segment",color=(1, 0, 0)):
-    # Crea una nuova curva
-    curve_data = bpy.data.curves.new(name=name, type='CURVE')
-    curve_data.dimensions = '3D'
-
-    # Aggiungi una nuova spline alla curva
-    polyline = curve_data.splines.new('POLY')
-    polyline.points.add(1)  # Aggiungi un punto in più (due punti in totale)
-
-    # Imposta i punti della spline
-    polyline.points[0].co = (*start, 1)  # Il quarto valore è il peso
-    polyline.points[1].co = (*end, 1)
-
-    # Crea un nuovo oggetto con la curva
-    curve_obj = bpy.data.objects.new(name, curve_data)
-
-    return curve_obj
-
-def draw_polygon(name="polygon", polyverts=[], material=None, fill=False, add_to_collection=None):
-    # Crea la mesh e l'oggetto
-    mesh = bpy.data.meshes.new(name)
-    obj = bpy.data.objects.new(rename(name), mesh)
-
-    # Usa bmesh per creare la geometria
-    bm = bmesh.new()
-    verts = [bm.verts.new(v_co) for v_co in polyverts]
-    bm.verts.ensure_lookup_table()
-
-    if fill:
-        bm.faces.new(verts)
-    else:
-        for i in range(len(verts)):
-            bm.edges.new((verts[i], verts[(i + 1) % len(verts)]))
-
-
-    # Scrivi la geometria nel mesh
-    bm.to_mesh(mesh)
-    bm.free()
-
-    # Collega l'oggetto alla collection specificata
-    if add_to_collection:
-        add_to_collection.objects.link(obj)
-    else:
-        bpy.context.collection.objects.link(obj)
-
-    # Aggiungi un materiale, se specificato
-    if material:
-        obj.data.materials.append(material)
-
-    return obj
+# GEOMETRY:
 
 def area_polygon(verts):
     """
@@ -493,7 +443,48 @@ def align_local_axes(obj, v1, v2, v3):
         bpy.context.collection.objects.unlink(obj)
     return obj
 
+#list of ordinated vertices; works for hollow & open meshes (eg cups) too. 
+def mesh_plane_intersection(main_obj, plane_obj): 
+    if main_obj and plane_obj:
+        bm = bmesh.new()
+        bm.from_mesh(main_obj.data)
+        bm.transform(main_obj.matrix_world)  # Porta la mesh nello spazio globale
+
+        plane_normal = plane_obj.matrix_world.to_3x3() @ Vector((0, 0, 1))
+        plane_co = plane_obj.location
+
+        intersection_points = []
+
+        for edge in bm.edges:
+            v1, v2 = edge.verts[0].co, edge.verts[1].co
+            d1 = (v1 - plane_co).dot(plane_normal)
+            d2 = (v2 - plane_co).dot(plane_normal)
+
+            if d1 * d2 < 0:
+                t = d1 / (d1 - d2)
+                intersection_point = v1 + t * (v2 - v1)
+                intersection_points.append(intersection_point)
+
+        bm.free()
+
+        if not intersection_points:
+            return []
+
+        # Ordina i punti attorno al baricentro
+        centroid = sum(intersection_points, Vector()) / len(intersection_points)
+
+        def angle_from_centroid(pt):
+            return math.atan2(pt.y - centroid.y, pt.x - centroid.x)
+
+        intersection_points.sort(key=angle_from_centroid)
+
+        return intersection_points
+    else:
+        print("Errore: oggetti non validi")
+        return []
+
 # PHYSICS:
+
 def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.8,active=True):
     # Assegna il corpo rigido attivo
     bpy.context.view_layer.objects.active = obj
@@ -558,6 +549,60 @@ def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
                 constraint.spring_damping_ang_z = damping
 
     return  
+
+
+# DRAWING:
+
+def draw_segment(start, end, name="Segment",color=(1, 0, 0)):
+    # Crea una nuova curva
+    curve_data = bpy.data.curves.new(name=name, type='CURVE')
+    curve_data.dimensions = '3D'
+
+    # Aggiungi una nuova spline alla curva
+    polyline = curve_data.splines.new('POLY')
+    polyline.points.add(1)  # Aggiungi un punto in più (due punti in totale)
+
+    # Imposta i punti della spline
+    polyline.points[0].co = (*start, 1)  # Il quarto valore è il peso
+    polyline.points[1].co = (*end, 1)
+
+    # Crea un nuovo oggetto con la curva
+    curve_obj = bpy.data.objects.new(name, curve_data)
+
+    return curve_obj
+
+def draw_polygon(name="polygon", polyverts=[], material=None, fill=False, add_to_collection=None):
+    if len(polyverts) < 3:
+        return None
+    mesh = bpy.data.meshes.new(name)
+    obj = bpy.data.objects.new(rename(name), mesh)
+    # Usa bmesh per creare la geometria
+    bm = bmesh.new()
+    verts = [bm.verts.new(v_co) for v_co in polyverts]
+    bm.verts.ensure_lookup_table()
+
+    if fill:
+        bm.faces.new(verts)
+    else:
+        for i in range(len(verts)):
+            bm.edges.new((verts[i], verts[(i + 1) % len(verts)]))
+
+
+    # Scrivi la geometria nel mesh
+    bm.to_mesh(mesh)
+    bm.free()
+
+    # Collega l'oggetto alla collection specificata
+    if add_to_collection:
+        add_to_collection.objects.link(obj)
+    else:
+        bpy.context.collection.objects.link(obj)
+
+    # Aggiungi un materiale, se specificato
+    if material:
+        obj.data.materials.append(material)
+
+    return obj
 
 #CESTINO:
 
