@@ -139,30 +139,49 @@ class Zome:
         self.beams_strip = [] # 1 exemplar of polygon per layer (for analysis and operations)
        
        #collections:
-        self.main_collection = None
-        self.vertices_collection = None
-        self.faces_collection = None
-        self.edges_mesh = None
-        self.beams_collection = None
-        self.external_collection = None
+
         self.materials = []
         self.initialize_blender()
         self.set_basic_materials()
         self.main()
 
     def main(self):
-        #calculations:
+        #GEOMETRY
         self.set_vertices()  # theoretical vertices
         self.modify_vertices() #modification of the vertices
         self.set_derived_geometry()  #  faces bary etc build upon modified vertices
         self.post_production_modifications() #pos and rot of everything
+
+        #CREATE BLENDER OBJECTS:
+        self.inner_faces_obj=self.create_faces_obj(polygons_prefix=rename(self.name+"_inner_face_"))
+        self.inner_faces_obj_joined=join_objects(self.inner_faces_obj,self.name+"_inner_faces_joined")
+        self.edges_obj=self.create_edges_obj(rename(self.name+"_edge"))
+        #DRAW BLENDER OBJECTS:
+        if self.show["faces"]:
+            #create new collection:
+            if False:  #just in case you need separated faces...
+                self.inner_faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
+                self.main_collection.children.link(self.inner_faces_collection)
+                for poly in self.inner_faces_obj:
+                    self.inner_faces_collection.objects.link(poly) 
+            else: #here joined faces are used
+                self.main_collection.objects.link(self.inner_faces_obj_joined)
+                #bpy.context.collection.objects.unlink(self.inner_faces_obj_joined)
+        if self.show["edges"] :
+            #simply links edge to main collection       
+            self.main_collection.objects.link(self.edges_obj)
+            
+        
+        self.vertices_collection = None
+        self.beams_collection = None
+        self.external_collection = None
+
+
         #drawing:       
         if self.show["vertices"] == 1:
             self.draw_vertices()  
-        if self.show["faces"] == 1:
-            self.draw_faces()  
-        if self.show["edges"] == 1:
-            self.draw_edges()
+ 
+
         if self.show["beams"] == 1:
             self.draw_beams() 
             self.add_constraints()        
@@ -179,34 +198,20 @@ class Zome:
         self.print(type="report",text=report)
 
     def initialize_blender(self):
-        #if no object are  selected, select one if it exists:
+
+        #OBJECT MODE: first you need to select an object, then go to object mode
         if len(bpy.context.selected_objects) == 0:
             if bpy.context.scene.objects.get(self.name):
                 bpy.context.view_layer.objects.active = bpy.context.scene.objects.get(self.name)
                 bpy.context.view_layer.objects.active.select_set(True)
-        #if now there is an object selected, go to object mode:
         if len(bpy.context.selected_objects) > 0:
             bpy.ops.object.mode_set(mode='OBJECT')
-
-        # DELETE COLLECTIONS with the same name of the zome:
-        if self.name in bpy.data.collections:
-            collection_to_remove = bpy.data.collections[self.name]
-            # Deselect all objects
-            bpy.ops.object.select_all(action='DESELECT')
-            # Select all objects in the collection
-            for obj in collection_to_remove.objects:
-                obj.select_set(True)
-            # Delete selected objects
-            bpy.ops.object.delete()
-            # Unlink the collection from the scene
-            bpy.context.scene.collection.children.unlink(collection_to_remove)
-            # Delete the collection
-            bpy.data.collections.remove(collection_to_remove)
-
-        # CREATE THE ROOT COLLECTION:
+        #MAIN COLLECTION:
+        delete_collection(self.name)#delete previous if exists
         if self.show["vertices"] or self.show["faces"] or self.show["beams"] or self.show["edges"]:
-            self.main_collection = bpy.data.collections.new(self.name)
-            bpy.context.scene.collection.children.link(self.main_collection)        
+            self.main_collection = bpy.data.collections.new(rename(self.name))
+            bpy.context.scene.collection.children.link(self.main_collection)#add to scene
+    
 
     def set_vertices(self):
         self.vertices = []
@@ -444,28 +449,24 @@ class Zome:
                 bpy.context.collection.objects.unlink(obj)
             tot_vertices+=len(layer)
 
-    def draw_faces(self):
+    def create_faces_obj(self,polygons_prefix=None):
         # FACES:
-        self.faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
-        self.main_collection.children.link(self.faces_collection)
-        tot_faces=0
+        result=[]
         for layer_index, layer in enumerate(self.faces):
             for poly_index, poly in enumerate(layer):
-                draw_polygon(
-                    name=f"{self.name}_face_{layer_index}_{poly_index}",
+                poly=(draw_polygon(
+                    name=f"{polygons_prefix}_{layer_index}_{poly_index}",
                     polyverts=poly,
                     material=self.materials[poly_index % len(self.materials)],
-                    add_to_collection=self.faces_collection,
                     fill=True
-                )
-                if not check_complanarity(poly):
-                    self.print(f"WARNING: face {self.name}_face_{layer_index}_{poly_index} is not coplanar")
-            tot_faces += len(layer)
+                ))
+                result.append(poly)          
+                bpy.context.collection.objects.unlink(poly)# by default it links to the scene
+        return result
     
-    def draw_edges(self):
-        self.edges_mesh = bpy.data.collections.new(rename(self.name+"_edges"))
-        self.main_collection.children.link(self.edges_mesh)
-        mesh = bpy.data.meshes.new(f"{self.name}_edges")
+    def create_edges_obj(self,name):
+
+        mesh = bpy.data.meshes.new(name)
         vertices = []
         edges = []
         vertex_index = 0
@@ -478,8 +479,9 @@ class Zome:
                 tot_edges += 1
         mesh.from_pydata(vertices, edges, [])
         mesh.update()
-        obj = bpy.data.objects.new(f"{self.name}_edges", mesh)
-        self.edges_mesh.objects.link(obj)
+        obj = bpy.data.objects.new(name, mesh)
+        return obj
+
 
     def draw_beams(self):
         self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))

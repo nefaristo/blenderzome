@@ -79,9 +79,9 @@ from mathutils import Vector, geometry
 
 def test_sezione():
     #deseleziona tutti gli oggetti
-    obj =bpy.data.objects.get("Gennaro_faces_join")
+    obj =bpy.data.objects.get("Gennaro_inner_faces_joined")
     plane =bpy.data.objects.get("Plane")
-    verts=process_collection_intersection(obj, plane)
+    verts=mesh_plane_intersection(obj, plane)
     print(len(verts))
     print(area_polygon(verts))
 

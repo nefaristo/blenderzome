@@ -24,7 +24,7 @@ then rotating the object back to its original position. WHY such a convoluted an
 
 print("Blender utilities loaded - Version 2.0.2")
 
-# NON-GEOMETRY:
+# BLENDER:
 
 def clear_console():
     # Questo comando funziona su Windows
@@ -84,6 +84,21 @@ def set_visibility(name, visibility):
         bpy.context.view_layer.update()
     else:
         print(f"No item {name} found")    
+
+def delete_collection(name):
+    collection = bpy.data.collections.get(name)
+    if collection:
+        # Remove objects in the collection first
+        for obj in collection.objects:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+        # Recursively delete subcollections first
+        for subcollection in list(collection.children):  # Use list() to avoid mutation during iteration
+            delete_collection(subcollection.name)
+
+        # Unlink the collection from the scene and delete it
+        bpy.data.collections.remove(collection)
+
 
 def rename(new_name): #resets name avoiding the ".001" suffix
     #Check if the new name is already used by an object or a collection
@@ -196,13 +211,14 @@ def point_on_axis(point, axis_point, direction):
     return projection
 
 def check_complanarity(verts=[]):
+    print(verts)
     first_normal=mathutils.geometry.normal(verts[0],verts[1],verts[2])
     for i in range(3,len(verts)):
         if first_normal.angle(mathutils.geometry.normal(verts[(i-1)%len(verts)],verts[i],verts[(i+1)%len(verts)]))>0.01:
             return False
     return True
 
-# OBJECTS:
+# BLENDER OBJECTS:
 
 def display_paths():
     # Display material paths
@@ -293,6 +309,38 @@ def boolean_union_selected(new_object_name):
  
     bpy.context.view_layer.update() 
     print(f"Boolean union created: {active_obj.name}")
+
+def join_objects(objects_list, new_object_name, target_collection=None):
+    # Crea duplicati temporanei degli oggetti
+    temp_objects = []
+    for obj in objects_list:
+        if obj and obj.type == 'MESH':
+            temp_obj = obj.copy()  # Crea un duplicato
+            temp_obj.data = obj.data.copy()  # Copia anche i dati della mesh
+            bpy.context.collection.objects.link(temp_obj)  # Aggiungi il duplicato alla collezione
+            temp_objects.append(temp_obj)
+
+    # Unisci i duplicati in un nuovo oggetto
+    if temp_objects:
+        bpy.context.view_layer.objects.active = temp_objects[0]  # Imposta il primo oggetto come attivo
+        bpy.ops.object.select_all(action='DESELECT')  # Deseleziona tutti gli oggetti
+        for temp_obj in temp_objects:
+            temp_obj.select_set(True)  # Seleziona i duplicati
+
+        bpy.ops.object.join()  # Unisci gli oggetti selezionati
+        # Rinomina l'oggetto unito
+        new_object = bpy.context.active_object
+        new_object.name = rename(new_object_name)
+
+        # Scollega l'oggetto dalla collezione corrente
+        bpy.context.collection.objects.unlink(new_object)
+
+        # Rilinkalo a una nuova collezione se fornita
+        if target_collection:
+            target_collection.objects.link(new_object)
+
+    # Restituisci l'oggetto unito
+    return new_object
 
 def beams_polygon(polyverts, 
                   TW, TT,TT_sink_fraction=0.01, 
@@ -449,35 +497,25 @@ def mesh_plane_intersection(main_obj, plane_obj):
         bm = bmesh.new()
         bm.from_mesh(main_obj.data)
         bm.transform(main_obj.matrix_world)  # Porta la mesh nello spazio globale
-
         plane_normal = plane_obj.matrix_world.to_3x3() @ Vector((0, 0, 1))
         plane_co = plane_obj.location
-
         intersection_points = []
-
         for edge in bm.edges:
             v1, v2 = edge.verts[0].co, edge.verts[1].co
             d1 = (v1 - plane_co).dot(plane_normal)
             d2 = (v2 - plane_co).dot(plane_normal)
-
             if d1 * d2 < 0:
                 t = d1 / (d1 - d2)
                 intersection_point = v1 + t * (v2 - v1)
                 intersection_points.append(intersection_point)
-
         bm.free()
-
         if not intersection_points:
             return []
-
         # Ordina i punti attorno al baricentro
         centroid = sum(intersection_points, Vector()) / len(intersection_points)
-
         def angle_from_centroid(pt):
             return math.atan2(pt.y - centroid.y, pt.x - centroid.x)
-
         intersection_points.sort(key=angle_from_centroid)
-
         return intersection_points
     else:
         print("Errore: oggetti non validi")
