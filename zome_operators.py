@@ -57,11 +57,19 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             },
             zome_output= self.zome_input
         )
+        
         info=zome1.info("all")
-        bpy.context.scene.report_text=info
+        
         #HERE
         print("*****************INFO*****************")
-        print(info)
+        #print(info)
+        plane=bpy.data.objects.get("Plane")
+        verts=mesh_plane_intersection(zome1.inner_faces_obj_joined, plane)
+        draw_polygon(name="dummy_polygon2423qwe",polyverts=verts,fill=False)
+        print(len(verts))
+        print(area_polygon(verts))
+
+        bpy.context.scene.report_text=info
         bpy.context.scene.is_updating = False
         return {'FINISHED'}
 

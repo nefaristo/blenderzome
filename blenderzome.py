@@ -9,7 +9,7 @@ if not os.path.exists(script_path):
     raise Exception(f"Directory degli script non trovata in: {script_path}")
 if script_path not in sys.path:
     sys.path.append(script_path)
-
+global_zome=None
 #reloadings
 import blender_base
 importlib.reload(blender_base)
@@ -80,6 +80,7 @@ from mathutils import Vector, geometry
 def test_sezione():
     #deseleziona tutti gli oggetti
     obj =bpy.data.objects.get("Gennaro_inner_faces_joined")
+    print(type(obj))
     plane =bpy.data.objects.get("Plane")
     verts=mesh_plane_intersection(obj, plane)
     print(len(verts))

@@ -35,7 +35,8 @@ class Zome:
                 "edges": 0,
                 "geometry_alpha": 0.5,
                 "barycenter": 0 ,
-                "beams": 0
+                "beams": 0,
+                "plane": 0
             },
             modifications={
                 "top_modifications_type": "none",
@@ -91,7 +92,8 @@ class Zome:
             "fill_faces": 0,
             "geometry_alpha": 0.5,
             "barycenter": 0 ,
-            "beams": 0
+            "beams": 0,
+            "plane": 0
         }, **show}     
         self.beam = {**{
             "TW":0.1,
@@ -130,11 +132,14 @@ class Zome:
         #structures used to build the polyzome:
         self.vertices = []
         
+
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces = []
         self.face_types = []#["triangle","rhombus","upside_down_triangle"] set by set_derived_geometry
         self.edges = []
         self.beams = []
+
+        self.main_collection = None
         self.beams_collection = None
         self.beams_strip = [] # 1 exemplar of polygon per layer (for analysis and operations)
        
@@ -156,6 +161,8 @@ class Zome:
         self.inner_faces_obj=self.create_faces_obj(polygons_prefix=rename(self.name+"_inner_face_"))
         self.inner_faces_obj_joined=join_objects(self.inner_faces_obj,self.name+"_inner_faces_joined")
         self.edges_obj=self.create_edges_obj(rename(self.name+"_edge"))
+        self.plane_obj=self.create_plane(rename(self.name+"_plane"),self.main_collection if self.show["plane"] else None)
+
         #DRAW BLENDER OBJECTS:
         if self.show["faces"]:
             #create new collection:
@@ -170,8 +177,7 @@ class Zome:
         if self.show["edges"] :
             #simply links edge to main collection       
             self.main_collection.objects.link(self.edges_obj)
-            
-        
+
         self.vertices_collection = None
         self.beams_collection = None
         self.external_collection = None
@@ -212,7 +218,6 @@ class Zome:
             self.main_collection = bpy.data.collections.new(rename(self.name))
             bpy.context.scene.collection.children.link(self.main_collection)#add to scene
     
-
     def set_vertices(self):
         self.vertices = []
         for layer_index in range(self.S+1): 
@@ -465,7 +470,6 @@ class Zome:
         return result
     
     def create_edges_obj(self,name):
-
         mesh = bpy.data.meshes.new(name)
         vertices = []
         edges = []
@@ -482,6 +486,22 @@ class Zome:
         obj = bpy.data.objects.new(name, mesh)
         return obj
 
+    def create_plane(self, name, target_collection=None):
+        #actually is filled:
+        bpy.ops.mesh.primitive_plane_add(size=3*max(self.ZH,self.layer_data("circum_radius")), location=self.barycenter)
+        #fill the plane:
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.fill()
+        bpy.ops.object.mode_set(mode='OBJECT')
+        obj = bpy.context.object
+        obj.name = rename(name)
+        #rotate the plane to match the zome: axis self.axis:
+        #obj.matrix_world=self.R
+        bpy.context.collection.objects.unlink(obj)
+        if target_collection:
+            target_collection.objects.link(obj)
+        return obj
 
     def draw_beams(self):
         self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
@@ -708,7 +728,7 @@ class Zome:
                     for type_index,type in enumerate(types):
                         info+=f"    {types_names[type_index]} {round(self.global_data(type),precision)} {types_units[type_index]} \n"
                 case "layers":
-                    types=["face_type","height","polygon_side","circumscribed_circle_radius","inscribed_circle_radius","polygon_area","circumscribed_circle_area","inscribed_circle_area","approx_volume_to_layer"]
+                    types=["face_type","height","polygon_side","circum_radius","inscr_radius","polygon_area","circum_area","inscr_area","approx_volume_to_layer"]
                     types_names=["tipo","altezza","lato poligono","raggio maggiore","raggio minore","area poligono","area c.circoscritto","area c.inscritto","volume"]
                     types_units=["","m","m","m","m","m2","m2","m2","m3"]
                     for layer_index in range(len(self.vertices)):
@@ -735,7 +755,11 @@ class Zome:
     
     def layer_data(self,type="",target_index=0):#area of the layer_index-th layer (regular polygon of self.N vertices/sides):
         layer = self.vertices[target_index] 
-        types=["face_type","height","polygon_side","polygon_area","circumscribed_circle_radius","circumscribed_circle_area","inscribed_circle_radius","inscribed_circle_area","approx_volume_to_layer"]
+        types=["face_type","height",
+               "polygon_side","polygon_area",
+               "circum_radius","circum_area",
+               "inscr_radius","inscr_area",
+               "approx_volume_to_layer"]
         if type not in types: #returns a list of dictionaries of all the types
             result=[]
             for type in types:
@@ -750,15 +774,15 @@ class Zome:
                 return np.linalg.norm(point_on_axis(layer[0], self.origin, self.axis) - point_on_axis(self.vertices[0][0], self.origin, self.axis))
             case "polygon_side":
                 return np.linalg.norm(mathutils.Vector(layer[0])-mathutils.Vector(layer[1])) if len(layer)>1 else 0
-            case "inscribed_circle_radius":
+            case "inscr_radius":
                 return blender_base.radius_inscribed_circle(layer) if len(layer)>1 else 0
-            case "circumscribed_circle_radius":
+            case "circum_radius":
                 return  radius_circumscribed_circle(layer)
             case "polygon_area":
                 return area_polygon(layer) if len(layer)>1 else 0
-            case "circumscribed_circle_area":
+            case "circum_area":
                 return  area_circumscribed_circle(layer)
-            case "inscribed_circle_area":
+            case "inscr_area":
                 return area_inscribed_circle(layer)
             case "approx_volume_to_layer":
                 return 0
