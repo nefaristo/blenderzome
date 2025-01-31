@@ -326,7 +326,6 @@ def join_objects(objects_list, new_object_name, target_collection=None):
         bpy.ops.object.select_all(action='DESELECT')  # Deseleziona tutti gli oggetti
         for temp_obj in temp_objects:
             temp_obj.select_set(True)  # Seleziona i duplicati
-
         bpy.ops.object.join()  # Unisci gli oggetti selezionati
         # Rinomina l'oggetto unito
         new_object = bpy.context.active_object
@@ -387,7 +386,6 @@ def beams_polygon(polyverts,
             delta_1=TT / ((math.cos(alpha_1/2)/math.sin(alpha_1/2)) if alpha_1!=0 else 1)
             inner_low_0 = outer_low_0 - TT* thickness_norm + (delta_0+TT*TT_sink_fraction)*edge_norm
             inner_low_1 = outer_low_1 - TT* thickness_norm - (delta_1+TT*TT_sink_fraction)*edge_norm
-            print (delta_0,delta_1)
         #calc high vertices
         outer_high_0 = outer_low_0 + z * TW
         outer_high_1 = outer_low_1 + z * TW

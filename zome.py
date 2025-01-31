@@ -131,7 +131,7 @@ class Zome:
         self.M = self.T @ self.R @ self.T_inv  
         #structures used to build the polyzome:
         self.vertices = []
-        
+        self.external_vertices=[]
 
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces = []
@@ -156,6 +156,7 @@ class Zome:
         self.modify_vertices() #modification of the vertices
         self.set_derived_geometry()  #  faces bary etc build upon modified vertices
         self.post_production_modifications() #pos and rot of everything
+        self.set_external_vertices(self.barycenter,0.1)
 
         #CREATE BLENDER OBJECTS:
         self.inner_faces_obj=self.create_faces_obj(polygons_prefix=rename(self.name+"_inner_face_"))
@@ -352,6 +353,21 @@ class Zome:
         if total_vertices > 0:
             self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
     
+    def set_external_vertices(self, vanishing_point, vanishing_point_distance):
+        self.external_vertices = []
+        # Assicurati che vanishing_point sia una tupla o lista di tre elementi
+        vp= mathutils.Vector(vanishing_point)
+        for layer in self.vertices:
+            new_layer=[]
+            for vertex in layer:
+                vertex = mathutils.Vector(vertex)
+                # Calcola la direzione opposta a vanishing_point
+                direction = (mathutils.Vector(vertex) - vp).normalized()
+                # Nuovo vertice è vertex - vanishing_point_distance in direzione opposta
+                new_vertex = tuple(vertex - vanishing_point_distance * direction)
+                new_layer.append(new_vertex)
+            self.external_vertices.append(new_layer)
+   
     def post_production_modifications(self):#something in between uses "z" et al.
         modifications=self.modifications
         #position/rotation modifications:
@@ -453,6 +469,16 @@ class Zome:
                 self.vertices_collection.objects.link(obj)
                 bpy.context.collection.objects.unlink(obj)
             tot_vertices+=len(layer)
+        if self.external_vertices:
+            for layer_index,layer in enumerate(self.external_vertices):
+                for vertex_index,vertex in enumerate(layer):
+                    print(f"layer {layer_index} vertex {vertex_index} {len(self.external_vertices[layer_index][vertex_index])}")
+                    bpy.ops.mesh.primitive_cube_add(size=size, location=vertex)
+                    obj = bpy.context.object
+                    obj.name = rename(f"{self.name}_external_vertex_{layer_index}_{vertex_index}")
+                    # Links/unlinks
+                    self.vertices_collection.objects.link(obj)
+                    bpy.context.collection.objects.unlink(obj)
 
     def create_faces_obj(self,polygons_prefix=None):
         # FACES:

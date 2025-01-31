@@ -93,7 +93,15 @@ file_name= "poligono sunk.stl" #no
 file_name= "poligono normale.obj" #no
 file_name="due box sunk.obj" #si
 file_name="due box sunk.stl" #si
+file_name="standard.dxf" #si
+
+
+
+
+
 file_path = file_path + "\\" + file_name
+
+
 tolerance = 0.1
 
 #clears the console

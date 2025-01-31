@@ -125,9 +125,9 @@ def test_polygon(name="polygon"):
     #rpv=[(0.3999148699053098, -0.00825208026010272, 0), (0.29867582132566467, 0.2660690770372229, 0), (0.014141169299956707, 0.39974995601104196, 0), (-0.29997214364181013, 0.26460671389618445, 0), (-0.3992668030203351, 0.02420785008878145, 0), (-0.2848712346911126, -0.2807995364055309, 0), (0.008147981801640931, -0.39991700438035904, 0), (0.28189451733450505, -0.28378773951097047, 0)]
     rpv=[(0.6025715717786836, 0.798037568386693, -0.0046657921493871825), (-0.24053233303458307, 0.9705893856582063, -0.007086560762670025), (-0.8651826267999024, 0.5014121734843402, -0.004735685664424331), (-0.9382626040849168, -0.34592068610809945, 0.0010403470236673938), (-0.18556277229080098, -0.9825887254163675, 0.006551796147353777), (0.6647647279942153, -0.747002151275522, 0.006149817169094832),(0.996959928435831, -0.0778646193251266, 0.0019866387923732753)]
     rnd_rpv=rnd_poly_vertices(random.randint(3,10),1,on_xy_plane=False) 
-    rpv=rnd_rpv
-    rpv=[(0.39787624663671095, -0.42083700689752185, 0.27979289510676875), (-0.05838070998269232, 0.3284133967984805, 0.3235534373545187), (-0.4676912999390171, 0.8187913979419562, 0.11426640739719847), (-0.5187113913863011, 0.6880392459428247, -0.17417359176702363), (-0.18511309127208275, 0.044579933371955816, -0.3369308622759696), (0.30302725500313626, -0.6510509433757338, -0.2388471103966552), (0.5483572323439401, -0.8148320490774751, 0.06453170846776146)] # diagonal irregular
-    print(rpv)
+    #rpv=rnd_rpv
+    #rpv=[(0.39787624663671095, -0.42083700689752185, 0.27979289510676875), (-0.05838070998269232, 0.3284133967984805, 0.3235534373545187), (-0.4676912999390171, 0.8187913979419562, 0.11426640739719847), (-0.5187113913863011, 0.6880392459428247, -0.17417359176702363), (-0.18511309127208275, 0.044579933371955816, -0.3369308622759696), (0.30302725500313626, -0.6510509433757338, -0.2388471103966552), (0.5483572323439401, -0.8148320490774751, 0.06453170846776146)] # diagonal irregular
+    #print(rpv)
     #crea un beam polygon:
     if rpv:
         beam_poly=bb.beams_polygon(
@@ -136,59 +136,28 @@ def test_polygon(name="polygon"):
                     polyverts=rpv,
                     TW=0.2,
                     TT=0.06,
+                    TT_sink_fraction=-0.0,#0.2,
                     method="butt joint ccw",
                     add_to_collection=bb.set_collection("its_collection")                    
                     )   
-        one_passive_done=False
-        for obj in bpy.data.collections.get("its_collection").objects:
-            if not one_passive_done:
-                bb.set_physics(obj,density=1,type="PASSIVE")
-                one_passive_done=True
-            else:
-                bb.set_physics(obj,density=1,type="ACTIVE")
-
-    bb.constraints_chain(bpy.data.collections.get("its_collection").objects,stiffness=10,damping=0.5,loop=True)
-    
-import bpy
-
-def add_rigid_body_constraint(empty, object1, object2, stiffness, damping):
-
-    #set empty as active:
-    bpy.context.view_layer.objects.active = empty
-    empty.select_set(True)
-    
-    # Aggiungi un Rigid Body Constraint al nuovo Empty
-    bpy.ops.rigidbody.constraint_add(type='GENERIC')
-    constraint = empty.rigid_body_constraint
-    
-    # Configura il constraint
-    constraint.object1 = object1
-    constraint.object2 = object2
-    
-    constraint.use_limit_lin_x = True
-    constraint.use_limit_lin_y = True
-    constraint.use_limit_lin_z = True
-    constraint.use_limit_ang_x = True
-    constraint.use_limit_ang_y = True
-    constraint.use_limit_ang_z = False  # Movimento libero solo sull'asse Z
-    
-    # Imposta la stiffness e la damping sull'asse Z
-    constraint.use_spring_ang_z = True
-    constraint.spring_stiffness_ang_z = stiffness
-    constraint.spring_damping_ang_z = damping
-
-#bb.set_collection(delete_root=True)#cancella tutto
-bb.set_collection("temp")
-#add an
-#test_polygon("third")
-
-bpy.ops.object.select_all(action='DESELECT')
-
-#prende l'oggetto "empty" e gli aggiunge un rigid body constraint tipo molla che permette solo di muoversi lungo l'asse Z collegato a "third_D":
-add_rigid_body_constraint(bpy.data.objects["empty"],bpy.data.objects["third_D"],bpy.data.objects["second_F"],10,0.5)
-add_rigid_body_constraint(bpy.data.objects["empty"],bpy.data.objects["third_D"],bpy.data.objects["second_F"],10,0.5)
+        if True:
+            #deseleziona tutto  
+            bpy.ops.object.select_all(action='DESELECT')
+            #seleziona solo gli oggetti nella collection
+            for obj in bpy.data.collections.get("its_collection").objects:
+                obj.select_set(True)    
+           
+            bb.boolean_union_selected("joined_polygon")
+            #seleziona solo il risultato e va in edit mode
+            bpy.context.view_layer.objects.active = bpy.data.objects["joined_polygon"]
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.remove_doubles(threshold=0.0001)  # Merge vertici sovrapposti
+            bpy.ops.mesh.delete_loose()  # Elimina geometrie flottanti
+            bpy.context.view_layer.objects.active = bpy.data.objects["joined_polygon"]
+            
 
 
+test_polygon("polygon")
 
 
 
