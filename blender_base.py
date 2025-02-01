@@ -310,36 +310,31 @@ def boolean_union_selected(new_object_name):
     bpy.context.view_layer.update() 
     print(f"Boolean union created: {active_obj.name}")
 
-def join_objects(objects_list, new_object_name, target_collection=None):
-    # Crea duplicati temporanei degli oggetti
+def join_objects(objects_list, name, add_to_collection=None):
     temp_objects = []
-    for obj in objects_list:
-        if obj and obj.type == 'MESH':
-            temp_obj = obj.copy()  # Crea un duplicato
-            temp_obj.data = obj.data.copy()  # Copia anche i dati della mesh
-            bpy.context.collection.objects.link(temp_obj)  # Aggiungi il duplicato alla collezione
-            temp_objects.append(temp_obj)
+    for index, obj in enumerate(objects_list):  # Iterate through the objects list
+        if isinstance(obj, list):  # If still a list, recursive call
+            temp_objects.append(join_objects(objects_list=obj, name=rename(f"{name}_{index}"), add_to_collection=add_to_collection))
+        elif obj and obj.type == 'MESH':  # It's a mesh: core function            
+            temp_objects.append(obj)  # Add the original object to the
+        if not obj.name in bpy.context.collection.objects.keys():
+            bpy.context.collection.objects.link(obj)  # Temporarily add to collection, needed for selection, in turn for joining
 
-    # Unisci i duplicati in un nuovo oggetto
-    if temp_objects:
-        bpy.context.view_layer.objects.active = temp_objects[0]  # Imposta il primo oggetto come attivo
-        bpy.ops.object.select_all(action='DESELECT')  # Deseleziona tutti gli oggetti
+    if temp_objects:  # If there are temporary objects
+        bpy.context.view_layer.objects.active = temp_objects[0]  # Set first object as active
+        bpy.ops.object.select_all(action='DESELECT')  # Deselect all
         for temp_obj in temp_objects:
-            temp_obj.select_set(True)  # Seleziona i duplicati
-        bpy.ops.object.join()  # Unisci gli oggetti selezionati
-        # Rinomina l'oggetto unito
+            bpy.data.objects[temp_obj.name].select_set(True)  # Select duplicates
+        bpy.ops.object.join()  # Join selected
         new_object = bpy.context.active_object
-        new_object.name = rename(new_object_name)
+        if new_object:  # Check if the new object is valid
+            new_object.name = name  # Set the name to the provided name
+            new_object.data.name = name  # Set the mesh data name
+            bpy.context.collection.objects.unlink(new_object)  # Unlink from the current collection
+            if add_to_collection:
+                add_to_collection.objects.link(new_object)  # Link to the specified collection
 
-        # Scollega l'oggetto dalla collezione corrente
-        bpy.context.collection.objects.unlink(new_object)
-
-        # Rilinkalo a una nuova collezione se fornita
-        if target_collection:
-            target_collection.objects.link(new_object)
-
-    # Restituisci l'oggetto unito
-    return new_object
+    return new_object  # Return the joined object
 
 def beams_polygon(polyverts, 
                   TW, TT,TT_sink_fraction=0.01, 
@@ -586,8 +581,25 @@ def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
 
     return  
 
-
 # DRAWING:
+
+def draw_vertices(points,name=None,size=0.01,joined=False,add_to_collection=None):
+    if isinstance(points, list):
+        if joined:
+            obj=join_objects(objects_list=points,new_object_name=rename(name))
+        else:
+            obj=[]
+            for index, point in enumerate(points):
+                obj.append(draw_vertices(point,name=rename(f"{name}_{index}"),size=size,add_to_collection=add_to_collection))
+    else:
+        bpy.ops.mesh.primitive_cube_add(size=size, location=points)
+        obj = bpy.context.object
+        if name:
+            obj.name = rename(name)
+        bpy.context.collection.objects.unlink(obj)
+        if add_to_collection:
+            add_to_collection.objects.link(obj)     
+    return obj 
 
 def draw_segment(start, end, name="Segment",color=(1, 0, 0)):
     # Crea una nuova curva
@@ -607,38 +619,50 @@ def draw_segment(start, end, name="Segment",color=(1, 0, 0)):
 
     return curve_obj
 
-def draw_polygon(name="polygon", polyverts=[], material=None, fill=False, add_to_collection=None):
-    if len(polyverts) < 3:
+def draw_face(vertices=[],name="face", fill=False, material=None, add_to_collection=None):
+    if len(vertices) < 3:
         return None
     mesh = bpy.data.meshes.new(name)
     obj = bpy.data.objects.new(rename(name), mesh)
-    # Usa bmesh per creare la geometria
     bm = bmesh.new()
-    verts = [bm.verts.new(v_co) for v_co in polyverts]
+    verts = [bm.verts.new(v_co) for v_co in vertices]
     bm.verts.ensure_lookup_table()
-
     if fill:
         bm.faces.new(verts)
     else:
         for i in range(len(verts)):
             bm.edges.new((verts[i], verts[(i + 1) % len(verts)]))
-
-
-    # Scrivi la geometria nel mesh
     bm.to_mesh(mesh)
     bm.free()
-
-    # Collega l'oggetto alla collection specificata
     if add_to_collection:
         add_to_collection.objects.link(obj)
     else:
         bpy.context.collection.objects.link(obj)
-
-    # Aggiungi un materiale, se specificato
     if material:
         obj.data.materials.append(material)
-
     return obj
+
+def draw_faces(faces,name=None,materials=None,fill=False,joined=False,add_to_collection=None):
+    #if a list [of lists..] of faces, returns a list of objects "name_indexes.." or a single object if joined
+    #if material is also a list, unpacks it until an actual material is found
+    type="?" if not isinstance(faces, list) else "list" if not isinstance(faces[0], (Vector, tuple)) else "face"
+    
+    material_type="material" if isinstance(materials, bpy.types.Material) else "list" if isinstance(materials, list) else "?"
+    print(f"{name} ({type}): material type is {material_type}")
+    match type:
+        case "face":
+            return draw_face(name=rename(name),vertices=faces,material=materials,fill=fill,add_to_collection=add_to_collection)
+        case "list":
+            result=[]
+            for index, nested_faces in enumerate(faces):#recursive call; if material is a list, unpacks it
+                nested_material=materials[index] if index<len(materials) else None
+                result.append(draw_faces(name=rename(f"{name}_{index}"),faces=nested_faces,
+                    materials=nested_material,fill=fill,joined=joined))
+            return result if not joined else join_objects(objects_list=result,name=rename(name),add_to_collection=add_to_collection)
+        case _:
+            print("ERROR: faces is neither a face nor a list of faces")
+            return None
+
 
 #CESTINO:
 

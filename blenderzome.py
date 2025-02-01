@@ -84,9 +84,9 @@ def test_sezione():
     plane =bpy.data.objects.get("Plane")
     verts=mesh_plane_intersection(obj, plane)
     print(len(verts))
-    print(area_polygon(verts))
+    print(area_polygon(verts)) 
 
-    polygon = draw_polygon(name="dummy_polygon2423qwe",polyverts=verts,fill=False)
+    polygon = draw_face(name="dummy_polygon2423qwe",vertices=verts,fill=False)
     
 
 main()
