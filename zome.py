@@ -154,8 +154,9 @@ class Zome:
     def main(self):
         #GEOMETRY:
         #it's useful to have a vertices organization by layer and radial index
-        self.set_vertices()  # theoretical vertices, straight and layered
+        self.vertices,self.layered_vertices=self.zome_vertices()  # theoretical vertices, straight and layered
         
+
 
         self.faces, self.face_types, self.edges,  self.barycenter=self.derived_geometry(self.vertices)
         self.move_zome_vertices() #only alters the position, number is the same
@@ -217,11 +218,14 @@ class Zome:
             self.main_collection = bpy.data.collections.new(rename(self.name))
             bpy.context.scene.collection.children.link(self.main_collection)#add to scene
 
-    def set_vertices(self):
+    def zome_vertices(self):
         layered_vertices = []
+        vertices=[]
+        layered_coords=[]
         for layer_index in range(self.S+1): 
             vertices_layer = []              
             match layer_index:
+
                 case _ if layer_index==0 :  # APEX 
                     vertices_layer.append((0, 0, self.ZH))  # appends to the layer a tuple with the apex
                 case 1:  # FIRST LAYER - arbitrary orientation
@@ -233,33 +237,32 @@ class Zome:
                 case _ if 2 <= layer_index <= self.S:  # RHOMBI 
                     for radial_index in range(self.N): #from 0 to N-1                        
                         #goes back by 2 layers to find the A vertex to project for the new D vertex of the rhombus
-                        A = layered_vertices[0][0] if layer_index == 2 else layered_vertices[layer_index-2][(radial_index+1) % self.N]
-                        B = layered_vertices[layer_index-1][radial_index]
-                        C = layered_vertices[layer_index-1][(radial_index+1) % self.N]
+                        A = layered_coords[0][0] if layer_index == 2 else layered_coords[layer_index-2][(radial_index+1) % self.N]
+                        B = layered_coords[layer_index-1][radial_index]
+                        C = layered_coords[layer_index-1][(radial_index+1) % self.N]
                         M = (mathutils.Vector(B) + mathutils.Vector(C)) / 2  # Punto medio di B e C
                         D = 2 * M - mathutils.Vector(A)  # Simmetrico di A rispetto a B-C
                         # if layer is M+1 and M<N-1, its' cutting rhombi to triangles and doesnt add the vertex
-                        # in the other cases, adds the rhombi and, as for the layered_vertices,
+                        # in the other cases, adds the rhombi and, as for the layered_coords,
                         if layer_index!=self.N or radial_index!=0:#if antiapex, add only the first vertex
                             vertices_layer.append((D.x, D.y, D.z))      
-            layered_vertices.append(vertices_layer)         
-        layered_vertices.reverse()
-        layered_vertices=self.alter_layered_vertices(modifications=self.modifications,layered_vertices=layered_vertices)
-        for layer_index,layer in enumerate(layered_vertices):
+            layered_coords.append(vertices_layer)         
+        layered_coords.reverse()
+        layered_coords=self.alter_vertices(modifications=self.modifications,layered_coords=layered_coords)
+        for layer_index,layer in enumerate(layered_coords):
             for radial_index,vertex in enumerate(layer):
 
-
                 pass#self.layered_vertices.append((layer_index,radial_index,vertex))
-        self.vertices=layered_vertices.copy()
+        vertices=layered_coords.copy()
+        return vertices,layered_vertices
 
-
-    def alter_layered_vertices(self,layered_vertices, modifications):    
+    def alter_vertices(self,layered_coords, modifications):    
         #top modifications:
         if modifications["top_modifications_levels"] > 0 and modifications["top_modifications_levels"] < self.S+1: 
             match modifications["top_modifications_type"]:
 
                 case "cut":
-                    del layered_vertices[-modifications["top_modifications_levels"]:]
+                    del layered_coords[-modifications["top_modifications_levels"]:]
                 case "reduction":            
                     if modifications["top_new_height"] != None:
                         bottom_height=self.h*(self.S-modifications["top_modifications_levels"])                        
@@ -268,7 +271,7 @@ class Zome:
                             "top_modifications_type": "cut", 
                             "top_modifications_levels": modifications["top_modifications_levels"],
                             })  
-                        top_zome_area=self.layer_data("polygon_area",len(layered_vertices)-1) #area of top is the last layer of the main zome
+                        top_zome_area=self.layer_data("polygon_area",len(layered_coords)-1) #area of top is the last layer of the main zome
                         top_zome_theta, top_zome_theta_spread=find_theta(N=self.N, 
                                              S=self.modifications["top_modifications_levels"], 
                                              ZH=modifications["top_new_height"]-bottom_height, 
@@ -279,16 +282,16 @@ class Zome:
                             N=self.N, S=self.modifications["top_modifications_levels"], 
                             theta=top_zome_theta,
                             ZH=modifications["top_new_height"]-bottom_height,
-                            #show={"layered_vertices": self.show["layered_vertices"] , "faces": self.show["faces"], "fill_faces": self.show["fill_faces"], "beams": self.show["beams"]},
+                            #show={"layered_coords": self.show["layered_coords"] , "faces": self.show["faces"], "fill_faces": self.show["fill_faces"], "beams": self.show["beams"]},
                             modifications={"position": (0,0,bottom_height), "rotation": (0,0,0)},
                             silent=True
                         )  
-                        #copy the layered_vertices of the top zome to the main zome:
-                        for layer in top_zome.layered_vertices:
-                            layered_vertices.append(layer)          
+                        #copy the layered_coords of the top zome to the main zome:
+                        for layer in top_zome.layered_coords:
+                            layered_coords.append(layer)          
                 case _:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
-        return layered_vertices
+        return layered_coords
 
     def derived_geometry(self,vertices):        
         half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
