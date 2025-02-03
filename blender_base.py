@@ -211,13 +211,29 @@ def point_on_axis(point, axis_point, direction):
     return projection
 
 def check_complanarity(verts=[]):
-    print(verts)
     first_normal=mathutils.geometry.normal(verts[0],verts[1],verts[2])
     for i in range(3,len(verts)):
         if first_normal.angle(mathutils.geometry.normal(verts[(i-1)%len(verts)],verts[i],verts[(i+1)%len(verts)]))>0.01:
             return False
     return True
 
+def vertices_scale(vertices,origin,scale_factor):
+    scaled_vertices=[]
+    if isinstance(vertices,list): #if a list [of lists..] of vertices, call recursively
+        for layer in vertices:
+            scaled_vertices.append(vertices_scale(vertices=layer,origin=origin,scale_factor=scale_factor))
+        return scaled_vertices
+    else: #core function
+        v=mathutils.Vector(vertices) if isinstance(vertices,tuple) else vertices if isinstance(vertices,mathutils.Vector) else None
+        if v:
+            origin= mathutils.Vector(origin)
+            direction = (origin - v).normalized() # so scale_factor>0 shrinks 
+            return tuple(v + scale_factor * direction)
+        else:
+            print("ERROR: vertices is neither a tuple nor a mathutils.Vector")
+
+            return None
+        
 # BLENDER OBJECTS:
 
 def display_paths():
@@ -645,17 +661,20 @@ def draw_face(vertices=[],name="face", fill=False, material=None, add_to_collect
 def draw_faces(faces,name=None,materials=None,fill=False,joined=False,add_to_collection=None):
     #if a list [of lists..] of faces, returns a list of objects "name_indexes.." or a single object if joined
     #if material is also a list, unpacks it until an actual material is found
-    type="?" if not isinstance(faces, list) else "list" if not isinstance(faces[0], (Vector, tuple)) else "face"
-    
+    if isinstance(faces, list) :
+        type="face" if len(faces)>0 and isinstance(faces[0], (Vector, tuple)) else "list"
+    else:
+        type="?"
+    print(f"type: {type}")
     material_type="material" if isinstance(materials, bpy.types.Material) else "list" if isinstance(materials, list) else "?"
-    print(f"{name} ({type}): material type is {material_type}")
     match type:
         case "face":
+            print(f"faces: {faces[0]}")
             return draw_face(name=rename(name),vertices=faces,material=materials,fill=fill,add_to_collection=add_to_collection)
         case "list":
             result=[]
             for index, nested_faces in enumerate(faces):#recursive call; if material is a list, unpacks it
-                nested_material=materials[index] if index<len(materials) else None
+                nested_material=materials[index] if isinstance(materials, list) and index<len(materials) else None
                 result.append(draw_faces(name=rename(f"{name}_{index}"),faces=nested_faces,
                     materials=nested_material,fill=fill,joined=joined))
             return result if not joined else join_objects(objects_list=result,name=rename(name),add_to_collection=add_to_collection)

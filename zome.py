@@ -149,40 +149,40 @@ class Zome:
         self.main()
 
     def main(self):
-        #GEOMETRY
-        self.set_vertices()  # theoretical vertices
-        self.set_vertices_mod_1() #modification of the vertices
-        self.faces, self.edges, self.face_types, self.barycenter=self.derived_geometry()
-        self.set_vertices_mod_2() #pos and rot of everything
+        #GEOMETRY:
+        #basically after create & alter the vertices numbers are decided
+        #that means that derived geometry can point to them regardless of 
+        # possible eventual changing their positions
+        #(location and rotation, distortion and so on)
+        self.create_zome()  # theoretical vertices of the basic zome
+        self.alter_zome() #involves the modification of the vertices set (adding,deleting)
+
+        self.faces, self.face_types, self.edges,  self.barycenter=self.derived_geometry(self.vertices)
+        self.move_zome_vertices() #only alters the position, number is the same
         
+
         #CREATE BLENDER OBJECTS:
-        self.blender_edges=self.create_blender_edges(rename(self.name+"_edge"))
+        self.blender_edges=self.create_blender_edges(name=rename(self.name+"_edge"))
+        #self.draw_edges(edges=edges,name=rename(self.name+"_edge"))
         #self.blender_plane=self.create_plane(rename(self.name+"_plane"),self.main_collection if self.show["plane"] else None)
         materials=[]
         for i in range(len(self.faces)):#copy materials in every faces layer
             materials.append(self.materials)
         self.inner_surface=draw_faces(faces=self.faces,name=rename(self.name+"_inner_surface"),materials=materials,joined=True,fill=True)
-
+        #faces=self.faces.copy()
+        #self.inner_surface_vol=draw_faces(faces=faces,name=rename(self.name+"_inner_surface_vol"),materials=materials,joined=True,fill=True)
         #DRAW BLENDER OBJECTS:       
         if self.show["vertices"] == 1:
-            self.vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
-            self.main_collection.children.link(self.vertices_collection)
-            draw_vertices(points=self.barycenter,name=f"{self.name}_barycenter",size=self.ZH*0.01,add_to_collection=self.vertices_collection)
-            draw_vertices(points=(0,0,0),name=f"{self.name}_origin",size=self.ZH*0.01,add_to_collection=self.vertices_collection)
-            draw_vertices(points=self.vertices,name=f"{self.name}_vertices",size=self.ZH*0.005,add_to_collection=self.vertices_collection)
+            vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
+            self.main_collection.children.link(vertices_collection)
+            draw_vertices(points=self.barycenter,name=f"{self.name}_barycenter",size=self.ZH*0.01,joined=True,add_to_collection=self.main_collection)
+            draw_vertices(points=(0,0,0),name=f"{self.name}_origin",size=self.ZH*0.01,add_to_collection=self.main_collection)
+            draw_vertices(points=self.vertices,name=f"{self.name}_vertices",size=self.ZH*0.005,add_to_collection=vertices_collection)
         if self.show["faces"]:
-            #adds inner surface to main:
-            #     
             self.main_collection.objects.link(self.inner_surface)
-
-        if self.show["edges"] :
-            #simply links edge to main collection       
+        if self.show["edges"] :   
             self.main_collection.objects.link(self.blender_edges)
         
-
-
-
-        self.vertices_collection = None
         self.beams_collection = None
         self.external_collection = None
 
@@ -190,8 +190,9 @@ class Zome:
             self.draw_beams() 
             self.add_constraints()        
                 
-        self.FEM_friendly_mesh(thickness=0.4,name=self.name+"_FEM_friendly_mesh",add_to_collection=self.main_collection)
+        #self.FEM_friendly_mesh(thickness=0.4 if self.beam["TT"]>0 else 0.1,name=self.name+"_FEM",add_to_collection=self.main_collection)
         bpy.ops.object.select_all(action='DESELECT')#deselect all objects
+
 
         report="*****************ZOME DATA*****************\n"
         #memoriazza la somma di tutit i vertici:
@@ -213,11 +214,11 @@ class Zome:
             bpy.ops.object.mode_set(mode='OBJECT')
         #MAIN COLLECTION:
         delete_collection(self.name)#delete previous if exists
-        if self.show["vertices"] or self.show["faces"] or self.show["beams"] or self.show["edges"]:
+        if True or self.show["vertices"] or self.show["faces"] or self.show["beams"] or self.show["edges"]: #SVSV
             self.main_collection = bpy.data.collections.new(rename(self.name))
             bpy.context.scene.collection.children.link(self.main_collection)#add to scene
-    
-    def set_vertices(self):
+
+    def create_zome(self):
         self.vertices = []
         for layer_index in range(self.S+1): 
             vertices_layer = []              
@@ -245,7 +246,7 @@ class Zome:
             self.vertices.append(vertices_layer)         
         self.vertices.reverse()
 
-    def set_vertices_mod_1(self,modifications=None):
+    def alter_zome(self,modifications=None):
         if modifications is None:
             modifications=self.modifications        
         #top modifications:
@@ -257,7 +258,7 @@ class Zome:
                     if modifications["top_new_height"] != None:
                         bottom_height=self.h*(self.S-modifications["top_modifications_levels"])                        
                         #cut the top of the zome out:
-                        self.set_vertices_mod_1(modifications={
+                        self.alter_zome(modifications={
                             "top_modifications_type": "cut", 
                             "top_modifications_levels": modifications["top_modifications_levels"],
                             })  
@@ -283,76 +284,7 @@ class Zome:
                 case _:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
         
-    def set_derived_geometry(self):        
-        half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
-        self.faces = []
-        self.edges = []
-        tot_faces=0
-        tot_edges=0
-        #lowest layer (if not an apex):
-        if len(self.vertices[0])>1: #since edges are built upwards, the first layer is not added by the main cycle
-            new_layer_edges = []
-            for radial_index in range(len(self.vertices[0])):#horizontal edges of the base triangle
-                new_layer_edges.append((self.vertices[0][radial_index],self.vertices[0][(radial_index+1)%len(self.vertices[0])]))
-            self.edges.append(new_layer_edges)
-            tot_edges += len(new_layer_edges)
-        #main cycle:
-        for layer_index in range(len(self.vertices)): 
-            new_layer_faces = []  
-            new_layer_face_types = []
-            new_layer_edges = []
-            this_count=len(self.vertices[layer_index])
-            prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
-            next_count=-1 if layer_index==len(self.vertices)-1 else len(self.vertices[layer_index+1])  
-            if(len(self.vertices[layer_index])>1):
-                for radial_index in range(this_count):#  
-                #the order of the vertices is important to eventually label the beams and that in turn is important to connect them
-                # faces: first side is N-E (first vertex = E). Exception: upside down triangles first side =S (first vertex=W)   
-                # edges: built upwards when applicable. Exception: pointy bottom, upside down triangles (horizontal edges), triangles (all)                
-                    N=None if next_count==-1 else  self.vertices[layer_index+1][0] if next_count==1 else self.vertices[layer_index+1][(radial_index+1) % next_count]
-                    W=self.vertices[layer_index][radial_index%this_count]
-                    E=self.vertices[layer_index][(radial_index+1) % this_count]
-                    S=None if prev_count==-1 else self.vertices[layer_index-1][0] if prev_count==1 else self.vertices[layer_index-1][radial_index%prev_count]
-                    if N is not None and abs(N[2]-W[2])<half_h:# this layer is overlapping with N (the next one): upside down triangle
-                        new_layer_faces.append((E, W, S)) # triangle (starting from S side )      
-                        new_layer_edges.append((E, W)) #1 horizontal edge                 
-                        new_layer_face_types= "middle_upside_down_triangle"
-                    elif S is not None and abs(S[2]-W[2])<half_h:# this layer is overlapping with S (the previous one): middle triangle
-                        new_layer_faces.append((E, N, W)) #triangle (starting from NE side)
-                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
-                        new_layer_face_types= "middle_triangle"
-                    elif N is not None and S is not None: # all 4 are there: rhombus 
-                        new_layer_faces.append((E, N, W, S)) # rhombus (starting from NE side)
-                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
-                        new_layer_face_types= "middle_rhombus" if layer_index<len(self.vertices)-2 else "top_rhombus"
-                    elif N is not None and S is None: #lower is missing: bottom triangle 
-                        new_layer_faces.append((E, N, W)) # triangle (starting from NE side)
-                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
-                        new_layer_face_types= "bottom_triangle"
-                    elif N is None and S is not None: #lower is missing: upside down triangle (top)
-                        new_layer_faces.append((E, W, S)) # triangle (starting from S side)
-                        new_layer_edges.append((E, W)) #1 horizontal edge
-                        new_layer_face_types= "top_upside_down_triangle"
-            if len(new_layer_faces) > 0:
-                self.faces.append(new_layer_faces)
-                self.face_types.append(new_layer_face_types)
-                tot_faces += len(new_layer_faces)
-            if len(new_layer_edges) > 0:
-                self.edges.append(new_layer_edges)
-                tot_edges += len(new_layer_edges)
-        #BARYCENTER
-        self.barycenter = (0,0,0)      
-        total_vertices = 0
-        for layer in self.vertices:
-            for vertex in layer:
-                self.barycenter = (self.barycenter[0] + vertex[0], self.barycenter[1] + vertex[1], self.barycenter[2] + vertex[2])
-                total_vertices += 1
-        if total_vertices > 0:
-            self.barycenter = (self.barycenter[0] / total_vertices, self.barycenter[1] / total_vertices, self.barycenter[2] / total_vertices)
-    
-    def derived_geometry(self,vertices=None):        
-        if vertices is None:
-            vertices=self.vertices
+    def derived_geometry(self,vertices):        
         half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
         faces = []
         edges = []
@@ -372,7 +304,7 @@ class Zome:
             new_layer_face_types = []
             new_layer_edges = []
             this_count=len(vertices[layer_index])
-            prev_count=-1 if layer_index==0 else len(self.vertices[layer_index-1])
+            prev_count=-1 if layer_index==0 else len(vertices[layer_index-1])
             next_count=-1 if layer_index==len(vertices)-1 else len(vertices[layer_index+1])  
             if(len(vertices[layer_index])>1):
                 for radial_index in range(this_count):#  
@@ -410,6 +342,13 @@ class Zome:
             if len(new_layer_edges) > 0:
                 edges.append(new_layer_edges)
                 tot_edges += len(new_layer_edges)
+        print(f"\n\n********************\nFACES:")
+        print(f"{len(faces)} {type(faces)} layers with",end=" ")
+        print(f"{len(faces[0])} {type(faces[0])} list of",end=" ")
+        print(f"{len(faces[0][0])} {type(faces[0][0])} faces with",end=" ")
+        print(f"{len(faces[0][0][0])} {type(faces[0][0][0])} vertices",end=" ")
+        print(f"first vertex: {faces[0][0][0][0]}")
+        print("\n\n")
         #BARYCENTER
         barycenter = (0,0,0)      
         total_vertices = 0
@@ -419,24 +358,9 @@ class Zome:
                 total_vertices += 1
         if total_vertices > 0:
             barycenter = (barycenter[0] / total_vertices, barycenter[1] / total_vertices, barycenter[2] / total_vertices)
-        return faces, edges, face_types, barycenter
+        return faces, face_types, edges, barycenter
     
-    def project_vertices(self,vertices,vanishing_point,vanishing_point_distance):
-        vp= mathutils.Vector(vanishing_point)
-        projected_vertices=[]
-        for layer in vertices:
-            new_layer=[]
-            for vertex in layer:
-                vertex = mathutils.Vector(vertex)
-                # Calcola la direzione opposta a vanishing_point
-                direction = (mathutils.Vector(vertex) - vp).normalized()
-                # Nuovo vertice è vertex - vanishing_point_distance in direzione opposta
-                new_vertex = tuple(vertex + vanishing_point_distance * direction)
-                new_layer.append(new_vertex)
-            projected_vertices.append(new_layer)
-        return projected_vertices
-   
-    def set_vertices_mod_2(self):#something in between uses "z" et al.
+    def move_zome_vertices(self):#something in between uses "z" et al.
         modifications=self.modifications
         #position/rotation modifications:
         rot_yn=True if "rotation" in modifications and modifications["rotation"] != (0,0,0) else False  
@@ -515,23 +439,17 @@ class Zome:
             mat = bpy.data.materials.new(rename(f"Material_{i}"))
             mat.diffuse_color = color
             self.materials.append(mat)
-
-
-
-
     
     def create_blender_edges(self,name):
         mesh = bpy.data.meshes.new(name)
         vertices = []
         edges = []
         vertex_index = 0
-        tot_edges = 0
         for layer_index, layer in enumerate(self.edges):
             for edge_index, edge in enumerate(layer):
                 vertices.extend([edge[0], edge[1]])
                 edges.append((vertex_index, vertex_index + 1))
                 vertex_index += 2
-                tot_edges += 1
         mesh.from_pydata(vertices, edges, [])
         mesh.update()
         obj = bpy.data.objects.new(name, mesh)
@@ -555,17 +473,44 @@ class Zome:
         return obj
 
     def FEM_friendly_mesh(self,thickness, name="solid",add_to_collection=None):
-        #EXTERNAL SURFACE:
-        return None
-        external_vertices=self.project_vertices(vertices=self.vertices,vanishing_point=self.barycenter,vanishing_point_distance=thickness)        
-        ext_faces,ext_edges,ext_face_types,ext_barycenter=self.derived_geometry(external_vertices) 
-        surface=[]
-        surface.append( draw_faces(faces=ext_faces,name=rename(self.name+"_ext_joined_faces"),joined=True))
+        #materials reshuffling:
+        materials=[]
+        for i in range(len(self.faces)):#copy materials in every faces layer
+            materials.append(self.materials)
+        #EXTERNAL SURFACE: horizzontally fattened by thickness
+        external_vertices=[]
+        for layer in self.vertices:
+            layer_bary=mathutils.Vector((0,0,0))
+            for vertex in layer:
+                layer_bary+=mathutils.Vector(vertex)
+            layer_bary/=len(layer)
+            external_vertices.append(vertices_scale(vertices=layer,origin=layer_bary,scale_factor=-thickness))   
+        draw_vertices(points=external_vertices,name=rename(self.name+"_external_vertices"),size=self.ZH*0.005)
+        ext_faces,ext_face_types,ext_edges,ext_barycenter=self.derived_geometry(external_vertices) 
+        int_faces,int_face_types,int_edges,int_barycenter=self.derived_geometry(self.vertices)
+        
+        for layer_index,layer in enumerate(int_faces):
+            for face_index,face in enumerate(layer):
+                #print(f"face {face_index} of layer {layer_index}")
+                if int_faces[layer_index][face_index]!=self.faces[layer_index][face_index]:
+                    print (f"{int_faces[layer_index][face_index]} VS {self.faces[layer_index][face_index]}\n\n")
+                else:
+                    print (f"OK",end="")
+
+
+
+        inner_surface=draw_faces(faces=int_faces,name=rename(self.name+"_inner_surface"),materials=materials,joined=True,fill=True,add_to_collection=add_to_collection)
+
+        return inner_surface
+
+        ext_surface=draw_faces(faces=ext_faces,name=rename(self.name+"_ext_joined_faces"),joined=True,materials=materials,fill=True,add_to_collection=add_to_collection)
+        
+        return ext_surface        
+        #surface.append( draw_faces(faces=ext_faces,name=rename(self.name+"_ext_joined_faces"),joined=True,materials=materials,fill=True))
         #INTERNAL SURFACE:
         int_faces=self.faces.copy()
+        return None
         for layer_index,layer in enumerate(int_faces): #internal faces should be flipped
-
-
             for poly_index,poly in enumerate(layer):
                 poly.reverse()
         surface.append( draw_faces(faces=int_faces,name=rename(self.name+"_int_joined_faces"),joined=True))
@@ -589,8 +534,8 @@ class Zome:
                     edge_polygons.append(poly)
                 #rename(surface.append(join_objects(objects_list=edge_polygons,new_object_name=f"{self.name}_edge_{i}"))
         #SUM ALL:
-        #surface=join_objects(objects_list=surface,new_object_name=rename(name),target_collection=add_to_collection)
-        #surface.data.materials.append(self.materials[0])
+        surface=join_objects(objects_list=surface,new_object_name=rename(name),target_collection=add_to_collection)
+        surface.data.materials.append(self.materials[0])
         return surface
     
     def draw_beams(self):
