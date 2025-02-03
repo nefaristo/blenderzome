@@ -130,15 +130,17 @@ class Zome:
         self.T = mathutils.Matrix.Translation(mathutils.Vector(self.modifications["position"]))
         self.M = self.T @ self.R @ self.T_inv  
         #GEOMETRY DATA:
+        self.layered_vertices = []
         self.vertices = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces = []
         self.face_types = []#["triangle","rhombus","upside_down_triangle"] set by set_derived_geometry
         self.edges = []
         #BUILD & PHYSICS DATA:
+
         self.inner_surface=None    
         self.beams = []
-        self.beams_strip = [] # 1 exemplar of 1 polygon per layer (for analysis and operations)
+        self.beams_strip = [] # 1 exemple of 1 polygon per layer (for analysis and operations)
         #VISUALIZATION & COLLECTIONS:
         self.main_collection = None
         self.beams_collection = None
@@ -148,18 +150,15 @@ class Zome:
         self.set_basic_materials()
         self.main()
 
+
     def main(self):
         #GEOMETRY:
-        #basically after create & alter the vertices numbers are decided
-        #that means that derived geometry can point to them regardless of 
-        # possible eventual changing their positions
-        #(location and rotation, distortion and so on)
-        self.create_zome()  # theoretical vertices of the basic zome
-        self.alter_zome() #involves the modification of the vertices set (adding,deleting)
+        #it's useful to have a vertices organization by layer and radial index
+        self.set_vertices()  # theoretical vertices, straight and layered
+        
 
         self.faces, self.face_types, self.edges,  self.barycenter=self.derived_geometry(self.vertices)
         self.move_zome_vertices() #only alters the position, number is the same
-        
 
         #CREATE BLENDER OBJECTS:
         self.blender_edges=self.create_blender_edges(name=rename(self.name+"_edge"))
@@ -218,8 +217,8 @@ class Zome:
             self.main_collection = bpy.data.collections.new(rename(self.name))
             bpy.context.scene.collection.children.link(self.main_collection)#add to scene
 
-    def create_zome(self):
-        self.vertices = []
+    def set_vertices(self):
+        layered_vertices = []
         for layer_index in range(self.S+1): 
             vertices_layer = []              
             match layer_index:
@@ -234,35 +233,42 @@ class Zome:
                 case _ if 2 <= layer_index <= self.S:  # RHOMBI 
                     for radial_index in range(self.N): #from 0 to N-1                        
                         #goes back by 2 layers to find the A vertex to project for the new D vertex of the rhombus
-                        A = self.vertices[0][0] if layer_index == 2 else self.vertices[layer_index-2][(radial_index+1) % self.N]
-                        B = self.vertices[layer_index-1][radial_index]
-                        C = self.vertices[layer_index-1][(radial_index+1) % self.N]
+                        A = layered_vertices[0][0] if layer_index == 2 else layered_vertices[layer_index-2][(radial_index+1) % self.N]
+                        B = layered_vertices[layer_index-1][radial_index]
+                        C = layered_vertices[layer_index-1][(radial_index+1) % self.N]
                         M = (mathutils.Vector(B) + mathutils.Vector(C)) / 2  # Punto medio di B e C
                         D = 2 * M - mathutils.Vector(A)  # Simmetrico di A rispetto a B-C
                         # if layer is M+1 and M<N-1, its' cutting rhombi to triangles and doesnt add the vertex
-                        # in the other cases, adds the rhombi and, as for the vertices,
+                        # in the other cases, adds the rhombi and, as for the layered_vertices,
                         if layer_index!=self.N or radial_index!=0:#if antiapex, add only the first vertex
                             vertices_layer.append((D.x, D.y, D.z))      
-            self.vertices.append(vertices_layer)         
-        self.vertices.reverse()
+            layered_vertices.append(vertices_layer)         
+        layered_vertices.reverse()
+        layered_vertices=self.alter_layered_vertices(modifications=self.modifications,layered_vertices=layered_vertices)
+        for layer_index,layer in enumerate(layered_vertices):
+            for radial_index,vertex in enumerate(layer):
 
-    def alter_zome(self,modifications=None):
-        if modifications is None:
-            modifications=self.modifications        
+
+                pass#self.layered_vertices.append((layer_index,radial_index,vertex))
+        self.vertices=layered_vertices.copy()
+
+
+    def alter_layered_vertices(self,layered_vertices, modifications):    
         #top modifications:
         if modifications["top_modifications_levels"] > 0 and modifications["top_modifications_levels"] < self.S+1: 
             match modifications["top_modifications_type"]:
+
                 case "cut":
-                    del self.vertices[-modifications["top_modifications_levels"]:]
+                    del layered_vertices[-modifications["top_modifications_levels"]:]
                 case "reduction":            
                     if modifications["top_new_height"] != None:
                         bottom_height=self.h*(self.S-modifications["top_modifications_levels"])                        
                         #cut the top of the zome out:
-                        self.alter_zome(modifications={
+                        self.set_zome_modifications(modifications={
                             "top_modifications_type": "cut", 
                             "top_modifications_levels": modifications["top_modifications_levels"],
                             })  
-                        top_zome_area=self.layer_data("polygon_area",len(self.vertices)-1) #area of top is the last layer of the main zome
+                        top_zome_area=self.layer_data("polygon_area",len(layered_vertices)-1) #area of top is the last layer of the main zome
                         top_zome_theta, top_zome_theta_spread=find_theta(N=self.N, 
                                              S=self.modifications["top_modifications_levels"], 
                                              ZH=modifications["top_new_height"]-bottom_height, 
@@ -273,19 +279,20 @@ class Zome:
                             N=self.N, S=self.modifications["top_modifications_levels"], 
                             theta=top_zome_theta,
                             ZH=modifications["top_new_height"]-bottom_height,
-                            #show={"vertices": self.show["vertices"] , "faces": self.show["faces"], "fill_faces": self.show["fill_faces"], "beams": self.show["beams"]},
+                            #show={"layered_vertices": self.show["layered_vertices"] , "faces": self.show["faces"], "fill_faces": self.show["fill_faces"], "beams": self.show["beams"]},
                             modifications={"position": (0,0,bottom_height), "rotation": (0,0,0)},
-                            #zome_output=self.print
                             silent=True
                         )  
-                        #copy the vertices of the top zome to the main zome:
-                        for layer in top_zome.vertices:
-                            self.vertices.append(layer)          
+                        #copy the layered_vertices of the top zome to the main zome:
+                        for layer in top_zome.layered_vertices:
+                            layered_vertices.append(layer)          
                 case _:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
-        
+        return layered_vertices
+
     def derived_geometry(self,vertices):        
         half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
+
         faces = []
         edges = []
         face_types = []
@@ -387,7 +394,6 @@ class Zome:
                 origin=tuple(origin+mathutils.Vector(modifications["position"]))
             self.barycenter=tuple(bary)
             self.origin=tuple(origin)
-
             for layer in self.faces:
                 new_layer=[]
                 for i, face in enumerate(layer):
