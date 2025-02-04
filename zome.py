@@ -69,10 +69,10 @@ class Zome:
         ):
         
         self.zome_output = zome_output
-        
         #basic parameters:
         self.name = name if name != "" else "zome " + str(random.randint(1000, 9999))
         self.N = N if N > 0 else 8
+
         self.S = S if S > 0 and S < N else N # steps from the base up. S=M(zooOomes) =rhombi layers n.+1 = len(len(vertices)) -1
         self.theta = theta if theta > 0 and theta < 180 else 45
         self.ZH = ZH if ZH > 0 else 1        
@@ -121,22 +121,36 @@ class Zome:
         self.show["beams"] = self.show["beams"] and (self.beam["TW"] > 0 and self.beam["TT"] > 0)   
         self.spin = 0 #how much the first layer is rotated
         self.silent=silent
-        #references:        
-        self.origin = mathutils.Vector((0,0,0))
-        self.axis = mathutils.Vector((0,0,1))
-        self.axis.rotate(mathutils.Euler(self.modifications["rotation"], 'XYZ'))
-        self.T_inv = mathutils.Matrix.Translation(-mathutils.Vector(self.modifications["position"]))
-        self.R = mathutils.Matrix.Rotation(math.radians(self.alpha), 4, self.axis)
-        self.T = mathutils.Matrix.Translation(mathutils.Vector(self.modifications["position"]))
-        self.M = self.T @ self.R @ self.T_inv  
-        #GEOMETRY DATA:
-        self.layered_vertices = []
-        self.vertices = []
-        self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
-        self.faces = []
-        self.face_types = []#["triangle","rhombus","upside_down_triangle"] set by set_derived_geometry
-        self.edges = []
-        #BUILD & PHYSICS DATA:
+        #BASIC GEOMETRY:
+        self.origin=mathutils.Vector((0,0,0))
+        self.axis=mathutils.Vector((0,0,1))
+        self.vertices,self.layered_vertices=self.zome_vertices()  # theoretical vertices, straight and layered
+        self.origin,self.axis,self.vertices=self.rototranslation(origin=self.origin,axis=self.axis,vertices=self.vertices,translation=self.modifications["position"],rotation=self.modifications["rotation"]) #only alters the position, number is the same
+        #DERIVED GEOMETRY:
+        self.faces, self.face_types, self.edges,  self.barycenter=self.derived_geometry(self.vertices,self.layered_vertices)
+        self.faces_vertices=[]
+        for layer_index, layer in enumerate(self.faces):
+            layer_faces = []
+            for face_index, face in enumerate(layer):
+                layer_faces.append([self.vertices[self.layered_vertices[layer_index][face_index]]])
+            self.faces_vertices.append(layer_faces)
+        self.edges_vertices=[]
+        for layer_index, layer in enumerate(self.edges):
+            layer_edges = []
+            for edge_index, edge in enumerate(layer):
+            layer_edges.append([    self.vertices[self.layered_vertices[layer_index][edge[0]]],
+                                    self.vertices[self.layered_vertices[layer_index][edge[1]]])
+                )
+            self.edges_vertices.append(layer_edges)
+        materials=[]
+        for i in range(len(self.faces)):#copy materials in every faces layer
+            materials.append(self.materials)
+        
+        self.inner_surface=draw_faces(faces=self.faces,name=rename(self.name+"_inner_surface"),materials=materials,joined=True,fill=True)
+        
+
+
+
 
         self.inner_surface=None    
         self.beams = []
@@ -154,21 +168,11 @@ class Zome:
     def main(self):
         #GEOMETRY:
         #it's useful to have a vertices organization by layer and radial index
-        self.vertices,self.layered_vertices=self.zome_vertices()  # theoretical vertices, straight and layered
         
-
-
-        self.faces, self.face_types, self.edges,  self.barycenter=self.derived_geometry(self.vertices)
-        self.move_zome_vertices() #only alters the position, number is the same
-
         #CREATE BLENDER OBJECTS:
-        self.blender_edges=self.create_blender_edges(name=rename(self.name+"_edge"))
+        #self.blender_edges=self.create_blender_edges(name=rename(self.name+"_edge"))
         #self.draw_edges(edges=edges,name=rename(self.name+"_edge"))
         #self.blender_plane=self.create_plane(rename(self.name+"_plane"),self.main_collection if self.show["plane"] else None)
-        materials=[]
-        for i in range(len(self.faces)):#copy materials in every faces layer
-            materials.append(self.materials)
-        self.inner_surface=draw_faces(faces=self.faces,name=rename(self.name+"_inner_surface"),materials=materials,joined=True,fill=True)
         #faces=self.faces.copy()
         #self.inner_surface_vol=draw_faces(faces=faces,name=rename(self.name+"_inner_surface_vol"),materials=materials,joined=True,fill=True)
         #DRAW BLENDER OBJECTS:       
@@ -249,12 +253,15 @@ class Zome:
             layered_coords.append(vertices_layer)         
         layered_coords.reverse()
         layered_coords=self.alter_vertices(modifications=self.modifications,layered_coords=layered_coords)
+        major_index=0
         for layer_index,layer in enumerate(layered_coords):
+            layered_vertices_row=[]
             for radial_index,vertex in enumerate(layer):
-
-                pass#self.layered_vertices.append((layer_index,radial_index,vertex))
-        vertices=layered_coords.copy()
-        return vertices,layered_vertices
+                vertices.append((mathutils.Vector(vertex)))#adds the vertex as a mathutils.Vector
+                layered_vertices_row.append(major_index)#adds the index of the vertex
+                major_index+=1
+            layered_vertices.append(layered_vertices_row)
+        return vertices,layered_vertices    
 
     def alter_vertices(self,layered_coords, modifications):    
         #top modifications:
@@ -293,58 +300,96 @@ class Zome:
                     self.print(type="report",text=f"Modifiche: {modifications['top_modifications_type']}")
         return layered_coords
 
-    def derived_geometry(self,vertices):        
-        half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
+    def rototranslation(self,vertices,axis,origin,translation=None,rotation=None):#something in between uses "z" et al.
+        if rotation or translation:
+            alpha=rotation 
+            if rotation:
+                origin.rotate(mathutils.Euler(alpha, 'XYZ'))
+            if translation:
+                origin=(origin+mathutils.Vector(translation))
+            for vertex_index,vertex in enumerate(vertices):
+                new_vertex=mathutils.Vector(vertex)
+                if rotation:
+                    new_vertex.rotate(mathutils.Euler(alpha, 'XYZ'))
+                if translation:
+                    new_vertex=(new_vertex+mathutils.Vector(translation))
+                vertices[vertex_index]=new_vertex
+        return origin,axis,vertices
+    
+    def vertex_from_indexes(self,vertices,layered_vertices,layer_index,radial_index):
+        try:
+            return vertices[self.index_funnel(layered_vertices,layer_index,radial_index)]
+        except:
+            return None
 
+    def index_funnel(self,layered_vertices,layer_index,radial_index):
+        try:
+            return layered_vertices[layer_index][radial_index]
+        except:
+            return None
+
+    def derived_geometry(self,vertices,layered_vertices):        
+
+        half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
+        #SVSV half_h should be a parameter
         faces = []
         edges = []
         face_types = []
         tot_faces=0
         tot_edges=0
         #lowest layer (if not an apex):
-        if len(vertices[0])>1: #since edges are built upwards, the first layer is not added by the main cycle
+        if len(layered_vertices[0])>1: #since edges are built upwards, the first layer is not added by the main cycle
             new_layer_edges = []
-            for radial_index in range(len(vertices[0])):#horizontal edges of the base triangle
-                new_layer_edges.append((vertices[0][radial_index],vertices[0][(radial_index+1)%len(vertices[0])]))
+            for radial_index in range(len(layered_vertices[0])):#horizontal edges of the base triangle
+                new_layer_edges.append((self.vertex_from_indexes(vertices,layered_vertices,0,radial_index),self.vertex_from_indexes(vertices,layered_vertices,0,(radial_index+1)%len(layered_vertices[0]))))
             edges.append(new_layer_edges)
             tot_edges += len(new_layer_edges)
         #main cycle:
-        for layer_index in range(len(vertices)): 
+        for layer_index in range(len(layered_vertices)): 
             new_layer_faces = []  
             new_layer_face_types = []
             new_layer_edges = []
-            this_count=len(vertices[layer_index])
-            prev_count=-1 if layer_index==0 else len(vertices[layer_index-1])
-            next_count=-1 if layer_index==len(vertices)-1 else len(vertices[layer_index+1])  
-            if(len(vertices[layer_index])>1):
+            this_count=len(layered_vertices[layer_index])
+            prev_count=-1 if layer_index==0 else len(layered_vertices[layer_index-1])
+            next_count=-1 if layer_index==len(layered_vertices)-1 else len(layered_vertices[layer_index+1])  
+            if(len(layered_vertices[layer_index])>1):
                 for radial_index in range(this_count):#  
-                #the order of the vertices is important to eventually label the beams and that in turn is important to connect them
+                #the order of the layered_vertices is important to eventually label the beams and that in turn is important to connect them
                 # faces: first side is N-E (first vertex = E). Exception: upside down triangles first side =S (first vertex=W)   
-                # edges: built upwards when applicable. Exception: pointy bottom, upside down triangles (horizontal edges), triangles (all)                
-                    N=None if next_count==-1 else  vertices[layer_index+1][0] if next_count==1 else vertices[layer_index+1][(radial_index+1) % next_count]
-                    W=vertices[layer_index][radial_index%this_count]
-                    E=vertices[layer_index][(radial_index+1) % this_count]
-                    S=None if prev_count==-1 else vertices[layer_index-1][0] if prev_count==1 else vertices[layer_index-1][radial_index%prev_count]
+                # edges: built upwards when applicable. Exception: pointy bottom, upside down triangles (horizontal edges), triangles (all)                                
+                    N_ind=self.index_funnel(layered_vertices,layer_index+1,0) if next_count==-1 else self.index_funnel(layered_vertices,layer_index+1,1) if next_count==1 else self.index_funnel(layered_vertices,layer_index+1,(radial_index+1) % next_count)
+                    N=vertices[N_ind] if N_ind is not None else None
+                    W_ind=self.index_funnel(layered_vertices,layer_index,radial_index%this_count)
+                    W=vertices[W_ind] if W_ind is not None else None
+                    E_ind=self.index_funnel(layered_vertices,layer_index,(radial_index+1) % this_count)
+                    E=vertices[E_ind] if E_ind is not None else None
+                    S_ind=self.index_funnel(layered_vertices,layer_index-1,0) if prev_count==-1 else self.index_funnel(layered_vertices,layer_index-1,1) if prev_count==1 else self.index_funnel(layered_vertices,layer_index-1,radial_index%prev_count)
+                    S=vertices[S_ind] if S_ind is not None else None
                     if N is not None and abs(N[2]-W[2])<half_h:# this layer is overlapping with N (the next one): upside down triangle
-                        new_layer_faces.append((E, W, S)) # triangle (starting from S side )      
-                        new_layer_edges.append((E, W)) #1 horizontal edge                 
+                        new_layer_faces.append((E_ind, W_ind, S_ind)) # triangle (starting from S side )      
+                        new_layer_edges.append((E_ind, W_ind)) #1 horizontal edge                 
                         new_layer_face_types= "middle_upside_down_triangle"
+
                     elif S is not None and abs(S[2]-W[2])<half_h:# this layer is overlapping with S (the previous one): middle triangle
-                        new_layer_faces.append((E, N, W)) #triangle (starting from NE side)
-                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
+                        new_layer_faces.append((E_ind, N_ind, W_ind)) #triangle (starting from NE side)
+                        new_layer_edges.extend([(E_ind, N_ind),(W_ind, N_ind)]) #2 vertical edges
                         new_layer_face_types= "middle_triangle"
+
                     elif N is not None and S is not None: # all 4 are there: rhombus 
-                        new_layer_faces.append((E, N, W, S)) # rhombus (starting from NE side)
-                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
-                        new_layer_face_types= "middle_rhombus" if layer_index<len(vertices)-2 else "top_rhombus"
+                        new_layer_faces.append((E_ind, N_ind, W_ind, S_ind)) # rhombus (starting from NE side)
+                        new_layer_edges.extend([(E_ind, N_ind),(W_ind, N_ind)]) #2 vertical edges
+                        new_layer_face_types= "middle_rhombus" if layer_index<len(layered_vertices)-2 else "top_rhombus"
+
                     elif N is not None and S is None: #lower is missing: bottom triangle 
-                        new_layer_faces.append((E, N, W)) # triangle (starting from NE side)
-                        new_layer_edges.extend([(E, N),(W, N)]) #2 vertical edges
+                        new_layer_faces.append((E_ind, N_ind, W_ind )) # triangle (starting from NE side)
+                        new_layer_edges.extend([(E_ind, N_ind),(W_ind, N_ind)]) #2 vertical edges
                         new_layer_face_types= "bottom_triangle"
+
                     elif N is None and S is not None: #lower is missing: upside down triangle (top)
-                        new_layer_faces.append((E, W, S)) # triangle (starting from S side)
-                        new_layer_edges.append((E, W)) #1 horizontal edge
+                        new_layer_faces.append((E_ind, W_ind, S_ind)) # triangle (starting from S side)
+                        new_layer_edges.append((E_ind, W_ind)) #1 horizontal edge
                         new_layer_face_types= "top_upside_down_triangle"
+
             if len(new_layer_faces) > 0:
                 faces.append(new_layer_faces)
                 face_types.append(new_layer_face_types)
@@ -352,102 +397,16 @@ class Zome:
             if len(new_layer_edges) > 0:
                 edges.append(new_layer_edges)
                 tot_edges += len(new_layer_edges)
-        print(f"\n\n********************\nFACES:")
-        print(f"{len(faces)} {type(faces)} layers with",end=" ")
-        print(f"{len(faces[0])} {type(faces[0])} list of",end=" ")
-        print(f"{len(faces[0][0])} {type(faces[0][0])} faces with",end=" ")
-        print(f"{len(faces[0][0][0])} {type(faces[0][0][0])} vertices",end=" ")
-        print(f"first vertex: {faces[0][0][0][0]}")
-        print("\n\n")
+    
         #BARYCENTER
         barycenter = (0,0,0)      
         total_vertices = 0
-        for layer in vertices:
-            for vertex in layer:
-                barycenter = (barycenter[0] + vertex[0], barycenter[1] + vertex[1], barycenter[2] + vertex[2])
-                total_vertices += 1
+        for vertex in vertices:
+            barycenter = (barycenter[0] + vertex[0], barycenter[1] + vertex[1], barycenter[2] + vertex[2])
+            total_vertices += 1
         if total_vertices > 0:
             barycenter = (barycenter[0] / total_vertices, barycenter[1] / total_vertices, barycenter[2] / total_vertices)
         return faces, face_types, edges, barycenter
-    
-    def move_zome_vertices(self):#something in between uses "z" et al.
-        modifications=self.modifications
-        #position/rotation modifications:
-        rot_yn=True if "rotation" in modifications and modifications["rotation"] != (0,0,0) else False  
-        pos_yn=True if "position" in modifications and modifications["position"] != (0,0,0) else False
-        if rot_yn or pos_yn:
-            delta=modifications["rotation"]    
-            for layer in self.vertices:
-                new_layer=[]
-                for i, vertex in enumerate(layer):
-                    new_vertex=mathutils.Vector(vertex)
-                    if rot_yn:
-                        new_vertex.rotate(mathutils.Euler(delta, 'XYZ'))
-                    if pos_yn:
-                        new_vertex=tuple(new_vertex+mathutils.Vector(modifications["position"]))
-                    new_layer.append(new_vertex)
-                layer[:]=new_layer
-            origin=mathutils.Vector(self.origin)
-            bary=mathutils.Vector(self.barycenter)
-            if rot_yn:
-                origin.rotate(mathutils.Euler(delta, 'XYZ'))
-                bary.rotate(mathutils.Euler(delta, 'XYZ'))
-            if pos_yn:
-                bary=tuple(bary+mathutils.Vector(modifications["position"]))
-                origin=tuple(origin+mathutils.Vector(modifications["position"]))
-            self.barycenter=tuple(bary)
-            self.origin=tuple(origin)
-            for layer in self.faces:
-                new_layer=[]
-                for i, face in enumerate(layer):
-                    new_face=[]
-                    for vertex in face:#rotates:
-                        new_vertex=mathutils.Vector(vertex)
-                        if rot_yn:
-                            new_vertex.rotate(mathutils.Euler(delta, 'XYZ'))
-                        new_vertex=tuple(new_vertex+mathutils.Vector(modifications["position"]))
-                        new_face.append(new_vertex)
-                    new_layer.append(new_face)
-                layer[:]=new_layer
-            for layer in self.edges:
-                new_layer=[]
-                for i, edge in enumerate(layer):
-                    new_edge=[]
-                    for vertex in edge:
-                        new_vertex=mathutils.Vector(vertex)
-                        if rot_yn:
-                            new_vertex.rotate(mathutils.Euler(delta, 'XYZ'))
-                        new_vertex=tuple(new_vertex+mathutils.Vector(modifications["position"]))
-                        new_edge.append(new_vertex)
-                    new_layer.append(new_edge)
-                layer[:]=new_layer
-            
-    def set_basic_materials(self):
-        alpha=self.show["geometry_alpha"]
-        colors = [
-            (1.0, 0.0, 0.0, alpha),  # Red
-            (0.0, 1.0, 0.0, alpha),  # Green
-            (0.0, 0.0, 1.0, alpha),  # Blue
-            (1.0, 1.0, 0.0, alpha),  # Yellow
-            (1.0, 0.0, 1.0, alpha),  # Magenta
-            (0.0, 1.0, 1.0, alpha),   # Cyan
-            (1.0, 1.0, 1.0, alpha),   # White
-            (0.0, 0.0, 0.0, alpha),   # Black
-            (0.5, 0.5, 0.5, alpha),   # Gray
-            (1.0, 0.5, 0.5, alpha),   # Pink
-            (0.6, 0.4, 0.0, alpha),   # Brown
-            (0.0, 0.5, 0.0, alpha),   # Dark Green
-            (0.0, 0.0, 0.5, alpha),   # Dark Blue
-            (0.5, 0.0, 0.0, alpha),   # Dark Red
-            (0.5, 0.5, 0.0, alpha),   # Dark Yellow
-            (0.5, 0.0, 0.5, alpha),   # Dark Magenta
-            (0.0, 0.5, 0.5, alpha),   # Dark Cyan
-            (0.5, 0.5, 0.5, alpha),   # Light Gray
-        ]        
-        for i, color in enumerate(colors):
-            mat = bpy.data.materials.new(rename(f"Material_{i}"))
-            mat.diffuse_color = color
-            self.materials.append(mat)
     
     def create_blender_edges(self,name):
         mesh = bpy.data.meshes.new(name)
@@ -495,9 +454,10 @@ class Zome:
             layer_bary/=len(layer)
             external_vertices.append(vertices_scale(vertices=layer,origin=layer_bary,scale_factor=-thickness))   
         draw_vertices(points=external_vertices,name=rename(self.name+"_external_vertices"),size=self.ZH*0.005)
-        ext_faces,ext_face_types,ext_edges,ext_barycenter=self.derived_geometry(external_vertices) 
-        int_faces,int_face_types,int_edges,int_barycenter=self.derived_geometry(self.vertices)
+        ext_faces,ext_face_types,ext_edges,ext_barycenter=self.derived_geometry(external_vertices,self.layered_vertices) 
+        int_faces,int_face_types,int_edges,int_barycenter=self.derived_geometry(self.vertices,self.layered_vertices)
         
+
         for layer_index,layer in enumerate(int_faces):
             for face_index,face in enumerate(layer):
                 #print(f"face {face_index} of layer {layer_index}")
@@ -842,6 +802,33 @@ class Zome:
                     volume+=0#(areas[layer_index]+areas[layer_index+1])*(steps[layer_index])/2    
                 return volume
         return -1
+
+    def set_basic_materials(self):
+        alpha=self.show["geometry_alpha"]
+        colors = [
+            (1.0, 0.0, 0.0, alpha),  # Red
+            (0.0, 1.0, 0.0, alpha),  # Green
+            (0.0, 0.0, 1.0, alpha),  # Blue
+            (1.0, 1.0, 0.0, alpha),  # Yellow
+            (1.0, 0.0, 1.0, alpha),  # Magenta
+            (0.0, 1.0, 1.0, alpha),   # Cyan
+            (1.0, 1.0, 1.0, alpha),   # White
+            (0.0, 0.0, 0.0, alpha),   # Black
+            (0.5, 0.5, 0.5, alpha),   # Gray
+            (1.0, 0.5, 0.5, alpha),   # Pink
+            (0.6, 0.4, 0.0, alpha),   # Brown
+            (0.0, 0.5, 0.0, alpha),   # Dark Green
+            (0.0, 0.0, 0.5, alpha),   # Dark Blue
+            (0.5, 0.0, 0.0, alpha),   # Dark Red
+            (0.5, 0.5, 0.0, alpha),   # Dark Yellow
+            (0.5, 0.0, 0.5, alpha),   # Dark Magenta
+            (0.0, 0.5, 0.5, alpha),   # Dark Cyan
+            (0.5, 0.5, 0.5, alpha),   # Light Gray
+        ]        
+        for i, color in enumerate(colors):
+            mat = bpy.data.materials.new(rename(f"Material_{i}"))
+            mat.diffuse_color = color
+            self.materials.append(mat)
     
 def find_theta(N,S,ZH,target_value,type="base_area"):
     #finds theta to the specified error with numeric method, by starting from theta0
