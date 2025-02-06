@@ -58,14 +58,20 @@ class ZomePanel(bpy.types.Panel):
         if scene.expand_modifications:
             # flag "rotation" ("ruota"):
             row = box.row()
-            row.label(text="Ruota:")
+            row.label(text="Rotazione°:")
             row.prop(scene, "rotation", text="")
+
+            #vertical cut:
+            row = box.row()
+            row.label(text="Taglio longitudinale°:")
+            row.prop(scene, "longitudinal_cut", text="")
 
             #top_modifications_on_off:
             row = box.row()
             row.label(text="Modifica punta:")
             row.prop(scene, "top_modifications_type", text="")    
             
+
             if scene.top_modifications_type == "cut" or scene.top_modifications_type == "reduction":
                 row = box.row()
                 row.label(text="N° livelli:")
@@ -75,6 +81,7 @@ class ZomePanel(bpy.types.Panel):
                 row = box.row()
                 row.label(text="Nuova altezza (m):")
                 row.prop(scene, "top_new_height", text="")
+
 
         # Sezione Costruttivi
         box = layout.box()
@@ -175,12 +182,21 @@ def register():
         )
         #MODIFICATIONS:
         bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=False)
-        bpy.types.Scene.rotation = bpy.props.BoolProperty(
+        bpy.types.Scene.rotation = bpy.props.FloatProperty(
             name="Rotazione",
-            description="Rotazione del zome",
-            default=False,
+            description="Rotazione dello zome",
+            default=0.0,
+            min=0.0,
+            max=360.0
         )
 
+        bpy.types.Scene.longitudinal_cut = bpy.props.FloatProperty(
+            name="Taglio longitudinale",
+            description="Taglio longitudinale",
+            default=0.0,
+            min=0.0,
+            max=270.0
+        )
         bpy.types.Scene.top_modifications_type = bpy.props.EnumProperty(
             name="Tipo di Modifica",
             description="Seleziona il tipo di modifica da applicare",
@@ -311,9 +327,11 @@ def unregister():
         del bpy.types.Scene.geometry_alpha
         del bpy.types.Scene.expand_modifications
         del bpy.types.Scene.rotation
+        del bpy.types.Scene.longitudinal_cut
         del bpy.types.Scene.top_modifications_type
         del bpy.types.Scene.top_modifications_levels
         del bpy.types.Scene.top_new_height
+
 
         del bpy.types.Scene.expand_physics
         del bpy.types.Scene.beam_density

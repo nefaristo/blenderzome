@@ -22,7 +22,7 @@ then rotating the object back to its original position. WHY such a convoluted an
     But seemingly there is a bug in blender that makes bpy.ops.transform.rotate not work when used with matrix (!!!).
 """
 
-print("Blender utilities loaded - Version 2.0.2")
+print("Blender utilities loaded - Version 2.0.3")
 
 # BLENDER:
 
@@ -99,7 +99,6 @@ def delete_collection(name):
         # Unlink the collection from the scene and delete it
         bpy.data.collections.remove(collection)
 
-
 def rename(new_name): #resets name avoiding the ".001" suffix
     #Check if the new name is already used by an object or a collection
     if new_name in bpy.data.objects:
@@ -112,7 +111,6 @@ def rename(new_name): #resets name avoiding the ".001" suffix
         bpy.data.collections.remove(existing_collection)
     
     return new_name
-
 
 # GEOMETRY:
 
@@ -450,9 +448,12 @@ def create_parallelepiped(vertices, name="",material_name="",add_to_collection=N
     v2 = v3.cross(v1).normalized()
     bm.free()
 
+    # Imposta l'origine nel baricentro    
     collection.objects.link(obj)#needed to select it, needed to apply rotation 
     bpy.context.view_layer.objects.active = obj
     obj.select_set(True)
+    
+
 
     # Entra in modalità modifica
     bpy.ops.object.mode_set(mode='EDIT')
@@ -500,7 +501,6 @@ def align_local_axes(obj, v1, v2, v3):
         bpy.context.collection.objects.unlink(obj)
     return obj
 
-#list of ordinated vertices; works for hollow & open meshes (eg cups) too. 
 def mesh_plane_intersection(main_obj, plane_obj): 
     if main_obj and plane_obj:
         bm = bmesh.new()
@@ -617,23 +617,14 @@ def draw_vertices(points,name=None,size=0.01,joined=False,add_to_collection=None
             add_to_collection.objects.link(obj)     
     return obj 
 
-def draw_segment(start, end, name="Segment",color=(1, 0, 0)):
-    # Crea una nuova curva
-    curve_data = bpy.data.curves.new(name=name, type='CURVE')
-    curve_data.dimensions = '3D'
-
-    # Aggiungi una nuova spline alla curva
-    polyline = curve_data.splines.new('POLY')
-    polyline.points.add(1)  # Aggiungi un punto in più (due punti in totale)
-
-    # Imposta i punti della spline
-    polyline.points[0].co = (*start, 1)  # Il quarto valore è il peso
-    polyline.points[1].co = (*end, 1)
-
-    # Crea un nuovo oggetto con la curva
-    curve_obj = bpy.data.objects.new(name, curve_data)
-
-    return curve_obj
+def draw_segment(start, end, name="Segment",add_to_collection=None):
+    obj = bpy.data.objects.new(rename(name), bpy.data.meshes.new(rename(name)))
+    obj.data.from_pydata([start, end], [(0, 1)], [])
+    if add_to_collection:
+        add_to_collection.objects.link(obj)
+    else:
+        bpy.context.collection.objects.link(obj)
+    return obj
 
 def draw_face(vertices=[],name="face", fill=False, material=None, add_to_collection=None):
     if len(vertices) < 3:
@@ -650,6 +641,7 @@ def draw_face(vertices=[],name="face", fill=False, material=None, add_to_collect
             bm.edges.new((verts[i], verts[(i + 1) % len(verts)]))
     bm.to_mesh(mesh)
     bm.free()
+    
     if add_to_collection:
         add_to_collection.objects.link(obj)
     else:
@@ -661,31 +653,30 @@ def draw_face(vertices=[],name="face", fill=False, material=None, add_to_collect
 def draw_faces(faces,name=None,materials=None,fill=False,joined=False,add_to_collection=None):
     #if a list [of lists..] of faces, returns a list of objects "name_indexes.." or a single object if joined
     #if material is also a list, unpacks it until an actual material is found
-    if isinstance(faces, list) :
-        type="face" if len(faces)>0 and isinstance(faces[0], (Vector, tuple)) else "list"
+    if isinstance(faces, (tuple,list)) :
+        type_="face" if len(faces)>0 and isinstance(faces[0], (mathutils.Vector)) else "list"
     else:
-        type="?"
-    print(f"type: {type}")
+        type_="?"
+
     material_type="material" if isinstance(materials, bpy.types.Material) else "list" if isinstance(materials, list) else "?"
-    match type:
+
+    match type_:
         case "face":
-            print(f"faces: {faces[0]}")
             return draw_face(name=rename(name),vertices=faces,material=materials,fill=fill,add_to_collection=add_to_collection)
         case "list":
             result=[]
             for index, nested_faces in enumerate(faces):#recursive call; if material is a list, unpacks it
                 nested_material=materials[index] if isinstance(materials, list) and index<len(materials) else None
                 result.append(draw_faces(name=rename(f"{name}_{index}"),faces=nested_faces,
-                    materials=nested_material,fill=fill,joined=joined))
+                    materials=nested_material,fill=fill,joined=joined,add_to_collection=add_to_collection))
             return result if not joined else join_objects(objects_list=result,name=rename(name),add_to_collection=add_to_collection)
         case _:
-            print("ERROR: faces is neither a face nor a list of faces")
             return None
-
 
 #CESTINO:
 
 import random
+
 def create_and_align_object(n_cases=1):
     objects=[]
     v1s=[]

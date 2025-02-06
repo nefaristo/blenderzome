@@ -9,19 +9,23 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
     bl_label = "Crea Zome (F1)"
     bl_options = {'REGISTER', 'UNDO'}
     
+
     def execute(self, context):
+        local=bpy.data.objects.get("start_zome")
+        local.rotation_euler=[-math.radians(context.scene.rotation),0,0]
         bpy.context.scene.expand_report = True
         bpy.context.scene.report_text = ""
         bpy.context.scene.is_updating = True
-        strenghten_v = []
-        strenghten_h = []
         zome1 = Zome(
+            local=local,
             N=context.scene.N,
             S=context.scene.S,
             theta=context.scene.theta,
             ZH=context.scene.ZH,
             name=context.scene.name,
             show={
+
+
                 "vertices": context.scene.show_vertices ,
                 "faces": context.scene.show_faces ,
                 "edges": context.scene.edges ,
@@ -51,9 +55,10 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "top_modifications_type": context.scene.top_modifications_type,
                 "top_modifications_levels": context.scene.top_modifications_levels,
                 "top_new_height": context.scene.top_new_height,                
-                "position": (0.4,0.5,0.6),
-                "rotation": (0,0,0) if not context.scene.rotation else (0,math.radians(90),0),
+                "longitudinal_cut": context.scene.longitudinal_cut,
                 "layer_types": [],
+                "position": (0.4,0.5,0.6),
+                "rotation": (0,0,0)
             },
             zome_output= self.zome_input
         )
