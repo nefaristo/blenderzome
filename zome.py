@@ -70,7 +70,20 @@ class Zome:
             zome_output=None
         ):
         self.zome_output = zome_output
-        
+        #print all input parameters:
+        print("input parameters:")
+        print(f"local: {local}")
+        print(f"name: {name}")
+        print(f"N: {N}")
+        print(f"S: {S}")
+        print(f"theta: {theta}")
+        print(f"ZH: {ZH}")
+        print(f"show: {show}")
+        print(f"modifications: {modifications}")
+        print(f"beam: {beam}")
+        print(f"physics: {physics}")
+        print(f"silent: {silent}")
+        print(f"zome_output: {zome_output}")
 
         #basic parameters:
         self.name = name if name != "" else "zome " + str(random.randint(1000, 9999))
@@ -409,42 +422,60 @@ class Zome:
                     S=face[1]
                     E=face[2]
                     N=None
-
+                H=(W+E)/2 #halfway between W and E (radial line of N|S)
+                
                 
                 W_local = mathutils.Vector(W) - mathutils.Vector(self.local.location)
                 W_proj_normalized = (W_local - W_local.dot(z) * z).normalized()
                 E_local = mathutils.Vector(E) - mathutils.Vector(self.local.location)
                 E_proj_normalized = (E_local - (E_local.dot(z) * z)).normalized()
+                H_local = mathutils.Vector(H) - mathutils.Vector(self.local.location)
+                H_proj_normalized = (H_local - (H_local.dot(z) * z)).normalized()
 
-                angle_W=math.acos(W_proj_normalized.dot(y))
-                angle_E=math.acos(E_proj_normalized.dot(y))
-                
+                # Calcola il prodotto scalare e limita il valore a 1 (a volte per errori di arrotondamento possono essere maggiore di 1)
+                dot_product_W = max(min(W_proj_normalized.dot(y), 1.0), -1.0)
+                dot_product_E = max(min(E_proj_normalized.dot(y), 1.0), -1.0)
+                dot_product_H = max(min(H_proj_normalized.dot(y), 1.0), -1.0)
+
+
+                print(dot_product_W, dot_product_E, dot_product_H)
+
+                a_W=math.fabs(math.acos(dot_product_W))
+                a_E=math.fabs(math.acos(dot_product_E))
+                a_H=math.fabs(math.acos(dot_product_H))
 
                 debug_layer=2
                 debug_face=1
                 if layer_index<2:
-                    print(f"{layer_index}_{face_index}: <W>={math.degrees(angle_W)}, <E>={math.degrees(angle_E)}")
+                    print(f"{layer_index}_{face_index}: <W>={math.degrees(a_W)}, <E>={math.degrees(a_E)}, <H>={math.degrees(a_H)}")
                 if layer_index==debug_layer and face_index==debug_face:
+
                     draw_segment(start=self.local.location, end=self.local.location+3*z, name=rename(f"Z_axis_{layer_index}_{face_index}"),add_to_collection=self.main_collection)
                     draw_segment(start=self.local.location, end=W, name=rename(f"W_{layer_index}_{face_index}"),add_to_collection=self.main_collection)
                     draw_segment(start=self.local.location, end=E, name=rename(f"E_{layer_index}_{face_index}"),add_to_collection=self.main_collection)
                     draw_segment(start=self.local.location, end=self.local.location+3*W_proj_normalized, name=rename(f"W_proj_{layer_index}_{face_index}"),add_to_collection=self.main_collection)
                     draw_segment(start=self.local.location, end=self.local.location+3*E_proj_normalized, name=rename(f"E_proj_{layer_index}_{face_index}"),add_to_collection=self.main_collection)
-
-                if(math.fabs(angle_W)>=angle and math.fabs(angle_E)>=angle): #ALL IN
+                
+                if a_E>=angle and a_W>=angle: #ALL IN: WHOLE FACE
                     new_face=face
-                elif(math.fabs(angle_W)>=angle and math.fabs(angle_E)<angle): # W IN, E OUT
-                    if(len(face)==3):#triangle => half triangle
-                        H=(W+E)/2
-                        pass#new_face=(W,E,H)
-                    else: # rhombus=> vertical triangle
-                        pass#new_face=(N,W,S)
+                elif a_E<angle and a_W<angle: #ALL OUT: NO FACE
+                    pass
+                elif a_H>=angle: #MOST OF IT IS IN (either W or E is out): STILL WHOLE FACE
+                    new_face=face
 
-                elif(math.fabs(angle_W)<angle and math.fabs(angle_E)>=angle): # W OUT, E IN
+                elif a_W>=angle: # W IS IN (H AND E OUT): WEST HALF IN
+                    print("SI W ")
+                    if(len(face)==3):#triangle => half triangle    
+                        new_face=(N,W,H) if S is None else (H,W,S)
+                    else: # rhombus=> vertical triangle
+                        new_face=(N,W,S)
+                elif a_E>=angle: # E IS IN (H AND W OUT): EAST HALF IN
+                    print("SI E ")
                     if(len(face)==3):
-                        pass#new_face=(E,W,S)
-                    else:
-                        pass#new_face=(E,W,S,N)
+                        new_face=(E,N,H) if S is None else (H,S,E)
+
+                    else: #rhombus => vertical triangle 
+                        new_face=(S,E,N)
                 if new_face:
                     new_layer.append(new_face)
             if len(new_layer)>0:
