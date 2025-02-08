@@ -552,25 +552,16 @@ def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
     z_allowed=2 # ° of movement allowed tot
     for index, obj in enumerate(obj_list):
         if obj and obj.type=="MESH":   
-            #apply scale and rotation
-            #makes it physical                
-            #add a generic constraint to the next one (last one as well if loop=True)
             if index < len(obj_list) - 1 or loop:
-                # Ottieni il prossimo oggetto nella lista, o il primo se è un loop
                 next_obj = obj_list[(index + 1) % len(obj_list)] if loop else obj_list[index + 1]
-                # Aggiungi un constraint di tipo "Rigid Body Constraint"
                 bpy.ops.object.select_all(action='DESELECT')  # Deseleziona tutti gli oggetti
                 obj.select_set(True)  # Seleziona l'oggetto corrente
                 next_obj.select_set(True)  # Seleziona il prossimo oggetto
                 bpy.context.view_layer.objects.active = obj  # Imposta l'oggetto corrente come attivo
-
-                # Aggiungi il constraint
                 bpy.ops.rigidbody.constraint_add(type='GENERIC_SPRING')
                 constraint = bpy.context.object.rigid_body_constraint
-
-                
-                constraint.object1 = obj  # Primo oggetto
-                constraint.object2 = next_obj  # Secondo oggetto
+                constraint.object1 = obj  
+                constraint.object2 = next_obj
                 #limits:
                 constraint.use_limit_lin_x=True
                 constraint.limit_lin_x_lower = 0
@@ -594,7 +585,6 @@ def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
                 constraint.use_spring_ang_z = True  # Abilita la molla sull'asse Z
                 constraint.spring_stiffness_ang_z = stiffness
                 constraint.spring_damping_ang_z = damping
-
     return  
 
 # DRAWING:

@@ -18,18 +18,25 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                     area.tag_redraw()
     
     def execute(self, context):
-        local=bpy.data.objects.get("start_zome")
-        local.rotation_euler=[0,math.radians(context.scene.rotation),0]
+        local = bpy.data.objects.get("start_zome")
+        local.rotation_euler = [0, math.radians(context.scene.rotation), 0]
+        
+        # Forza l'aggiornamento della scena
+        local.update_tag()  # Questo aggiorna l'oggetto
+        bpy.context.view_layer.update()  # Questo aggiorna la vista
+        
         bpy.context.scene.expand_report = True
         bpy.context.scene.report_text = ""
         bpy.context.scene.is_updating = True
         zome1 = Zome(
             local=local,
-            N=context.scene.N,
-            S=context.scene.S,
-            theta=context.scene.theta,
-            ZH=context.scene.ZH,
-            name=context.scene.name,
+            basic={
+                "N": context.scene.N,
+                "S": context.scene.S,
+                "theta": context.scene.theta,
+                "ZH": context.scene.ZH,
+                "name": context.scene.name,
+            },
             show={
 
 
@@ -64,7 +71,7 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "top_new_height": context.scene.top_new_height,                
                 "longitudinal_cut": context.scene.longitudinal_cut,
                 "layer_types": [],
-                "position": (0.4,0.5,0.6),
+                "position": (0,0,0),
                 "rotation": (0,0,0)
             },
             zome_output= self.zome_input
@@ -116,8 +123,9 @@ def basic_data_updated(self, context): #called after any basic data update besid
     scene.is_updating = True
     limit_data(scene)
     print(f"...now, updating={is_updating}")
-    zome=Zome(N=scene.N, S=scene.S, ZH=scene.ZH, theta=scene.theta, name="zome_for_base_area",silent=True)
+    zome=Zome(basic={"N":scene.N, "S":scene.S, "ZH":scene.ZH, "theta":scene.theta, "name":"zome_for_base_area"},silent=True)
     
+
     print(f"...and now, updating={is_updating}")
     scene.base_area=zome.layer_data(type="polygon_area",target_index=0)
     scene.is_updating = False    
