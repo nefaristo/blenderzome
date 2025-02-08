@@ -186,7 +186,6 @@ def register():
         update=basic_data_updated
     )
     
-
     #BASIC/SHOW:
     bpy.types.Scene.is_updating = bpy.props.BoolProperty(default=False)
     if hasattr(bpy.types.Scene, "is_updating"):
