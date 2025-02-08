@@ -3,7 +3,6 @@ import bpy
 
 print("Zome operators loaded - Version 1.0.2")
 
-
 class OBJECT_OT_call_zome(bpy.types.Operator):
     bl_idname = "object.call_zome"
     bl_label = "Crea Zome (F1)"
@@ -18,14 +17,12 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             if area.type == 'VIEW_3D':
                     area.tag_redraw()
     
-
     def execute(self, context):
         local=bpy.data.objects.get("start_zome")
-        local.rotation_euler=[-math.radians(context.scene.rotation),0,0]
+        local.rotation_euler=[0,math.radians(context.scene.rotation),0]
         bpy.context.scene.expand_report = True
         bpy.context.scene.report_text = ""
         bpy.context.scene.is_updating = True
-        print ("longiudinal cut: ",context.scene.longitudinal_cut)
         zome1 = Zome(
             local=local,
             N=context.scene.N,
@@ -91,7 +88,6 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
         bpy.context.scene.is_updating = False
 
         return {'FINISHED'}
-
 
 def limit_data(scene): #called after updates
     scene.N=max(2,min(20,scene.N))
@@ -333,6 +329,7 @@ def register():
         description="Testo del report",
         default=""
     )
+
 def unregister():
     try:
         bpy.utils.unregister_class(OBJECT_OT_call_zome)

@@ -142,10 +142,12 @@ class Zome:
         #GEOMETRY DATA:
         self.vertices = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
-        self.face_info = [] #[layer][radial] = {"type":"triangle","vertices":[(x,y,z),(x,y,z),(x,y,z)]}
+        self.faces = [] #[layer][radial] = {"type":"triangle","vertices":[(x,y,z),(x,y,z),(x,y,z)]}
+        self.faces_by_type = [] #eg: [ {'rhombus_EAST': [0], 'rhombus_FULL': [1, 2, 3, 4], 'rhombus_WEST': [5]} , other layers...]
         #BUILD & PHYSICS DATA:
         self.inner_surface=None    
         self.beams = []
+
 
         self.beams_strip = [] # 1 exemplar of 1 polygon per layer (for analysis and operations)
         #VISUALIZATION & COLLECTIONS:
@@ -157,35 +159,22 @@ class Zome:
         self.set_basic_materials()
         self.main()
 
-    
-
 
     def main(self):
         #GEOMETRY:
-
         self.basic_vertices()  # theoretical vertices of the basic zome (1 cut; no rototranslation)
         if self.modifications["top_modifications_type"] != "none":#top cut/top reduction
             self.vertices=self.top_mod_vertices(vertices=self.vertices,type=self.modifications["top_modifications_type"],levels=self.modifications["top_modifications_levels"],new_height=self.modifications["top_new_height"]) #involves the modification of the vertices set (adding,deleting)
-        self.face_info=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"])#still on verttices not rototranslated 
-        #debug
+        self.faces,self.faces_by_type=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"])#still on verttices not rototranslated 
+        self.barycenter=self.set_barycenter(self.vertices)        
 
-        #debug: per ogni layer , face e chiave in face_info stampa il tipo di dato
-
-        self.barycenter=self.set_barycenter(self.vertices)
-        
         self.RT_all() #roto-translate all the vertices and the barycenter
-        for layer_index,layer in enumerate(self.face_info):
-            for face_index,face in enumerate(layer):
-                print(f"RA>Face {face_index} of layer {layer_index} type {type(face)}")    
 
         #CREATE BLENDER OBJECTS:
         materials=[]
-        for i in range(len(self.face_info)):#copy materials in every faces layer
+        for i in range(len(self.faces)):#copy materials in every faces layer
             materials.append(self.materials)
-        
-
-        #self.inner_surface_vol=draw_faces(faces=faces,name=rename(self.name+"_inner_surface_vol"),materials=materials,joined=True,fill=True)
-        #DRAW BLENDER OBJECTS:       
+                #DRAW BLENDER OBJECTS:       
         if self.show["vertices"] == 1:
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             self.main_collection.children.link(vertices_collection)
@@ -193,12 +182,9 @@ class Zome:
             draw_vertices(points=self.local.location,name=f"{self.name}_origin",size=self.ZH*0.01,add_to_collection=self.main_collection)
             draw_vertices(points=self.vertices,name=f"{self.name}_vertices",size=self.ZH*0.005,add_to_collection=vertices_collection)
         if self.show["faces"]:
-            faces=self.faces_feature(face_info=self.face_info,key="vertices")
+            faces=self.faces_feature(faces=self.faces,key="vertices")
             faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
             self.main_collection.children.link(faces_collection)   
-
-
-
             draw_faces(faces=faces,name=rename(self.name+"_face"),materials=materials,joined=False,fill=True,add_to_collection=faces_collection)         
 
             #self.main_collection.objects.link(self.inner_surface)
@@ -218,11 +204,8 @@ class Zome:
         #memoriazza la somma di tutit i vertici:
         report+=f"{sum(len(vertex) for vertex in self.vertices)} vertici in {len(self.vertices)} strati:"
         report+=f"{[len(vertex) for vertex in self.vertices]}\n"
-        report+=f"{sum(len(face) for face in self.face_info)} facce in {len(self.face_info)} strati:"
+        report+=f"{sum(len(face) for face in self.faces)} facce in {len(self.faces)} strati:"
         self.print(type="report",text=report)
-
-
-
 
     def initialize_blender(self):
         #OBJECT MODE: first you need to select an object, then go to object mode
@@ -303,8 +286,8 @@ class Zome:
 
     def set_faces(self,vertices,cut_angle=0): #SVSV only valid BEFORE rotation and translation
         half_h=self.h/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
-        face_info = [] # all info in a [layer_index][face_index] list
-        face_forms=[] # list of forms in the layer, each element is a list of form type with the list of faces
+        faces = [] # all info in a [layer_index][face_index] list
+        by_types = [] # list of forms in the layer, each element is a list of form type with the list of faces
         cut_angle/=2
         keydictionary={"vertices":"vertices: list of vertices",
                        "vertices_type":"vertices_type: list of vertices types, eg: [('E','N','W')] for a rhombus",
@@ -313,12 +296,13 @@ class Zome:
                        "long_cut_type":"longitudinal cut type: IN | EAST | WEST for: all the face | only east side | only west side"}
 
         for layer_index in range(len(vertices)): 
-            new_layer_face_info = []#all info in a [layer_index][face_index] list
+            new_layer_faces = []#all info in a [layer_index][face_index] list
+            new_layer_by_types = {}
             this_count=len(vertices[layer_index])
             prev_count=-1 if layer_index==0 else len(vertices[layer_index-1])
             next_count=-1 if layer_index==len(vertices)-1 else len(vertices[layer_index+1])  
             if(len(vertices[layer_index])>1):
-                new_layer_forms={}
+                added_index=0 # if a face is not added, radial_index is not correct anymore
                 for radial_index in range(this_count):#  
                     # region 1) IDENTIFY VERTICES BY POSITION WITHIN THE FACE:
                     N=None if next_count==-1 else  vertices[layer_index+1][0] if next_count==1 else vertices[layer_index+1][(radial_index+1) % next_count]
@@ -332,9 +316,9 @@ class Zome:
                     a_W=math.degrees(math.fabs(math.atan2(W[1],W[0])))
                     a_H=math.degrees(math.fabs(math.atan2(H[1],H[0])))
                     if (a_E>=cut_angle and a_W>=cut_angle): #the face is all outside of the cut angle=>IN
-                        long_cut_type="IN"
+                        long_cut_type="FULL"
                     elif a_H>=cut_angle: #most of the face is in: still IN
-                        long_cut_type="IN"                    
+                        long_cut_type="FULL"                    
                     elif a_E<cut_angle and a_W<cut_angle: #the face is all OUT
                         long_cut_type="OUT"
                     elif a_E<cut_angle and a_W>=cut_angle: #the face is IN on the W side
@@ -378,13 +362,13 @@ class Zome:
                                     "form_type":"upside_down_triangle",
                                 }
                     #endregion
-                    # region 4) SET VERTICES:
+                    # region 4) SET VERTICES AND by_type:
                     if new_face_info is not None:
                         new_face_info["long_cut_type"]=long_cut_type
                         match new_face_info["form_type"]:
                             case "triangle":
                                 match new_face_info["long_cut_type"]:
-                                    case "IN":
+                                    case "FULL":
                                         new_face_info["vertices"]=[E, N, W] 
                                         new_face_info["vertices_type"]=["E","N","W"]
                                     case "WEST":
@@ -395,7 +379,7 @@ class Zome:
                                         new_face_info["vertices_type"]=["E","N","H"]
                             case "upside_down_triangle":
                                 match new_face_info["long_cut_type"]:
-                                    case "IN":
+                                    case "FULL":
                                         new_face_info["vertices"]=[E, W, S]
                                         new_face_info["vertices_type"]=["E","W","S"]
                                     case "WEST":
@@ -406,7 +390,7 @@ class Zome:
                                         new_face_info["vertices_type"]=["E","H","S"]
                             case "rhombus":
                                 match new_face_info["long_cut_type"]:
-                                    case "IN":
+                                    case "FULL":
                                         new_face_info["vertices"]=[E, N, W, S]
                                         new_face_info["vertices_type"]=["E","N","W","S"]
                                     case "WEST":
@@ -415,17 +399,18 @@ class Zome:
                                     case "EAST":
                                         new_face_info["vertices"]=[E, N, S]
                                         new_face_info["vertices_type"]=["E","N","S"]
-                        new_layer_face_info.append(new_face_info)
-                        if new_face_info["form_type"]+"_"+new_face_info["long_cut_type"] not in new_layer_forms:
-                            new_layer_forms[new_face_info["form_type"]+"_"+new_face_info["long_cut_type"]]=[]
-                        else:
-                            new_layer_forms[new_face_info["form_type"]+"_"+new_face_info["long_cut_type"]].append(new_face_info)
+                        def by_type_key(face_info):#unique key for actual form 
+                            return face_info["form_type"]+"_"+face_info["long_cut_type"]
+                        if by_type_key(new_face_info) not in new_layer_by_types:
+                            new_layer_by_types[by_type_key(new_face_info)] = []                              
+                        new_layer_faces.append(new_face_info)
+                        new_layer_by_types[by_type_key(new_face_info)].append(added_index)
+                        added_index+=1
                     #endregion
-            if len(new_layer_face_info) > 0:
-                face_info.append(new_layer_face_info)
-        return face_info
-
-
+            if len(new_layer_faces) > 0:
+                faces.append(new_layer_faces)
+                by_types.append(new_layer_by_types) 
+        return faces,by_types
 
     def set_barycenter(self,vertices):
         barycenter = (0,0,0)      
@@ -454,8 +439,8 @@ class Zome:
                 for vertex_index,vertex in enumerate(layer):
                     vertex=(M@mathutils.Vector(vertex))
                     self.vertices[layer_index][vertex_index]=vertex
-            face_info=[]
-            for layer_index,layer in enumerate(self.face_info):
+            faces=[]
+            for layer_index,layer in enumerate(self.faces):
                 new_layer=[]
                 for face_index,face in enumerate(layer): 
                     #rotates each vertex of the face:
@@ -463,8 +448,8 @@ class Zome:
                         face["vertices"][vertex_index]=M@vertex
                         #add tofac_info
                     new_layer.append(face)
-                face_info.append(new_layer)
-            self.face_info=face_info
+                faces.append(new_layer)
+            self.faces=faces
             self.barycenter=M@mathutils.Vector(self.barycenter)
             #self.local.location=M@mathutils.Vector(self.local.location) 
 
@@ -538,8 +523,8 @@ class Zome:
             "upside_down_triangle":["N","SW","SE"],
         }
         print("**********")
-        for layer_index, layer in enumerate(self.face_info):   
-            prototype_indexes = {}
+        for layer_index, layer in enumerate(self.faces):   
+            by_type_indexes = {}
             for radial_index, face in enumerate(layer):
 
                 form_type=face["form_type"]
@@ -560,7 +545,7 @@ class Zome:
             """
                 print(f"{layer_index} {radial_index} {face_type}")  
                 if face_type not in prototype_indexes:#PROTOTYPE!
-                    face_type=self.faces_feature(self.face_info,key="form_type")[layer_index]
+                    face_type=self.faces_feature(self.faces,key="form_type")[layer_index]
                     #1) CREATE A FACE:
                     beams_set = beams_polygon(
                         add_to_collection=self.beams_collection,
@@ -639,9 +624,9 @@ class Zome:
                 self.external_collection = bpy.data.collections.new(rename(self.name + "_ext_constraints"))
                 self.main_collection.children.link(self.external_collection)
                 #create a prototype of empty objects w/ external constraints w/o adding them to the collection:
-                face_type=self.faces_feature(self.face_info,key="form_type")
+                face_type=self.faces_feature(self.faces,key="form_type")
                 t_0=time.time()
-                for layer_index, layer in enumerate(self.faces_feature(self.face_info,key="vertices")):
+                for layer_index, layer in enumerate(self.faces_feature(self.faces,key="vertices")):
                     layer_type=face_type[layer_index]                                    
 
                     for i in range(len(layer)): #horizontal loop
@@ -806,7 +791,7 @@ class Zome:
             return result
         match type:   
             case "face_type":
-                face_type=self.faces_feature(self.face_info,key="form_type")
+                face_type=self.faces_feature(self.faces,key="form_type")
                 return face_type[target_index] if len(face_type)>target_index else 0
             case "height":
                 #return layer[0][2]-self.vertices[0][0][2] not anymore for rotations: 
@@ -840,17 +825,15 @@ class Zome:
                 return volume
         return -1
     
-    def faces_feature(self,face_info,key):
-        faces=[]
+    def faces_feature(self,faces,key):
+        result=[]
         if key in ["vertices","vertices_type","layer_type","form_type","long_cut_type"]:
-            for layer_index,layer in enumerate(face_info):
+            for layer_index,layer in enumerate(faces):
                 new_layer=[]
                 for face_index,face in enumerate(layer): 
-                    print(f"*Face {face_index} of layer {layer_index} key {key} type {type(face)}")
                     new_layer.append(face[key])
-                faces.append(new_layer)
-        return faces
-
+                result.append(new_layer)
+        return result
 
 def find_theta(N,S,ZH,target_value,type="base_area"):
     #finds theta to the specified error with numeric method, by starting from theta0
