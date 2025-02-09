@@ -18,18 +18,10 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                     area.tag_redraw()
     
     def execute(self, context):
-        local = bpy.data.objects.get("start_zome")
-        local.rotation_euler = [0, math.radians(context.scene.rotation), 0]
-        
-        # Forza l'aggiornamento della scena
-        local.update_tag()  # Questo aggiorna l'oggetto
-        bpy.context.view_layer.update()  # Questo aggiorna la vista
-        
         bpy.context.scene.expand_report = True
         bpy.context.scene.report_text = ""
         bpy.context.scene.is_updating = True
         zome1 = Zome(
-            local=local,
             basic={
                 "N": context.scene.N,
                 "S": context.scene.S,
@@ -72,23 +64,24 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "longitudinal_cut": context.scene.longitudinal_cut,
                 "layer_types": [],
                 "position": (0,0,0),
-                "rotation": (0,0,0)
+                "rotation": (0,math.radians(context.scene.rotation),0)
             },
             zome_output= self.zome_input
         )
         
         info=zome1.info("all")
-        
-        #HERE
+
         print("*****************INFO*****************")
         #print(info)
         plane=bpy.data.objects.get("Plane")
         inner_surface=zome1.inner_surface
-        if False and inner_surface:
+        if inner_surface:
             verts=mesh_plane_intersection(inner_surface, plane)
-            draw_faces(faces=verts,name="dummy_polygon2423qwe",material=zome1.materials,joined=True)
-            print(len(verts))
-            print(area_polygon(verts))
+            draw_faces(faces=verts,name="poligono area selezionata",joined=True)
+            area_selezionata = area_polygon(verts)  # Calcola l'area
+            print(f"area selezionata: {area_selezionata:.2f} m2")  # Stampa l'area formattata
+        else:
+            print("nessuna superficie su cui calcolare l'area")
 
 
         bpy.context.scene.report_text=info

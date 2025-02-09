@@ -326,6 +326,7 @@ def boolean_union_selected(new_object_name):
 
 def join_objects(objects_list, name, add_to_collection=None):
     temp_objects = []
+    new_object=None
     for index, obj in enumerate(objects_list):  # Iterate through the objects list
         if isinstance(obj, list):  # If still a list, recursive call
             temp_objects.append(join_objects(objects_list=obj, name=rename(f"{name}_{index}"), add_to_collection=add_to_collection))
@@ -333,7 +334,6 @@ def join_objects(objects_list, name, add_to_collection=None):
             temp_objects.append(obj)  # Add the original object to the
         if not obj.name in bpy.context.collection.objects.keys():
             bpy.context.collection.objects.link(obj)  # Temporarily add to collection, needed for selection, in turn for joining
-
     if temp_objects:  # If there are temporary objects
         bpy.context.view_layer.objects.active = temp_objects[0]  # Set first object as active
         bpy.ops.object.select_all(action='DESELECT')  # Deselect all
@@ -345,9 +345,8 @@ def join_objects(objects_list, name, add_to_collection=None):
             new_object.name = name  # Set the name to the provided name
             new_object.data.name = name  # Set the mesh data name
             bpy.context.collection.objects.unlink(new_object)  # Unlink from the current collection
-            if add_to_collection:
+            if add_to_collection and new_object.name not in add_to_collection.objects:
                 add_to_collection.objects.link(new_object)  # Link to the specified collection
-
     return new_object  # Return the joined object
 
 def beams_polygon(polyverts, 

@@ -25,12 +25,31 @@ faces edges are consequent to the vertex order. So EW or NE when applicable , fi
 #the order of the vertices is important to eventually label the beams and that in turn is important to connect them if physics is on
                 
 """
-
+zome_basic_face_colors = [
+    (1.0, 0.0, 0.0),  # Red
+    (0.0, 1.0, 0.0),  # Green
+    (0.0, 0.0, 1.0),  # Blue
+    (1.0, 1.0, 0.0),  # Yellow
+    (1.0, 0.0, 1.0),  # Magenta
+    (0.0, 1.0, 1.0),   # Cyan
+    (1.0, 1.0, 1.0),   # White
+    (0.0, 0.0, 0.0),   # Black
+    (0.5, 0.5, 0.5),   # Gray
+    (1.0, 0.5, 0.5),   # Pink
+    (0.6, 0.4, 0.0),   # Brown
+    (0.0, 0.5, 0.0),   # Dark Green
+    (0.0, 0.0, 0.5),   # Dark Blue
+    (0.5, 0.0, 0.0),   # Dark Red
+    (0.5, 0.5, 0.0),   # Dark Yellow
+    (0.5, 0.0, 0.5),   # Dark Magenta
+    (0.0, 0.5, 0.5),   # Dark Cyan
+    (0.5, 0.5, 0.5),   # Light Gray
+]     
 class Zome:
+
 
     def __init__(
             self, 
-            local=None,
             basic={
                 "name": "",
                 "N": 8,
@@ -77,11 +96,8 @@ class Zome:
             silent=False,
             zome_output=None
         ):
-        #print ("ZOME INITIALIZATION:")
-        #print ("Z:",mathutils.Vector(local.matrix_world.to_3x3().col[2].xyz.normalized()))  # Mantieni col[2] per ottenere l'asse Z locale
         self.zome_output = zome_output
         #BASIC PARAMETERS:
-
         self.basic = {**{
             "name": "",
             "N": 8,
@@ -99,7 +115,6 @@ class Zome:
         self.basic["h"] = self.basic["ZH"] / (self.basic["S"])
         self.basic["l"] = self.basic["h"] / math.cos(math.radians(self.basic["theta"]))
         self.basic["alpha"] = 360.0 / self.basic["N"]        
-
         #MODIFICATIONS:
         self.modifications = {**{
             "top_modifications_type": "none",            
@@ -138,22 +153,18 @@ class Zome:
             "external_spring_stiffness": 10,
             "external_spring_damping": 0.5,
         }, **physics}
-        self.show["beams"] = self.show["beams"] and (self.beam["TW"] > 0 and self.beam["TT"] > 0)   
-        
-        #derived parameters:
-            
+        self.show["beams"] = self.show["beams"] and (self.beam["TW"] > 0 and self.beam["TT"] > 0)           
         self.silent=silent
+
+        #INITIALIZE BLENDER:
+        self.main_collection, self.basic_materials = self.initialize_blender(name=self.name,silent=self.silent,alpha=self.show["geometry_alpha"])
         
-        
-        #local:   
-        self.local=local #modifications are overriden by the presence of "local" object
-        if self.local is None:
-            print ("LOCAL E' NONE!!!!")
-            self.local = bpy.data.objects.new(rename(self.name + "_local"), None)
-            self.local.empty_display_type = 'ARROWS'  # Imposta il tipo di visualizzazione dell'empty
-            self.local.location = mathutils.Vector(self.modifications["position"])
-            self.local.rotation_euler = mathutils.Euler(self.modifications["rotation"], 'ZYX')
-        
+        #LOCAL: to pack up position and rotation of the zome (an possibly other global data)
+        self.local = bpy.data.objects.new(rename(self.name + "_local"), None)
+        self.local.empty_display_type = 'ARROWS'  # Imposta il tipo di visualizzazione dell'empty
+        self.local.location = mathutils.Vector(self.modifications["position"])
+        self.local.rotation_euler = mathutils.Euler(self.modifications["rotation"], 'ZYX')
+    
         #GEOMETRY DATA:
         self.vertices = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
@@ -164,56 +175,47 @@ class Zome:
         self.beams = []
         self.beams_strip = [] # 1 exemplar of 1 polygon per layer (for analysis and operations)
         #VISUALIZATION & COLLECTIONS:
-        self.main_collection = None
+
         self.beams_collection = None
-        self.materials = []
 
-        self.initialize_blender()
-        self.set_basic_materials()
+
         self.main()
-
 
     def main(self):
         #GEOMETRY:
         self.vertices=self.basic_vertices(basic=self.basic)  # theoretical vertices of the basic zome (1 cut; no rototranslation)
         if self.modifications["top_modifications_type"] != "none":#top cut/top reduction
             self.vertices=self.top_mod_vertices(vertices=self.vertices,basic=self.basic,type=self.modifications["top_modifications_type"],levels=self.modifications["top_modifications_levels"],new_height=self.modifications["top_new_height"]) #involves the modification of the vertices set (adding,deleting)
-        self.faces,self.faces_by_type=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"])#still on verttices not rototranslated 
-
         self.barycenter=self.set_barycenter(self.vertices)        
-
+        self.faces,self.faces_by_type=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
         self.RT_all() #roto-translate all the vertices and the barycenter
-
-        #CREATE BLENDER OBJECTS:
-        materials=[]
-        for i in range(len(self.faces)):#copy materials in every faces layer
-            materials.append(self.materials)
-                #DRAW BLENDER OBJECTS:       
+        #DRAWING:       
         if self.show["vertices"] == 1:
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             self.main_collection.children.link(vertices_collection)
-            draw_vertices(points=self.barycenter,name=f"{self.name}_barycenter",size=self.ZH*0.01,joined=True,add_to_collection=self.main_collection)
-            draw_vertices(points=self.local.location,name=f"{self.name}_origin",size=self.ZH*0.01,add_to_collection=self.main_collection)
-            draw_vertices(points=self.vertices,name=f"{self.name}_vertices",size=self.ZH*0.005,add_to_collection=vertices_collection)
+            draw_vertices(points=self.barycenter,name=f"{self.basic['name']}_barycenter",size=self.basic['ZH']*0.01,joined=True,add_to_collection=self.main_collection)
+            draw_vertices(points=self.local.location,name=f"{self.basic['name']}_origin",size=self.basic['ZH']*0.01,add_to_collection=self.main_collection)
+            draw_vertices(points=self.vertices,name=f"{self.basic['name']}_vertices",size=self.basic['ZH']*0.005,add_to_collection=vertices_collection)
         if self.show["faces"]:
             faces=self.faces_feature(faces=self.faces,key="vertices")
             faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
             self.main_collection.children.link(faces_collection)   
-            draw_faces(faces=faces,name=rename(self.name+"_face"),materials=materials,joined=False,fill=True,add_to_collection=faces_collection)         
-
-            #self.main_collection.objects.link(self.inner_surface)
-
-        
+            layered_materials = []
+            for layer_index, layer in enumerate(self.faces):
+                layer_materials = []  # Lista per i materiali di ciascun layer
+                for face_index, face in enumerate(layer):
+                    layer_materials.append(self.basic_materials[face_index])
+                layered_materials.append(layer_materials)  # Aggiungi i materiali del layer
+            #draw_faces(faces=faces,name=rename(self.name+"_face"),materials=layered_materials,joined=True,fill=True,add_to_collection=self.main_collection)         
+            draw_faces(faces=faces, name=rename(self.name+"_face"), materials=layered_materials, joined=False, fill=True, add_to_collection=faces_collection)         
+            self.inner_surface=join_objects(objects_list=faces_collection.objects,name=rename(self.name+"_faces_joined"),add_to_collection=self.main_collection)
         self.beams_collection = None
         self.external_collection = None
-
         if self.show["beams"] == 1:
             self.draw_beams() 
             #self.add_constraints()        
                 
-        #self.FEM_friendly_mesh(thickness=0.4 if self.beam["TT"]>0 else 0.1,name=self.name+"_FEM",add_to_collection=self.main_collection)
         bpy.ops.object.select_all(action='DESELECT')#deselect all objects
-
         report="*****************ZOME DATA*****************\n"
         #memoriazza la somma di tutit i vertici:
         report+=f"{sum(len(vertex) for vertex in self.vertices)} vertici in {len(self.vertices)} strati:"
@@ -221,28 +223,37 @@ class Zome:
         report+=f"{sum(len(face) for face in self.faces)} facce in {len(self.faces)} strati:"
         self.print(type="report",text=report)
 
-    def initialize_blender(self):
-        #OBJECT MODE: first you need to select an object, then go to object mode
+    def initialize_blender(self,name,silent=False,alpha=0.5):
+        main_collection=None
+        basic_materials=[]
+        #GET TO OBJECT MODE: first you need to select an object, then go to object mode
         if len(bpy.context.selected_objects) == 0:
-            if bpy.context.scene.objects.get(self.name):
-                bpy.context.view_layer.objects.active = bpy.context.scene.objects.get(self.name)
+            if bpy.context.scene.objects.get(name):
+                bpy.context.view_layer.objects.active = bpy.context.scene.objects.get(name)
                 bpy.context.view_layer.objects.active.select_set(True)
         if len(bpy.context.selected_objects) > 0:
             bpy.ops.object.mode_set(mode='OBJECT')
-        #MAIN COLLECTION:
-        delete_collection(self.name)#delete previous if exists
-        if True or self.show["vertices"] or self.show["faces"] or self.show["beams"] or self.show["edges"]: #SVSV
-            self.main_collection = bpy.data.collections.new(rename(self.name))
-            bpy.context.scene.collection.children.link(self.main_collection)#add to scene
-        
+        #PREPARE THE SCENE if not silent:
+        if silent==False:
+            delete_collection(name)#delete previous if exists 
+            #MAIN COLLECTION:
+            main_collection = bpy.data.collections.new(rename(name))
+            bpy.context.scene.collection.children.link(main_collection)#add to scene
+            #CREATE BASIC MATERIALS:
+            for i, color in enumerate(zome_basic_face_colors):
+                mat = bpy.data.materials.new(rename(f"Basic_Material_{i}"))
+                #mat.color is a tuple of 3 vals of color + alpha:
+                mat.diffuse_color = color + (alpha,)
+                basic_materials.append(mat)
+        return main_collection,basic_materials
+
     def basic_vertices(self,basic=None):
         vertices = []
         for layer_index in range(basic["S"]+1): 
             vertices_layer = []              
-
             match layer_index:
                 case _ if layer_index==0 :  # APEX 
-                    vertices_layer.append((0, 0, basic["ZH"]))  # appends to the layer a tuple with the apex
+                    vertices_layer.append(mathutils.Vector((0, 0, basic["ZH"])))  # appends to the layer a tuple with the apex
                 case 1:  # FIRST LAYER - arbitrary orientation
                     for radial_index in range(basic["N"]):
                         #calculate the vertex coordinates:
@@ -278,26 +289,28 @@ class Zome:
             match type:
                 case "cut":
                     del vertices[-levels:]
-
                 case "reduction":            
                     if new_height != None:
                         bottom_height=basic["h"]*(basic["S"]-levels)                        
                         #cut the top of the zome out:
                         vertices=self.top_mod_vertices(vertices=vertices,basic=basic,type="cut", levels=levels)  
-
                         top_zome_area=self.layer_data("polygon_area",len(self.vertices)-1) #area of top is the last layer of the main zome
                         top_zome_theta, top_zome_theta_spread=find_theta(N=basic["N"], 
                                              S=self.modifications["top_modifications_levels"], 
                                              ZH=new_height-bottom_height, 
                                              target_value=top_zome_area, 
                                              type="base_area")
+                        print ("differenza di aree tra zome e top_zome:",top_zome_theta_spread)
                         top_zome=Zome(
                             basic={
-                                "name":f"{self.name}_top_zome",
-                                "N":N, 
-                                "S":self.modifications["top_modifications_levels"], 
+                                "name":f"{basic['name']}_top_zome",
+                                "N":basic["N"], 
+                                "S":levels, 
                                 "theta":top_zome_theta,
                                 "ZH":new_height-bottom_height,
+                            },
+                            modifications={
+                                "position":(0,0,bottom_height)
                             },
                             #show={"vertices": self.show["vertices"] , "faces": self.show["faces"], "fill_faces": self.show["fill_faces"], "beams": self.show["beams"]},
                             silent=True
@@ -306,9 +319,9 @@ class Zome:
                             vertices.append(layer)         
         return vertices
 
-    def set_faces(self,vertices,cut_angle=0): #SVSV only valid BEFORE rotation and translation
-        half_h=self.basic["h"]/10 #discrimination between overlapping vertices layer and not. for heavily reduced top modifications, half height is not enough        
+    def set_faces(self,vertices,cut_angle=0,adj_layers_distance=0.1): #SVSV only valid BEFORE rotation and translation
         faces = [] # all info in a [layer_index][face_index] list
+
         by_types = [] # list of forms in the layer, each element is a list of form type with the list of faces
         cut_angle/=2
         keydictionary={"vertices":"vertices: list of vertices",
@@ -354,13 +367,13 @@ class Zome:
                     new_face_info=None
                     if long_cut_type!="OUT":
                         #MIDDLE UPSIDE DOWN TRIANGLE:
-                        if N is not None and abs(N[2]-W[2])<half_h:# this layer is overlapping with N (the next one): upside down triangle                            
+                        if N is not None and abs(N[2]-W[2])<adj_layers_distance:# this layer is overlapping with N (the next one): upside down triangle                            
                             new_face_info= {
                                 "layer_type":"middle",
                                 "form_type":"upside_down_triangle"
                             }
                         #MIDDLE TRIANGLE:                           
-                        elif S is not None and abs(S[2]-W[2])<half_h:# this layer is overlapping with S (the previous one): middle triangle
+                        elif S is not None and abs(S[2]-W[2])<adj_layers_distance:# this layer is overlapping with S (the previous one): middle triangle
                             new_face_info= {
                                     "layer_type":"middle",
                                     "form_type":"triangle"
@@ -465,34 +478,28 @@ class Zome:
             barycenter = (barycenter[0] / total_vertices, barycenter[1] / total_vertices, barycenter[2] / total_vertices)
         return  barycenter
 
-    def RT_all(self):#something in between uses "z" et al.
-        #if local is not 0,0,0 or it's orientered in non glbal way:
+    def RT_all(self):
         if self.local.location != (0,0,0) or self.local.rotation_euler != (0,0,0):
-            # Crea la matrice di rotazione basata sulla rotazione locale
-            R = mathutils.Euler(self.local.rotation_euler, 'XYZ').to_matrix().to_4x4()  # Converti in matrice 4x4
-            
-            # Crea la matrice di traslazione basata sulla posizione locale
+            R = mathutils.Euler(self.local.rotation_euler, 'XYZ').to_matrix().to_4x4()  
             T = mathutils.Matrix.Translation(self.local.location)
-
-            # Combina rotazione e traslazione
             M = T @ R  # Prima traslazione, poi rotazione
-            #apply the matrix to the vertices:
+            #vertices:
             for layer_index,layer in enumerate(self.vertices):
                 for vertex_index,vertex in enumerate(layer):
                     vertex=(M@mathutils.Vector(vertex))
                     self.vertices[layer_index][vertex_index]=vertex
+            #barycenter:
+            self.barycenter=M@mathutils.Vector(self.barycenter)
+            #faces:
             faces=[]
             for layer_index,layer in enumerate(self.faces):
                 new_layer=[]
                 for face_index,face in enumerate(layer): 
-                    #rotates each vertex of the face:
                     for vertex_index,vertex in enumerate(face["vertices"]):
                         face["vertices"][vertex_index]=M@vertex
-                        #add tofac_info
                     new_layer.append(face)
                 faces.append(new_layer)
-            self.faces=faces
-            self.barycenter=M@mathutils.Vector(self.barycenter)
+            self.faces=faces            
 
     def draw_beams(self):
         #COLLECTIONS:
@@ -586,33 +593,6 @@ class Zome:
             all, optimized:
             8 secs, (physics/constraints not tested)
         """
-
-    def set_basic_materials(self):
-        alpha=self.show["geometry_alpha"]
-        colors = [
-            (1.0, 0.0, 0.0, alpha),  # Red
-            (0.0, 1.0, 0.0, alpha),  # Green
-            (0.0, 0.0, 1.0, alpha),  # Blue
-            (1.0, 1.0, 0.0, alpha),  # Yellow
-            (1.0, 0.0, 1.0, alpha),  # Magenta
-            (0.0, 1.0, 1.0, alpha),   # Cyan
-            (1.0, 1.0, 1.0, alpha),   # White
-            (0.0, 0.0, 0.0, alpha),   # Black
-            (0.5, 0.5, 0.5, alpha),   # Gray
-            (1.0, 0.5, 0.5, alpha),   # Pink
-            (0.6, 0.4, 0.0, alpha),   # Brown
-            (0.0, 0.5, 0.0, alpha),   # Dark Green
-            (0.0, 0.0, 0.5, alpha),   # Dark Blue
-            (0.5, 0.0, 0.0, alpha),   # Dark Red
-            (0.5, 0.5, 0.0, alpha),   # Dark Yellow
-            (0.5, 0.0, 0.5, alpha),   # Dark Magenta
-            (0.0, 0.5, 0.5, alpha),   # Dark Cyan
-            (0.5, 0.5, 0.5, alpha),   # Light Gray
-        ]        
-        for i, color in enumerate(colors):
-            mat = bpy.data.materials.new(rename(f"Material_{i}"))
-            mat.diffuse_color = color
-            self.materials.append(mat)
     
     def create_plane(self, name, target_collection=None):
         #actually is filled:
@@ -631,8 +611,6 @@ class Zome:
             target_collection.objects.link(obj)
         return obj
     
-
-
     def add_constraints(self):
         if (self.physics["on"]):            
             if self.physics["external_type"]=="spring":
@@ -867,7 +845,7 @@ def find_theta(N,S,ZH,target_value,type="base_area"):
     spread=50 #more typical value for area  or side respectively
     while abs(spread)>max_error and counter<max_iterations:
         counter+=1
-        zome=Zome(name="dummy",N=N,S=S,theta=theta,ZH=ZH,silent=True)
+        zome=Zome(basic={"name":"dummy","N":N,"S":S,"theta":theta,"ZH":ZH},silent=True)
         if type=="base_area":
             actual_value=zome.layer_data("polygon_area",0)
         elif type=="base_side":
