@@ -30,13 +30,11 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "name": context.scene.name,
             },
             show={
-
-
                 "vertices": context.scene.show_vertices ,
                 "faces": context.scene.show_faces ,
                 "edges": context.scene.edges ,
                 "geometry_alpha": context.scene.geometry_alpha,
-                "barycenter": context.scene.show_barycenter ,
+                "utilities": context.scene.show_utilities ,
                 "beams": context.scene.show_beams 
             },
             beam={
@@ -186,7 +184,7 @@ def register():
         default=False,
         description="Mostra i vertici (richiede qualche secondo)"
     )
-    bpy.types.Scene.show_barycenter = bpy.props.BoolProperty(
+    bpy.types.Scene.show_utilities = bpy.props.BoolProperty(
         default=True,
         description="Mostra il baricentro"
     )
@@ -374,7 +372,7 @@ def unregister():
         del bpy.types.Scene.show_vertices
         del bpy.types.Scene.show_faces
         del bpy.types.Scene.edges        
-        del bpy.types.Scene.show_barycenter
+        del bpy.types.Scene.show_utilities
         del bpy.types.Scene.expand_modifications
         del bpy.types.Scene.rot_y
         del bpy.types.Scene.rot_z

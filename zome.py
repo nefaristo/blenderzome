@@ -45,8 +45,8 @@ zome_basic_face_colors = [
     (0.0, 0.5, 0.5),   # Dark Cyan
     (0.5, 0.5, 0.5),   # Light Gray
 ]     
-class Zome:
 
+class Zome:
 
     def __init__(
             self, 
@@ -62,7 +62,7 @@ class Zome:
                 "faces": 0, 
                 "edges": 0,
                 "geometry_alpha": 0.5,
-                "barycenter": 0 ,
+                "utilities": 0 ,
                 "beams": 0,
                 "plane": 0
             },
@@ -131,7 +131,7 @@ class Zome:
             "faces": 0, 
             "fill_faces": 0,
             "geometry_alpha": 0.5,
-            "barycenter": 0 ,
+            "utilities": 0 ,
             "beams": 0,
             "plane": 0
         }, **show}    
@@ -155,7 +155,6 @@ class Zome:
         }, **physics}
         self.show["beams"] = self.show["beams"] and (self.beam["TW"] > 0 and self.beam["TT"] > 0)           
         self.silent=silent
-
         #INITIALIZE BLENDER:
         self.main_collection, self.basic_materials = self.initialize_blender(name=self.name,silent=self.silent,alpha=self.show["geometry_alpha"])
         #LOCAL: to pack up position and rotation of the zome (an possibly other global data)
@@ -163,6 +162,11 @@ class Zome:
         self.local.empty_display_type = 'ARROWS'  # Imposta il tipo di visualizzazione dell'empty
         self.local.location = mathutils.Vector(self.modifications["position"])
         self.local.rotation_euler = mathutils.Euler(self.modifications["rotation"], 'ZYX')
+        self.RTM={
+            "R": mathutils.Euler(self.local.rotation_euler, 'XYZ').to_matrix().to_4x4(),
+            "T": mathutils.Matrix.Translation(self.local.location), 
+        }
+        self.RTM["M"]=self.RTM["T"] @ self.RTM["R"]
         #GEOMETRY DATA:
         self.vertices = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
@@ -183,24 +187,34 @@ class Zome:
             self.vertices=self.top_mod_vertices(vertices=self.vertices,basic=self.basic,type=self.modifications["top_modifications_type"],levels=self.modifications["top_modifications_levels"],new_height=self.modifications["top_new_height"]) #involves the modification of the vertices set (adding,deleting)
         self.barycenter=self.set_barycenter(self.vertices)        
         self.faces,self.faces_by_type,self.hortogonal_faces=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
-        self.RT_all() #roto-translate all the vertices and the barycenter
-        #DRAWING:       
-        if self.show["vertices"] == 1:
+        self.set_RT() #roto-translate all the vertices and the barycenter
+        #DRAWING:     
+        layered_materials = []
+        for layer_index, layer in enumerate(self.faces):
+            layer_materials = []  # Lista per i materiali di ciascun layer
+            for face_index, face in enumerate(layer):
+                layer_materials.append(self.basic_materials[face_index])
+            layered_materials.append(layer_materials)  # Aggiungi i materiali del layer
+        faces=self.faces_feature(faces=self.faces,key="vertices")
+        self.inner_surface=draw_faces(faces=faces,name=rename(self.name+"_faces_joined"),materials=layered_materials,joined=True,fill=True)
+        if self.show["vertices"]:
+
+
+
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             self.main_collection.children.link(vertices_collection)
-            draw_vertices(points=self.barycenter,name=f"{self.basic['name']}_barycenter",size=self.basic['ZH']*0.01,joined=True,add_to_collection=self.main_collection)
-            draw_vertices(points=self.local.location,name=f"{self.basic['name']}_origin",size=self.basic['ZH']*0.01,add_to_collection=self.main_collection)
             draw_vertices(points=self.vertices,name=f"{self.basic['name']}_vertices",size=self.basic['ZH']*0.005,add_to_collection=vertices_collection)
+        if self.show["utilities"]:
+            utilities_collection = bpy.data.collections.new(rename(self.name+"_utilities"))
+            self.main_collection.children.link(utilities_collection)
+            draw_vertices(points=self.barycenter,name=f"{self.basic['name']}_barycenter",size=self.basic['ZH']*0.01,joined=True,add_to_collection=utilities_collection)
+            draw_vertices(points=self.local.location,name=f"{self.basic['name']}_origin",size=self.basic['ZH']*0.01,add_to_collection=utilities_collection)
+            z_axis = (self.RTM["R"] @ mathutils.Vector((0,0,1))).normalized()
+            draw_vertices(points=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis_top",size=self.basic['ZH']*0.01,joined=True,add_to_collection=utilities_collection)
+            draw_segment(start=self.local.location,end=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis",add_to_collection=utilities_collection)
         if self.show["faces"]:
-            faces=self.faces_feature(faces=self.faces,key="vertices")
             faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
             self.main_collection.children.link(faces_collection)   
-            layered_materials = []
-            for layer_index, layer in enumerate(self.faces):
-                layer_materials = []  # Lista per i materiali di ciascun layer
-                for face_index, face in enumerate(layer):
-                    layer_materials.append(self.basic_materials[face_index])
-                layered_materials.append(layer_materials)  # Aggiungi i materiali del layer
             #draw_faces(faces=faces,name=rename(self.name+"_face"),materials=layered_materials,joined=True,fill=True,add_to_collection=self.main_collection)         
             draw_faces(faces=faces, name=rename(self.name+"_face"), materials=layered_materials, joined=False, fill=True, add_to_collection=faces_collection)         
             i=0
@@ -208,8 +222,8 @@ class Zome:
                 material=self.basic_materials[i]
                 draw_faces(faces=value, name=rename(self.name+"_"+key), materials=material, joined=False, fill=True, add_to_collection=self.main_collection)         
                 i+=1
+            
 
-            self.inner_surface=join_objects(objects_list=faces_collection.objects,name=rename(self.name+"_faces_joined"),add_to_collection=self.main_collection)
         self.beams_collection = None
         self.external_collection = None
         if self.show["beams"] == 1:
@@ -506,32 +520,38 @@ class Zome:
             barycenter = (barycenter[0] / total_vertices, barycenter[1] / total_vertices, barycenter[2] / total_vertices)
         return  barycenter
 
-    def RT_all(self):
+    def set_RT(self):
         if self.local.location != (0,0,0) or self.local.rotation_euler != (0,0,0):
             R = mathutils.Euler(self.local.rotation_euler, 'XYZ').to_matrix().to_4x4()  
             T = mathutils.Matrix.Translation(self.local.location)
             M = T @ R  # Prima traslazione, poi rotazione
+            self.RTM={
+                "R": R,
+                "T": T,
+                "M": M
+            }            
             #vertices:
             for layer_index,layer in enumerate(self.vertices):
+
                 for vertex_index,vertex in enumerate(layer):
                     vertex=(M@mathutils.Vector(vertex))
                     self.vertices[layer_index][vertex_index]=vertex
             #barycenter:
-            self.barycenter=M@mathutils.Vector(self.barycenter)
+            self.barycenter=self.RTM["M"]@mathutils.Vector(self.barycenter)
             #faces:
             faces=[]
             for layer_index,layer in enumerate(self.faces):
                 new_layer=[]
                 for face_index,face in enumerate(layer): 
                     for vertex_index,vertex in enumerate(face["vertices"]):
-                        face["vertices"][vertex_index]=M@vertex
+                        face["vertices"][vertex_index]= self.RTM["M"]@vertex
                     new_layer.append(face)
                 faces.append(new_layer)
             self.faces=faces   
             #hortogonal_faces:
             for key, face in self.hortogonal_faces.items():
                 for vertex_index,vertex in enumerate(face):
-                    face[vertex_index]=M@vertex
+                    face[vertex_index]=self.RTM["M"]@vertex
                 self.hortogonal_faces[key]=face
 
     def draw_beams(self):

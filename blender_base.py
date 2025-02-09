@@ -609,7 +609,8 @@ def draw_vertices(points,name=None,size=0.01,joined=False,add_to_collection=None
             for index, point in enumerate(points):
                 obj.append(draw_vertices(point,name=rename(f"{name}_{index}"),size=size,add_to_collection=add_to_collection))
     else:
-        bpy.ops.mesh.primitive_cube_add(size=size, location=points)
+        # bpy.ops.mesh.primitive_cylinder_add(radius=size/2, depth=size, location=points)
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=size/2, location=points)
         obj = bpy.context.object
         if name:
             obj.name = rename(name)

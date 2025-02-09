@@ -47,9 +47,11 @@ class ZomePanel(bpy.types.Panel):
             row.prop(scene, "show_faces", text="facce") 
             """
             row.prop(scene, "edges", text="bordi")
-            """
-            row.prop(scene, "show_vertices", text="vertici originali")
             
+            row.prop(scene, "show_vertices", text="vertici originali")
+            """
+            row.prop(scene, "show_utilities", text="utilities")
+
             row = box.row()
             row.label(text="opacità")
             row.prop(scene, "geometry_alpha", text="")
