@@ -62,7 +62,14 @@ class ZomePanel(bpy.types.Panel):
             # flag "rotation" ("ruota"):
             row = box.row()
             row.label(text="Rotazione°:")
-            row.prop(scene, "rotation", text="")
+            row.prop(scene, "rot_y", text="")
+            row.label(text="orientamento:")
+            row.prop(scene, "rot_z", text="")
+            row=box.row()
+            row.label(text="posizione:")
+            row.prop(scene, "pos_x", text="")
+            row.prop(scene, "pos_y", text="")
+            row.prop(scene, "pos_z", text="")
 
             #vertical cut:
             row = box.row()

@@ -158,27 +158,22 @@ class Zome:
 
         #INITIALIZE BLENDER:
         self.main_collection, self.basic_materials = self.initialize_blender(name=self.name,silent=self.silent,alpha=self.show["geometry_alpha"])
-        
         #LOCAL: to pack up position and rotation of the zome (an possibly other global data)
         self.local = bpy.data.objects.new(rename(self.name + "_local"), None)
         self.local.empty_display_type = 'ARROWS'  # Imposta il tipo di visualizzazione dell'empty
         self.local.location = mathutils.Vector(self.modifications["position"])
         self.local.rotation_euler = mathutils.Euler(self.modifications["rotation"], 'ZYX')
-    
         #GEOMETRY DATA:
         self.vertices = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces = [] #[layer][radial] = {"type":"triangle","vertices":[(x,y,z),(x,y,z),(x,y,z)]}
         self.faces_by_type = [] #eg: [ {'rhombus_EAST': [0], 'rhombus_FULL': [1, 2, 3, 4], 'rhombus_WEST': [5]} , other layers...]
-        #BUILD & PHYSICS DATA:
-        self.inner_surface=None    
+        self.hortogonal_faces={}
+        #BLENDER OBJECTS AND COLLECTIONS:
+        self.inner_surface=None  
+        self.beams_collection = None  
         self.beams = []
-        self.beams_strip = [] # 1 exemplar of 1 polygon per layer (for analysis and operations)
-        #VISUALIZATION & COLLECTIONS:
-
-        self.beams_collection = None
-
-
+        self.beams_strip = [] # 1 exemplar of 1 polygon per layer (for analysis and operations)    
         self.main()
 
     def main(self):
@@ -187,7 +182,7 @@ class Zome:
         if self.modifications["top_modifications_type"] != "none":#top cut/top reduction
             self.vertices=self.top_mod_vertices(vertices=self.vertices,basic=self.basic,type=self.modifications["top_modifications_type"],levels=self.modifications["top_modifications_levels"],new_height=self.modifications["top_new_height"]) #involves the modification of the vertices set (adding,deleting)
         self.barycenter=self.set_barycenter(self.vertices)        
-        self.faces,self.faces_by_type=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
+        self.faces,self.faces_by_type,self.hortogonal_faces=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
         self.RT_all() #roto-translate all the vertices and the barycenter
         #DRAWING:       
         if self.show["vertices"] == 1:
@@ -208,6 +203,12 @@ class Zome:
                 layered_materials.append(layer_materials)  # Aggiungi i materiali del layer
             #draw_faces(faces=faces,name=rename(self.name+"_face"),materials=layered_materials,joined=True,fill=True,add_to_collection=self.main_collection)         
             draw_faces(faces=faces, name=rename(self.name+"_face"), materials=layered_materials, joined=False, fill=True, add_to_collection=faces_collection)         
+            i=0
+            for key, value in self.hortogonal_faces.items():
+                material=self.basic_materials[i]
+                draw_faces(faces=value, name=rename(self.name+"_"+key), materials=material, joined=False, fill=True, add_to_collection=self.main_collection)         
+                i+=1
+
             self.inner_surface=join_objects(objects_list=faces_collection.objects,name=rename(self.name+"_faces_joined"),add_to_collection=self.main_collection)
         self.beams_collection = None
         self.external_collection = None
@@ -321,19 +322,23 @@ class Zome:
 
     def set_faces(self,vertices,cut_angle=0,adj_layers_distance=0.1): #SVSV only valid BEFORE rotation and translation
         faces = [] # all info in a [layer_index][face_index] list
-
         by_types = [] # list of forms in the layer, each element is a list of form type with the list of faces
+        hortogonal_faces=[]
         cut_angle/=2
         keydictionary={"vertices":"vertices: list of vertices",
                        "vertices_names":"vertices_names: list of vertices types, eg: [('E','N','W')] for a rhombus",
                        "layer_type":"layer_type: top | middle | bottom",
                        "form_type":"form_type: triangle | upside_down_triangle | rhombus; actual shape is determined also by the longitudinal cut type",
                        "long_cut_type":"longitudinal cut type: IN | EAST | WEST for: all the face | only east side | only west side"}
-
+    
+        #MAIN FACES:
+        bottom_face=[]
+        top_face=[]
         for layer_index in range(len(vertices)): 
             new_layer_faces = []#all info in a [layer_index][face_index] list
             new_layer_by_types = {}
             this_count=len(vertices[layer_index])
+
             prev_count=-1 if layer_index==0 else len(vertices[layer_index-1])
             next_count=-1 if layer_index==len(vertices)-1 else len(vertices[layer_index+1])  
             if(len(vertices[layer_index])>1):
@@ -384,23 +389,20 @@ class Zome:
                                     "layer_type":"middle" if layer_index<len(vertices)-2 else "top",
                                     "form_type":"rhombus"
                             }
-                        #BOTTOM TRIANGLE:
+                        #BOTTOM TRIANGLE: 
                         elif N is not None and S is None: #lower is missing: bottom triangle 
                             new_face_info= {
                                     "layer_type":"bottom",
                                     "form_type":"triangle",
                                 }
-                        #TOP UPSIDE DOWN TRIANGLE:
+                        #TOP UPSIDE DOWN TRIANGLE: 
                         elif N is None and S is not None: #lower is missing: upside down triangle (top)
                             new_face_info= {
                                     "layer_type":"top",
                                     "form_type":"upside_down_triangle",
                                 }
-                    #endregion
-                         
-            
-       
-                    # region 4) SET VERTICES AND by_type:
+                    #endregion                        
+                    # region 4) SET VERTICES , by_type and top & bottom faces:
                     if new_face_info is not None:
                         new_face_info["long_cut_type"]=long_cut_type
                         match new_face_info["form_type"]:
@@ -410,30 +412,44 @@ class Zome:
                                         new_face_info["vertices"]=[E, N, W] 
                                         new_face_info["vertices_names"]=["E","N","W"]
                                         new_face_info["edge_names"]=["NE","NW","S"]
+                                        if new_face_info["layer_type"]=="bottom":
+                                            bottom_face.extend([W,E])   
                                     case "WEST":
                                         new_face_info["vertices"]=[H,N,W]
                                         new_face_info["vertices_names"]=["H","N","W"]
                                         new_face_info["edge_names"]=["E","NW","S"]
+                                        if new_face_info["layer_type"]=="bottom":
+                                            bottom_face.extend([W,H])
                                     case "EAST":
                                         new_face_info["vertices"]=[E,N,H]
                                         new_face_info["vertices_names"]=["E","N","H"]
                                         new_face_info["edge_names"]=["NE","W","S"]
+                                        if new_face_info["layer_type"]=="bottom":
+                                            bottom_face.extend([H,E])
                             case "upside_down_triangle":
                                 match new_face_info["long_cut_type"]:
                                     case "FULL":
                                         new_face_info["vertices"]=[E, W, S]
                                         new_face_info["vertices_names"]=["E","W","S"]
                                         new_face_info["edge_names"]=["N","SW","SE"]
+                                        if new_face_info["layer_type"]=="top":
+                                            top_face.extend([W, E])
                                     case "WEST":
                                         new_face_info["vertices"]=[H, W , S ]   
                                         new_face_info["vertices_names"]=["H","W","S"]
                                         new_face_info["edge_names"]=["N","SW","E"]
+                                        if new_face_info["layer_type"]=="top":
+                                            top_face.extend([W, H])
                                     case "EAST":
                                         new_face_info["vertices"]=[E, H, S]
                                         new_face_info["vertices_names"]=["E","H","S"]
                                         new_face_info["edge_names"]=["N","W","SE"]
+                                        if new_face_info["layer_type"]=="top":
+                                            top_face.extend([H,E])
                             case "rhombus":
                                 match new_face_info["long_cut_type"]:
+
+
                                     case "FULL":
                                         new_face_info["vertices"]=[E, N, W, S]
                                         new_face_info["vertices_names"]=["E","N","W","S"]
@@ -457,15 +473,27 @@ class Zome:
             if len(new_layer_faces) > 0:
                 faces.append(new_layer_faces)
                 by_types.append(new_layer_by_types) 
+            if len(bottom_face)>0:
+                bottom_face=cleanup_polygon(bottom_face)
+                bottom_face.reverse() #faces order is ccw looking from above, so this is the opposite and has to be reversed
+            if len(top_face)>0:
+                top_face=cleanup_polygon(top_face)
+        #DEBUG:
         if False:# debug: all faces
+
+
             for layer_index, layer in enumerate(faces):
+
                 for face_index, face in enumerate(layer):
-                    print(f">F>{layer_index}/{face_index}: {face}")
+                    print(f">Face {layer_index}/{face_index}: {face['form_type']} {face['long_cut_type']} {face['layer_type']} {face['vertices_names']}")
         if False:#debug: by type (list of dictionaries)
             for layer_index, layer in enumerate(by_types):
                 for key, numbers in new_layer_by_types.items():
                     print(f"Layer {layer_index}, Chiave: {key}, Numeri: {numbers}")
-        return faces, by_types
+        if False: #debug: bottom and top faces
+            print("bottom faces:",bottom_face)
+            print("top faces:",top_face)
+        return faces, by_types, {"bottom_face":bottom_face, "top_face":top_face}
 
     def set_barycenter(self,vertices):
         barycenter = (0,0,0)      
@@ -499,14 +527,19 @@ class Zome:
                         face["vertices"][vertex_index]=M@vertex
                     new_layer.append(face)
                 faces.append(new_layer)
-            self.faces=faces            
+            self.faces=faces   
+            #hortogonal_faces:
+            for key, face in self.hortogonal_faces.items():
+                for vertex_index,vertex in enumerate(face):
+                    face[vertex_index]=M@vertex
+                self.hortogonal_faces[key]=face
 
     def draw_beams(self):
         #COLLECTIONS:
         self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
         self.main_collection.children.link(self.beams_collection)
         #TRANSFORMATION MATRIXES:
-        z_axis = mathutils.Vector(self.local.matrix_world.to_3x3().col[2].xyz.normalized())  # Mantieni col[2] per ottenere l'asse Z locale
+        z_axis = (mathutils.Euler(self.local.rotation_euler, 'XYZ').to_matrix().to_4x4() )@ mathutils.Vector((0,0,1))
         print("z axis",z_axis)
         T_inv = mathutils.Matrix.Translation(-mathutils.Vector(self.local.location))
         R = mathutils.Matrix.Rotation(math.radians(self.basic["alpha"]), 4, z_axis)
@@ -626,42 +659,43 @@ class Zome:
                 for layer_index, layer in enumerate(self.faces_feature(self.faces,key="vertices")):
                     layer_type=face_type[layer_index]                                    
 
-                    for i in range(len(layer)): #horizontal loop
-                        match layer_type:
+                    for face in layer:  # Itera direttamente su face
+                        for vertex_index, vertex in enumerate(face["vertices"]):  # Assicurati che face sia un dizionario
+                            match layer_type:
 
-                            case "bottom_triangle"|"middle_rhombus"|"middle_triangle":
-                                #TODO delete this next line thtat temporarily puts every _0_i_S polygon as physically passive:
-                                if layer_index==0:
-                                    self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_S"].rigid_body.type="PASSIVE"
-                                self.empty_ang_constraint(
-                                    name_suffix="_ext",
-                                    obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"],
-                                    obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{(i+1)%len(layer)}_SW"],
-                                    axis_index=0,
-                                    stiffness=self.physics["external_spring_stiffness"],
-                                    damping=self.physics["external_spring_damping"]
-                                    )        
-                                self.empty_ang_constraint(
-                                    name_suffix="_ext",
-                                    obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NW"],
-                                    obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{(i)%len(layer)}_SE"],
-                                    axis_index=0,
-                                    stiffness=self.physics["external_spring_stiffness"],
-                                    damping=self.physics["external_spring_damping"]
-                                    )  
-                            case "top_rhombus":
-                                self.empty_ang_constraint(
-                                    name_suffix="_ext",
-                                    obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"],
-                                    obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{(i+1)%len(layer)}_NW"],
-                                    axis_index=0,
-                                    stiffness=self.physics["external_spring_stiffness"],
-                                    damping=self.physics["external_spring_damping"]
-                                    )  
-                                #even if you constrain two by two the adjacent beams, there are collisions between non adjacent beams (a more precise engine settings would be too expensive)
-                                #therefore, i disable the collisions. the only way in blender 4.3 is disable all the collision groups
-                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NE"].rigid_body.collision_collections[0] = False  
-                                self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{i}_NW"].rigid_body.collision_collections[0] = False                                  
+                                case "bottom_triangle"|"middle_rhombus"|"middle_triangle":
+                                    #TODO delete this next line thtat temporarily puts every _0_i_S polygon as physically passive:
+                                    if layer_index==0:
+                                        self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{vertex_index}_S"].rigid_body.type="PASSIVE"
+                                    self.empty_ang_constraint(
+                                        name_suffix="_ext",
+                                        obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{vertex_index}_NE"],
+                                        obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{(vertex_index+1)%len(layer)}_SW"],
+                                        axis_index=0,
+                                        stiffness=self.physics["external_spring_stiffness"],
+                                        damping=self.physics["external_spring_damping"]
+                                        )        
+                                    self.empty_ang_constraint(
+                                        name_suffix="_ext",
+                                        obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{vertex_index}_NW"],
+                                        obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index+1}_{(vertex_index)%len(layer)}_SE"],
+                                        axis_index=0,
+                                        stiffness=self.physics["external_spring_stiffness"],
+                                        damping=self.physics["external_spring_damping"]
+                                        )  
+                                case "top_rhombus":
+                                    self.empty_ang_constraint(
+                                        name_suffix="_ext",
+                                        obj1=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{vertex_index}_NE"],
+                                        obj2=self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{(vertex_index+1)%len(layer)}_NW"],
+                                        axis_index=0,
+                                        stiffness=self.physics["external_spring_stiffness"],
+                                        damping=self.physics["external_spring_damping"]
+                                        )  
+                                    #even if you constrain two by two the adjacent beams, there are collisions between non adjacent beams (a more precise engine settings would be too expensive)
+                                    #therefore, i disable the collisions. the only way in blender 4.3 is disable all the collision groups
+                                    self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{vertex_index}_NE"].rigid_body.collision_collections[0] = False  
+                                    self.beams_collection.objects[f"{self.name}_beam_polygon_{layer_index}_{vertex_index}_NW"].rigid_body.collision_collections[0] = False                                  
                 self.print(type="report",text=f"✔️ vincoli esterni: ({time.time()-t_0:.2f}s)") 
     
     def constraint_strain(self,constr_obj):

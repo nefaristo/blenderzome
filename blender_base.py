@@ -114,8 +114,20 @@ def rename(new_name): #resets name avoiding the ".001" suffix
 
 # GEOMETRY:
 
+def cleanup_polygon(verts, tolerance=0.001): 
+    # Rimuovi duplicati considerando la tolleranza
+    unique_verts = []
+    for v in verts:
+        if not any((mathutils.Vector(v) - mathutils.Vector(u)).length < tolerance for u in unique_verts):
+            unique_verts.append(v)
+    
+    # Ordina per angolo
+    unique_verts.sort(key=lambda x: math.atan2(x[1], x[0]))
+    return unique_verts
+
 def area_polygon(verts):
     """
+
     Calcola l'area di un poligono in 3D usando il metodo del doppio prodotto vettoriale.
     
     :param verts: Lista di punti (array-like) in 3D [(x, y, z), ...]

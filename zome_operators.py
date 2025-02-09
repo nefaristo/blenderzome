@@ -63,30 +63,25 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "top_new_height": context.scene.top_new_height,                
                 "longitudinal_cut": context.scene.longitudinal_cut,
                 "layer_types": [],
-                "position": (0,0,0),
-                "rotation": (0,math.radians(context.scene.rotation),0)
+                "position": (context.scene.pos_x,context.scene.pos_y,context.scene.pos_z),
+                "rotation": (0,math.radians(context.scene.rot_y),math.radians(context.scene.rot_z))
             },
             zome_output= self.zome_input
         )
-        
-        info=zome1.info("all")
-
-        print("*****************INFO*****************")
-        #print(info)
-        plane=bpy.data.objects.get("Plane")
+        info=""
+        plane=bpy.data.objects.get("Piano per calcolo aree")#eventually code created
         inner_surface=zome1.inner_surface
-        if inner_surface:
+        if inner_surface and plane:
             verts=mesh_plane_intersection(inner_surface, plane)
             draw_faces(faces=verts,name="poligono area selezionata",joined=True)
             area_selezionata = area_polygon(verts)  # Calcola l'area
-            print(f"area selezionata: {area_selezionata:.2f} m2")  # Stampa l'area formattata
+            info+=f"area intersezione col piano: {area_selezionata:.2f} m2\n"  # Stampa l'area formattata
         else:
-            print("nessuna superficie su cui calcolare l'area")
-
+            info+="nessuna intersezione con il piano per calcolo aree\n"
+        info+=zome1.info("all")
 
         bpy.context.scene.report_text=info
         bpy.context.scene.is_updating = False
-
         return {'FINISHED'}
 
 def limit_data(scene): #called after updates
@@ -212,15 +207,48 @@ def register():
     )
     #MODIFICATIONS:
     bpy.types.Scene.expand_modifications = bpy.props.BoolProperty(default=False)
-    bpy.types.Scene.rotation = bpy.props.FloatProperty(
+    bpy.types.Scene.rot_y = bpy.props.FloatProperty(
         name="Rotazione",
         description="Rotazione dello zome",
         default=0.0,
         min=0.0,
         max=360.0,
         update=basic_data_updated
-    )
 
+    )
+    bpy.types.Scene.rot_z = bpy.props.FloatProperty(
+        name="Orientamento",
+        description="Orientamento dello zome",
+        default=0.0,
+        min=0.0,
+        max=360.0,
+
+        update=basic_data_updated
+    )
+    bpy.types.Scene.pos_x = bpy.props.FloatProperty(
+        name="Posizione N-S",
+        description="Posizione N-S dello zome",
+        default=0.0,
+        min=-20.0,
+        max=20.0,
+        update=basic_data_updated
+    )
+    bpy.types.Scene.pos_y = bpy.props.FloatProperty(
+        name="Posizione E-W",
+        description="Posizione E-W dello zome",
+        default=0.0,
+        min=-20.0,
+        max=20.0,
+        update=basic_data_updated
+    )
+    bpy.types.Scene.pos_z = bpy.props.FloatProperty(
+        name="Altitudine",
+        description="Altitudine dello zome",
+        default=0.0,
+        min=-20.0,
+        max=20.0,
+        update=basic_data_updated
+    )
     bpy.types.Scene.longitudinal_cut = bpy.props.FloatProperty(
         name="Taglio longitudinale",
         description="Taglio longitudinale",
@@ -348,11 +376,16 @@ def unregister():
         del bpy.types.Scene.edges        
         del bpy.types.Scene.show_barycenter
         del bpy.types.Scene.expand_modifications
-        del bpy.types.Scene.rotation
+        del bpy.types.Scene.rot_y
+        del bpy.types.Scene.rot_z
+        del bpy.types.Scene.pos_x
+        del bpy.types.Scene.pos_y
+        del bpy.types.Scene.pos_z
         del bpy.types.Scene.longitudinal_cut
         del bpy.types.Scene.top_modifications_type
         del bpy.types.Scene.top_modifications_levels
         del bpy.types.Scene.top_new_height
+
         del bpy.types.Scene.expand_construction_method
         del bpy.types.Scene.show_beams
         del bpy.types.Scene.beam_width
