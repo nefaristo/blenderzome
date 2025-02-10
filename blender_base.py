@@ -109,10 +109,15 @@ def rename(new_name): #resets name avoiding the ".001" suffix
     if new_name in bpy.data.collections:
         existing_collection = bpy.data.collections[new_name]
         bpy.data.collections.remove(existing_collection)
+
+    if new_name in bpy.data.materials:
+        existing_material = bpy.data.materials[new_name]
+        bpy.data.materials.remove(existing_material)
     
     return new_name
 
 # GEOMETRY:
+
 
 def cleanup_polygon(verts, tolerance=0.001): 
     # Rimuovi duplicati considerando la tolleranza
