@@ -190,7 +190,7 @@ class Zome:
         if self.modifications["top_modifications_type"] != "none":#top cut/top reduction
             self.vertices=self.top_mod_vertices(vertices=self.vertices,basic=self.basic,type=self.modifications["top_modifications_type"],levels=self.modifications["top_modifications_levels"],new_height=self.modifications["top_new_height"]) #involves the modification of the vertices set (adding,deleting)
         self.barycenter=self.set_barycenter(self.vertices)        
-        self.faces_by_shape,self.hortogonal_faces=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
+        self.hortogonal_faces=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
         self.set_RT() #roto-translate all the vertices and the barycenter
 
         #FIRST SET FACES, THEN RT, THEN USING FACES!        
@@ -200,7 +200,7 @@ class Zome:
         if self.show["faces"]:
             faces_collection = bpy.data.collections.new(rename(self.basic["name"]+"_faces"))
             self.main_collection.children.link(faces_collection)
-            materials_by="layer_index"     
+            materials_by="shape_key_number" #"layer_index" | "radial_index"     
             faces=[]
             face_vertices=[] 
             #faces_collection.objects.link(self.inner_surface)
@@ -358,7 +358,6 @@ class Zome:
 
     def set_faces(self,vertices,cut_angle=0,adj_layers_distance=0.1): #SVSV only valid BEFORE rotation and translation
         faces_dict = {}
-        by_types = [] # list of forms in the layer, each element is a list of form type with the list of faces
         hortogonal_faces=[]
         cut_angle/=2
         #MAIN FACES:
@@ -366,13 +365,11 @@ class Zome:
         top_face=[]
         stepalpha=self.basic["alpha"]/2 #central vertixes are alternated between  two adjacent layers, so N is furtherly divided by 2
         for layer_index in range(len(vertices)): 
-            new_layer_faces = []#all info in a [layer_index][face_index] list
-            added_shape_keys = {}
             this_count=len(vertices[layer_index])
             prev_count=-1 if layer_index==0 else len(vertices[layer_index-1])
-            next_count=-1 if layer_index==len(vertices)-1 else len(vertices[layer_index+1])  
+            next_count=-1 if layer_index==len(vertices)-1 else len(vertices[layer_index+1])
+            max_shape_index={}#stores the max index by shape_key 
             if(len(vertices[layer_index])>1):
-                added_index=0 # if a face is not added, radial_index is not correct anymore
                 for radial_index in range(this_count):#  
                     # region 1) IDENTIFY VERTICES BY POSITION WITHIN THE FACE:
                     N=None if next_count==-1 else  vertices[layer_index+1][0] if next_count==1 else vertices[layer_index+1][(radial_index+1) % next_count]
@@ -415,9 +412,12 @@ class Zome:
                         "vertices":None,
                         "vertices_names":None,
                         "edge_names":None,
+                        "shape_key":None,
+                        "shape_index":None,
                     }
                     #MIDDLE UPSIDE DOWN TRIANGLE:
                     if N is not None and abs(N[2]-W[2])<adj_layers_distance:# this layer is overlapping with N (the next one): upside down triangle                            
+
                         new_face["layer_type"] = ["middle", "top"]  # Modifica per avere una lista
                         new_face["form_type"] = "upside_down_triangle"
                     #MIDDLE TRIANGLE:                           
@@ -437,8 +437,9 @@ class Zome:
                         new_face["layer_type"] = "top"
                         new_face["form_type"] = "upside_down_triangle"
                     #endregion         
-                    new_face["type_key"]=str(new_face["layer_index"])+"_"+str(new_face["form_type"])+"_"+str(new_face["long_cut_type"])#unique key for actual form 
-                    # region 4) SET VERTICES , by_type and top & bottom faces:                    
+                    new_face["shape_key"]=str(new_face["layer_index"])+"_"+str(new_face["form_type"])+"_"+str(new_face["long_cut_type"])#unique key for actual form 
+                    new_face["shape_key_number"] = 1000 + sum(ord(char) for char in new_face["shape_key"]) % 9000
+                    # region 4) SET VERTICES , by type and top & bottom faces:                    
                     match new_face["form_type"]:
                         case "triangle":
                             match new_face["long_cut_type"]:
@@ -495,20 +496,24 @@ class Zome:
                                     new_face["vertices_names"]=["E","N","S"]
                                     new_face["edge_names"]=["NE","W","SE"]
                     #endregion
-                    # region 5) ADD TO BY_TYPES:
-                    
+                    # region 5) ADD TO BY TYPES:                    
                     if new_face["on"]:
-                        if new_face["type_key"] not in added_shape_keys:
-                            added_shape_keys[new_face["type_key"]] = []                              
-                        new_layer_faces.append(new_face)
-                        added_shape_keys[new_face["type_key"]].append(added_index)
+                        print(f"ricerca di {new_face['shape_key']}:")
+                        if new_face["shape_key"] not in max_shape_index:  # Se la shape_key non è presente, è la prima volta che appare
+                            max_shape_index[new_face["shape_key"]]=0#starts
+                            print(f"PRIMO!")
+                        else:
+                            max_shape_index[new_face["shape_key"]]+=1
+                        new_face["shape_index"]=max_shape_index[new_face["shape_key"]]
+                        
+                        print(f" {new_face['layer_index']},{new_face['radial_index']}: {new_face['shape_key']} =>  {new_face['shape_index']}")
+                        
                         self.faces[(new_face["layer_index"],new_face["radial_index"])]=new_face
-                        added_index+=1
                     #endregion
 
-            if len(new_layer_faces) > 0:
-                #faces.append(new_layer_faces)
-                by_types.append(added_shape_keys) 
+
+
+
             if len(bottom_face)>0:
                 bottom_face=cleanup_polygon(bottom_face)
                 bottom_face.reverse() #faces order is ccw looking from above, so this is the opposite and has to be reversed
@@ -519,10 +524,7 @@ class Zome:
             for layer_index, layer in enumerate(faces):
                 for face_index, face in enumerate(layer):
                     print(f">Face {layer_index}/{face_index}: {face['form_type']} {face['long_cut_type']} {face['layer_type']} {face['vertices_names']} {face['radial_index']}")
-        if False:#debug: by type (list of dictionaries)
-            for layer_index, layer in enumerate(by_types):
-                for key, numbers in added_shape_keys.items():
-                    print(f"Layer {layer_index}, Chiave: {key}, Numeri: {numbers}")
+
         if False: #debug: bottom and top faces
             print("bottom faces:",bottom_face)
             print("top faces:",top_face)
@@ -533,11 +535,10 @@ class Zome:
 
             for key, face in sorted_faces:
                 # Crea una copia di face per la stampa
-                self.print_face(key)
-        if False:
-            for key in self.faces.keys():
-                print(self.print_face(key))
-        return by_types, {"bottom_face":bottom_face, "top_face":top_face}
+                pass#print(self.print_face(key))
+
+
+        return {"bottom_face":bottom_face, "top_face":top_face}
     
     def print_face(self,key):
         results=""
