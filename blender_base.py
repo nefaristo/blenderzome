@@ -118,7 +118,6 @@ def rename(new_name): #resets name avoiding the ".001" suffix
 
 # GEOMETRY:
 
-
 def cleanup_polygon(verts, tolerance=0.001): 
     # Rimuovi duplicati considerando la tolleranza
     unique_verts = []

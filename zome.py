@@ -174,9 +174,8 @@ class Zome:
         #GEOMETRY DATA:
         self.vertices = []
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
-        self.face_dict={}
-        self.faces = [] #[layer][radial] = {"type":"triangle","vertices":[(x,y,z),(x,y,z),(x,y,z)]}
-        self.faces_by_type = [] #eg: [ {'rhombus_EAST': [0], 'rhombus_FULL': [1, 2, 3, 4], 'rhombus_WEST': [5]} , other layers...]
+        self.faces={}
+        self.faces_by_shape = [] #eg: [ {'rhombus_EAST': [0], 'rhombus_FULL': [1, 2, 3, 4], 'rhombus_WEST': [5]} , other layers...]
         self.hortogonal_faces={}
         #BLENDER OBJECTS AND COLLECTIONS:
         self.inner_surface=None  
@@ -191,27 +190,49 @@ class Zome:
         if self.modifications["top_modifications_type"] != "none":#top cut/top reduction
             self.vertices=self.top_mod_vertices(vertices=self.vertices,basic=self.basic,type=self.modifications["top_modifications_type"],levels=self.modifications["top_modifications_levels"],new_height=self.modifications["top_new_height"]) #involves the modification of the vertices set (adding,deleting)
         self.barycenter=self.set_barycenter(self.vertices)        
-        self.faces,self.faces_by_type,self.hortogonal_faces=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
-        
-        #ONLY AFTER SETTING THE FACES!!!!:
+        self.faces_by_shape,self.hortogonal_faces=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
         self.set_RT() #roto-translate all the vertices and the barycenter
-        #DRAWING:     
-        layered_materials = []
-        for layer_index, layer in enumerate(self.faces):
-            layer_materials = []  # Lista per i materiali di ciascun layer
-            for face_index, face in enumerate(layer):
-                layer_materials.append(self.basic_materials[face_index])
-            layered_materials.append(layer_materials)  # Aggiungi i materiali del layer
-        indexed_materials=[]
-        for layer_index, layer in enumerate(self.faces):
-            indexed_materials.append([])
-            for face_index, face in enumerate(layer):
-                indexed_materials[layer_index].append(self.basic_materials[face["radial_index"]%len(self.basic_materials)])
 
-        faces=self.faces_feature(faces=self.faces,key="vertices")
-        self.inner_surface=draw_faces(faces=faces,name=rename(self.name+"_faces_joined"),materials=layered_materials,joined=True,fill=True)
+        #FIRST SET FACES, THEN RT, THEN USING FACES!        
+        faces=self.get_faces_feature(key="vertices")
+        self.inner_surface=draw_faces(faces=faces,name=rename(self.basic["name"]+"_faces_joined"),materials=None,joined=True,fill=True)
+        #DRAWING:      
+        if self.show["faces"]:
+            faces_collection = bpy.data.collections.new(rename(self.basic["name"]+"_faces"))
+            self.main_collection.children.link(faces_collection)
+            materials_by="layer_index"     
+            faces=[]
+            face_vertices=[] 
+            #faces_collection.objects.link(self.inner_surface)
+            for key, face in self.faces.items():
+                if face["on"]:  # Filtra solo le facce attive
+                    faces.append(face)
+                    face_vertices.append(face["vertices"])
+            #più compatto:
+            faces=[face for face in self.faces.values() if face["on"]]
+            faces_vertices = self.get_faces_feature(key="vertices")
+        
+            if False:
+            
+                draw_faces(faces=face_vertices,name=rename(self.basic["name"]+"_faces_from_dict"),materials=materials,joined=True,fill=True,add_to_collection=faces_collection)                
+            else:           
+                for index,face in enumerate(faces):
+                    dface=draw_faces(
+                        faces=face["vertices"],
+                        name=rename(f"{self.basic['name']}_face2_{face['layer_index']}_{face['radial_index']}"),
+                        materials=self.basic_materials[face[materials_by]%len(self.basic_materials)],
+                        joined=True,
+                        fill=True,
+                        add_to_collection=faces_collection) 
+                    for key, value in face.items():
+                        dface[key]=value
+            i=0
+            for key, value in self.hortogonal_faces.items():
+                material=self.basic_materials[i]
+                draw_faces(faces=value, name=rename(self.name+"_"+key), materials=material, joined=False, fill=True, add_to_collection=faces_collection)         
+                i+=1        
+
         if self.show["vertices"]:
-
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             self.main_collection.children.link(vertices_collection)
             draw_vertices(points=self.vertices,name=f"{self.basic['name']}_vertices",size=self.basic['ZH']*0.005,add_to_collection=vertices_collection)
@@ -223,37 +244,8 @@ class Zome:
             z_axis = (self.RTM["R"] @ mathutils.Vector((0,0,1))).normalized()
             draw_vertices(points=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis_top",size=self.basic['ZH']*0.01,joined=True,add_to_collection=utilities_collection)
             draw_segment(start=self.local.location,end=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis",add_to_collection=utilities_collection)
-        if self.show["faces"]:
-            faces_collection = bpy.data.collections.new(rename(self.name+"_faces"))
-            self.main_collection.children.link(faces_collection)   
-            #draw_faces(faces=faces,name=rename(self.name+"_face"),materials=layered_materials,joined=True,fill=True,add_to_collection=self.main_collection)         
-            
-            for layer_index, layer in enumerate(self.faces):
-                for face_index, face in enumerate(layer):
-                    material=self.basic_materials[face["radial_index"]%len(self.basic_materials)]
-                    dface=draw_faces(
-                        faces=face["vertices"],
-                        name=rename(f"{self.basic['name']}_face_{layer_index}_{face['radial_index']}"),
-                        materials=material,
-                        joined=True,
-                        fill=True,
-                        add_to_collection=faces_collection) 
-                    for key, value in face.items():
-                        dface[key]=value
 
-
-
-
-
-
-
-            #draw_faces(faces=faces, name=rename(self.name+"_face"), materials=indexed_materials, joined=False, fill=True, add_to_collection=faces_collection)         
-            i=0
-            for key, value in self.hortogonal_faces.items():
-                material=self.basic_materials[i]
-                draw_faces(faces=value, name=rename(self.name+"_"+key), materials=material, joined=False, fill=True, add_to_collection=faces_collection)         
-                i+=1
-                
+  
         self.beams_collection = None
         self.external_collection = None
         if self.show["beams"] == 1:
@@ -265,7 +257,7 @@ class Zome:
         #memoriazza la somma di tutit i vertici:
         report+=f"{sum(len(vertex) for vertex in self.vertices)} vertici in {len(self.vertices)} strati:"
         report+=f"{[len(vertex) for vertex in self.vertices]}\n"
-        report+=f"{sum(len(face) for face in self.faces)} facce in {len(self.faces)} strati:"
+        report+=f"{sum(1 for face in self.faces.values() if face['on'])} facce in {len(self.faces)} strati:"
         self.print(type="report",text=report)
 
     def initialize_blender(self,name,silent=False,alpha=0.5):
@@ -365,23 +357,17 @@ class Zome:
         return vertices
 
     def set_faces(self,vertices,cut_angle=0,adj_layers_distance=0.1): #SVSV only valid BEFORE rotation and translation
-        faces = [] # all info in a [layer_index][face_index] list
         faces_dict = {}
         by_types = [] # list of forms in the layer, each element is a list of form type with the list of faces
         hortogonal_faces=[]
         cut_angle/=2
-        keydictionary={"vertices":"vertices: list of vertices",
-                       "vertices_names":"vertices_names: list of vertices types, eg: [('E','N','W')] for a rhombus",
-                       "layer_type":"layer_type: top | middle | bottom",
-                       "form_type":"form_type: triangle | upside_down_triangle | rhombus; actual shape is determined also by the longitudinal cut type",
-                       "long_cut_type":"longitudinal cut type: IN | EAST | WEST for: all the face | only east side | only west side"}
         #MAIN FACES:
         bottom_face=[]
         top_face=[]
         stepalpha=self.basic["alpha"]/2 #central vertixes are alternated between  two adjacent layers, so N is furtherly divided by 2
         for layer_index in range(len(vertices)): 
             new_layer_faces = []#all info in a [layer_index][face_index] list
-            new_layer_by_types = {}
+            added_shape_keys = {}
             this_count=len(vertices[layer_index])
             prev_count=-1 if layer_index==0 else len(vertices[layer_index-1])
             next_count=-1 if layer_index==len(vertices)-1 else len(vertices[layer_index+1])  
@@ -400,149 +386,168 @@ class Zome:
                     a_W=math.degrees(math.fabs(math.atan2(W[1],W[0])))
                     a_H=math.degrees(math.fabs(math.atan2(H[1],H[0])))
                     if (a_E>=cut_angle and a_W>=cut_angle): #the face is all outside of the cut angle=>IN
-                        long_cut_type="FULL"
+                        long_cut_type="full"
                     elif a_H>=cut_angle: #most of the face is in: still IN
-                        long_cut_type="FULL"                    
-                    elif a_E<cut_angle and a_W<cut_angle: #the face is all OUT
-                        long_cut_type="OUT"
+                        long_cut_type="full"                    
+                    elif a_E<cut_angle and a_W<cut_angle: #the face is all out
+                        long_cut_type="out"
                     elif a_E<cut_angle and a_W>=cut_angle: #the face is IN on the W side
-                        long_cut_type="WEST"
+                        long_cut_type="west_side"
                     elif a_E>=cut_angle and a_W<cut_angle: #the face is IN on the E side
-                        long_cut_type="EAST"
+                        long_cut_type="east_side"
                     else:
                         long_cut_type="?" # SVSV should never happen
                     #endregion
-                    # region 3) ACTUAL FACE SETTING: 
+                    # region 3) ACTUAL FACE INFO SETTING: 
+                    radial_angle=math.degrees(math.atan2(H[1],H[0]))
+                    if radial_angle<0:
+                        radial_angle+=360
                     new_face=None
-                    new_face_info={"long_cut_type":long_cut_type}
-                    if long_cut_type!="OUT":
-                        #MIDDLE UPSIDE DOWN TRIANGLE:
-                        if N is not None and abs(N[2]-W[2])<adj_layers_distance:# this layer is overlapping with N (the next one): upside down triangle                            
-                            new_face_info["layer_type"] = ["middle", "top"]  # Modifica per avere una lista
-                            new_face_info["form_type"] = "upside_down_triangle"
-                        #MIDDLE TRIANGLE:                           
-                        elif S is not None and abs(S[2]-W[2])<adj_layers_distance:# this layer is overlapping with S (the previous one): middle triangle
-                            new_face_info["layer_type"] = "middle"
-                            new_face_info["form_type"] = "triangle"
-                        #MIDDLE AND TOP RHOMBI:
-                        elif N is not None and S is not None: # all 4 are there: rhombus 
-                            new_face_info["layer_type"] = "middle" if layer_index<len(vertices)-2 else "top"
-                            new_face_info["form_type"] = "rhombus"
-                        #BOTTOM TRIANGLE: 
-                        elif N is not None and S is None: #lower is missing: bottom triangle 
-                            new_face_info["layer_type"] = "bottom"
-                            new_face_info["form_type"] = "triangle"
-                        #TOP UPSIDE DOWN TRIANGLE: 
-                        elif N is None and S is not None: #lower is missing: upside down triangle (top)
-                            new_face_info["layer_type"] = "top"
-                            new_face_info["form_type"] = "upside_down_triangle"
-                    #endregion                        
-                    # region 4) SET VERTICES , by_type and top & bottom faces:
-                    if new_face_info["long_cut_type"] != "OUT": 
-                        new_face=new_face_info
-                        angle_interval=math.degrees(math.atan2(H[1],H[0]))
-                        if angle_interval<0:
-                            angle_interval+=360
-                        new_face["angle_interval"]=angle_interval
-                        new_face["radial_index"]=round(new_face["angle_interval"]/stepalpha)
-                        match new_face["form_type"]:
-                            case "triangle":
-                                match new_face["long_cut_type"]:
-                                    case "FULL":
-                                        new_face["vertices"]=[E, N, W] 
-                                        new_face["vertices_names"]=["E","N","W"]
-                                        new_face["edge_names"]=["NE","NW","S"]
-                                        if new_face["layer_type"]=="bottom":
-                                            bottom_face.extend([W,E])   
-                                    case "WEST":
-                                        new_face["vertices"]=[H,N,W]
-                                        new_face["vertices_names"]=["H","N","W"]
-                                        new_face["edge_names"]=["E","NW","S"]
-                                        if new_face["layer_type"]=="bottom":
-                                            bottom_face.extend([W,H])
-                                    case "EAST":
-                                        new_face["vertices"]=[E,N,H]
-                                        new_face["vertices_names"]=["E","N","H"]
-                                        new_face["edge_names"]=["NE","W","S"]
-                                        if new_face["layer_type"]=="bottom":
-                                            bottom_face.extend([H,E])
-                            case "upside_down_triangle":
-                                match new_face["long_cut_type"]:
-                                    case "FULL":
-                                        new_face["vertices"]=[E, W, S]
-                                        new_face["vertices_names"]=["E","W","S"]
-                                        new_face["edge_names"]=["N","SW","SE"]
-                                        if new_face["layer_type"]=="top":
-                                            top_face.extend([W, E])
-                                    case "WEST":
-                                        new_face["vertices"]=[H, W , S ]   
-                                        new_face["vertices_names"]=["H","W","S"]
-                                        new_face["edge_names"]=["N","SW","E"]
-                                        if new_face["layer_type"]=="top":
-                                            top_face.extend([W, H])
-                                    case "EAST":
-                                        new_face["vertices"]=[E, H, S]
-                                        new_face["vertices_names"]=["E","H","S"]
-                                        new_face["edge_names"]=["N","W","SE"]
-                                        if new_face["layer_type"]=="top":
-                                            top_face.extend([H,E])
-                            case "rhombus":
-                                match new_face["long_cut_type"]:
 
-
-                                    case "FULL":
-                                        new_face["vertices"]=[E, N, W, S]
-                                        new_face["vertices_names"]=["E","N","W","S"]
-                                        new_face["edge_names"]=["NE","NW","SW","SE"]
-                                    case "WEST":
-                                        new_face["vertices"]=[N, W, S]
-                                        new_face["vertices_names"]=["N","W","S"]
-                                        new_face["edge_names"]=["NW","SW","E"]
-                                    case "EAST":
-                                        new_face["vertices"]=[E, N, S]
-                                        new_face["vertices_names"]=["E","N","S"]
-                                        new_face["edge_names"]=["NE","W","SE"]
-                        def by_type_key(face_info):#unique key for actual form 
-                            return face_info["form_type"]+"_"+face_info["long_cut_type"]
-                        if by_type_key(new_face) not in new_layer_by_types:
-                            new_layer_by_types[by_type_key(new_face)] = []                              
+                    new_face={
+                        "on":long_cut_type!="out",
+                        "layer_index":layer_index,
+                        "radial_index":round(radial_angle/stepalpha),
+                        "radial_angle":radial_angle,
+                        "long_cut_type":long_cut_type,
+                        "layer_type":None,
+                        "form_type":None,
+                        "vertices":None,
+                        "vertices_names":None,
+                        "edge_names":None,
+                    }
+                    #MIDDLE UPSIDE DOWN TRIANGLE:
+                    if N is not None and abs(N[2]-W[2])<adj_layers_distance:# this layer is overlapping with N (the next one): upside down triangle                            
+                        new_face["layer_type"] = ["middle", "top"]  # Modifica per avere una lista
+                        new_face["form_type"] = "upside_down_triangle"
+                    #MIDDLE TRIANGLE:                           
+                    elif S is not None and abs(S[2]-W[2])<adj_layers_distance:# this layer is overlapping with S (the previous one): middle triangle
+                        new_face["layer_type"] = "middle"
+                        new_face["form_type"] = "triangle"
+                    #MIDDLE AND TOP RHOMBI:
+                    elif N is not None and S is not None: # all 4 are there: rhombus 
+                        new_face["layer_type"] = "middle" if layer_index<len(vertices)-2 else "top"
+                        new_face["form_type"] = "rhombus"
+                    #BOTTOM TRIANGLE: 
+                    elif N is not None and S is None: #lower is missing: bottom triangle 
+                        new_face["layer_type"] = "bottom"
+                        new_face["form_type"] = "triangle"
+                    #TOP UPSIDE DOWN TRIANGLE: 
+                    elif N is None and S is not None: #lower is missing: upside down triangle (top)
+                        new_face["layer_type"] = "top"
+                        new_face["form_type"] = "upside_down_triangle"
+                    #endregion         
+                    new_face["type_key"]=str(new_face["layer_index"])+"_"+str(new_face["form_type"])+"_"+str(new_face["long_cut_type"])#unique key for actual form 
+                    # region 4) SET VERTICES , by_type and top & bottom faces:                    
+                    match new_face["form_type"]:
+                        case "triangle":
+                            match new_face["long_cut_type"]:
+                                case "full":
+                                    new_face["vertices"]=[E, N, W] 
+                                    new_face["vertices_names"]=["E","N","W"]
+                                    new_face["edge_names"]=["NE","NW","S"]
+                                    if new_face["layer_type"]=="bottom":
+                                        bottom_face.extend([W,E])   
+                                case "west_side":
+                                    new_face["vertices"]=[H,N,W]
+                                    new_face["vertices_names"]=["H","N","W"]
+                                    new_face["edge_names"]=["E","NW","S"]
+                                    if new_face["layer_type"]=="bottom":
+                                        bottom_face.extend([W,H])
+                                case "east_side":
+                                    new_face["vertices"]=[E,N,H]
+                                    new_face["vertices_names"]=["E","N","H"]
+                                    new_face["edge_names"]=["NE","W","S"]
+                                    if new_face["layer_type"]=="bottom":
+                                        bottom_face.extend([H,E])
+                        case "upside_down_triangle":
+                            match new_face["long_cut_type"]:
+                                case "full":
+                                    new_face["vertices"]=[E, W, S]
+                                    new_face["vertices_names"]=["E","W","S"]
+                                    new_face["edge_names"]=["N","SW","SE"]
+                                    if new_face["layer_type"]=="top":
+                                        top_face.extend([W, E])
+                                case "west_side":
+                                    new_face["vertices"]=[H, W , S ]   
+                                    new_face["vertices_names"]=["H","W","S"]
+                                    new_face["edge_names"]=["N","SW","E"]
+                                    if new_face["layer_type"]=="top":
+                                        top_face.extend([W, H])
+                                case "east_side":
+                                    new_face["vertices"]=[E, H, S]
+                                    new_face["vertices_names"]=["E","H","S"]
+                                    new_face["edge_names"]=["N","W","SE"]
+                                    if new_face["layer_type"]=="top":
+                                        top_face.extend([H,E])
+                        case "rhombus":
+                            match new_face["long_cut_type"]:
+                                case "full":
+                                    new_face["vertices"]=[E, N, W, S]
+                                    new_face["vertices_names"]=["E","N","W","S"]
+                                    new_face["edge_names"]=["NE","NW","SW","SE"]
+                                case "west_side":
+                                    new_face["vertices"]=[N, W, S]
+                                    new_face["vertices_names"]=["N","W","S"]
+                                    new_face["edge_names"]=["NW","SW","E"]
+                                case "east_side":
+                                    new_face["vertices"]=[E, N, S]
+                                    new_face["vertices_names"]=["E","N","S"]
+                                    new_face["edge_names"]=["NE","W","SE"]
+                    #endregion
+                    # region 5) ADD TO BY_TYPES:
+                    
+                    if new_face["on"]:
+                        if new_face["type_key"] not in added_shape_keys:
+                            added_shape_keys[new_face["type_key"]] = []                              
                         new_layer_faces.append(new_face)
-                        new_layer_by_types[by_type_key(new_face)].append(added_index)
-                        self.face_dict[(layer_index,new_face["radial_index"])]=new_face
+                        added_shape_keys[new_face["type_key"]].append(added_index)
+                        self.faces[(new_face["layer_index"],new_face["radial_index"])]=new_face
                         added_index+=1
                     #endregion
+
             if len(new_layer_faces) > 0:
-                faces.append(new_layer_faces)
-                by_types.append(new_layer_by_types) 
+                #faces.append(new_layer_faces)
+                by_types.append(added_shape_keys) 
             if len(bottom_face)>0:
                 bottom_face=cleanup_polygon(bottom_face)
                 bottom_face.reverse() #faces order is ccw looking from above, so this is the opposite and has to be reversed
             if len(top_face)>0:
                 top_face=cleanup_polygon(top_face)
         #DEBUG:
-        if True:# debug: all faces
+        if False:# debug: all faces
             for layer_index, layer in enumerate(faces):
                 for face_index, face in enumerate(layer):
                     print(f">Face {layer_index}/{face_index}: {face['form_type']} {face['long_cut_type']} {face['layer_type']} {face['vertices_names']} {face['radial_index']}")
         if False:#debug: by type (list of dictionaries)
             for layer_index, layer in enumerate(by_types):
-                for key, numbers in new_layer_by_types.items():
+                for key, numbers in added_shape_keys.items():
                     print(f"Layer {layer_index}, Chiave: {key}, Numeri: {numbers}")
         if False: #debug: bottom and top faces
             print("bottom faces:",bottom_face)
             print("top faces:",top_face)
-        return faces, by_types, {"bottom_face":bottom_face, "top_face":top_face}
+        
+        if True:#ITEREATE ON DICTIOPNARY FACE
+            # Ordina le facce per layer
+            sorted_faces = sorted(self.faces.items(), key=lambda item: item[1].get("layer", 0))
 
-    def set_adjacent_faces(self,faces):
-        outer_faces=[]
-        for layer_index,layer in enumerate(faces):
-            adjacents=[] # they are: faces left and right of the next layer + next next layer  
-            if layer_index<len(faces)-1:#there is at least a next layer
-                for face_index,face in enumerate(layer):
-                    adjacents.append(faces[layer_index+1][face_index],faces[layer_index+1][face_index+1])
-                    if layer_index<len(faces)-2:#there is a next next layer
-                        adjacents.append(faces[layer_index+2][face_index])
-        return outer_faces
+            for key, face in sorted_faces:
+                # Crea una copia di face per la stampa
+                self.print_face(key)
+        if False:
+            for key in self.faces.keys():
+                print(self.print_face(key))
+        return by_types, {"bottom_face":bottom_face, "top_face":top_face}
+    
+    def print_face(self,key):
+        results=""
+        face=self.faces[key]
+        face_copy = face.copy()
+        face_copy["vertices"] = [f"({round(vertex.x, 2)}, {round(vertex.y, 2)}, {round(vertex.z, 2)})" for vertex in face["vertices"]]
+        results+=f"Face {key}:\n"
+        for property, value in face_copy.items():
+            results+=f"  {property}: {value}\n"
+        return results
 
     def set_barycenter(self,vertices):
         barycenter = (0,0,0)      
@@ -573,19 +578,19 @@ class Zome:
                     self.vertices[layer_index][vertex_index]=vertex
             #barycenter:
             self.barycenter=self.RTM["M"]@mathutils.Vector(self.barycenter)
-            #faces:
-            faces=[]
-            for layer_index,layer in enumerate(self.faces):
-                new_layer=[]
-                for face_index,face in enumerate(layer): 
-                    for vertex_index,vertex in enumerate(face["vertices"]):
-                        face["vertices"][vertex_index]= self.RTM["M"]@vertex
-                    new_layer.append(face)
-                faces.append(new_layer)
-            self.faces=faces   
+            
+            #faces_dict:
+            for key, face in self.faces.items():
+                face_vertices=[]
+                for vertex_index,vertex in enumerate(face["vertices"]):
+                    face_vertices.append(self.RTM["M"]@vertex)
+                self.faces[key]["vertices"]=face_vertices
+
             #hortogonal_faces:
             for key, face in self.hortogonal_faces.items():
                 for vertex_index,vertex in enumerate(face):
+
+
                     face[vertex_index]=self.RTM["M"]@vertex
                 self.hortogonal_faces[key]=face
 
@@ -606,7 +611,7 @@ class Zome:
         t_0=time.time()
         prototypes=[]
         copies=[]
-        for layer_index, layer in enumerate(self.faces_by_type):
+        for layer_index, layer in enumerate(self.faces_by_shape):
             prototypes_layer=[]
             copies_layer=[]
             for face_type, faces in layer.items():
@@ -709,10 +714,12 @@ class Zome:
                 self.external_collection = bpy.data.collections.new(rename(self.name + "_ext_constraints"))
                 self.main_collection.children.link(self.external_collection)
                 #create a prototype of empty objects w/ external constraints w/o adding them to the collection:
-                face_type=self.faces_feature(self.faces,key="form_type")
+                face_type=self.get_faces_feature(key="form_type")
                 t_0=time.time()
-                for layer_index, layer in enumerate(self.faces_feature(self.faces,key="vertices")):
+                for layer_index, layer in enumerate(self.get_faces_feature(key="vertices")):
                     layer_type=face_type[layer_index]                                    
+
+
 
                     for face in layer:  # Itera direttamente su face
                         for vertex_index, vertex in enumerate(face["vertices"]):  # Assicurati che face sia un dizionario
@@ -879,10 +886,11 @@ class Zome:
             return result
         match type:   
             case "face_type":
-                face_type=self.faces_feature(self.faces,key="form_type")
+                face_type=self.get_faces_feature(key="form_type")
                 return face_type[target_index] if len(face_type)>target_index else 0
             case "height":
                 #return layer[0][2]-self.vertices[0][0][2] not anymore for rotations: 
+
 
                 # now it's distance between the projections of the points on the axis
                 return np.linalg.norm(point_on_axis(layer[0], self.local.location, self.local.rotation_euler.z) - point_on_axis(self.vertices[0][0], self.local.location, self.local.rotation_euler.z))
@@ -921,6 +929,20 @@ class Zome:
                 for face_index,face in enumerate(layer): 
                     new_layer.append(face[key])
                 result.append(new_layer)
+        return result
+
+    def get_faces_feature(self, key):
+        result = []
+        if key in ["vertices", "vertices_names", "layer_type", "form_type", "long_cut_type"]:
+            for (layer_index, radial_index), face in self.faces.items():
+                if isinstance(face, dict) and key in face:  # Controlla se face è un dizionario e se contiene la chiave
+                    if isinstance(face[key], tuple):  # Controlla se il valore è una tupla
+                        result.append(face[key])  # Aggiungi la tupla direttamente
+                    else:
+                        result.append(face[key])  # Aggiungi il valore
+                else:
+                    # Gestisci il caso in cui face non è un dizionario o non contiene la chiave
+                    print(f"Warning: face is not a dict or missing key '{key}': {face}")
         return result
 
 def find_theta(N,S,ZH,target_value,type="base_area"):
@@ -965,7 +987,7 @@ def find_theta(N,S,ZH,target_value,type="base_area"):
     constraint.spring_stiffness_y = 10.0
     constraint.spring_stiffness_z = 10.0
 
-    # Imposta l'ammortizzazione della molla (valore tipico)
+    # Imposta l'ammortizzamento della molla (valore tipico)
     constraint.spring_damping_x = 0.5
     constraint.spring_damping_y = 0.5
     constraint.spring_damping_z = 0.5
@@ -979,3 +1001,4 @@ def find_theta(N,S,ZH,target_value,type="base_area"):
 
 
 
+#
