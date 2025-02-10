@@ -498,10 +498,8 @@ class Zome:
                     #endregion
                     # region 5) ADD TO BY TYPES:                    
                     if new_face["on"]:
-                        print(f"ricerca di {new_face['shape_key']}:")
                         if new_face["shape_key"] not in max_shape_index:  # Se la shape_key non è presente, è la prima volta che appare
                             max_shape_index[new_face["shape_key"]]=0#starts
-                            print(f"PRIMO!")
                         else:
                             max_shape_index[new_face["shape_key"]]+=1
                         new_face["shape_index"]=max_shape_index[new_face["shape_key"]]
@@ -510,10 +508,6 @@ class Zome:
                         
                         self.faces[(new_face["layer_index"],new_face["radial_index"])]=new_face
                     #endregion
-
-
-
-
             if len(bottom_face)>0:
                 bottom_face=cleanup_polygon(bottom_face)
                 bottom_face.reverse() #faces order is ccw looking from above, so this is the opposite and has to be reversed
@@ -535,9 +529,7 @@ class Zome:
 
             for key, face in sorted_faces:
                 # Crea una copia di face per la stampa
-                pass#print(self.print_face(key))
-
-
+                print(self.print_face(key))
         return {"bottom_face":bottom_face, "top_face":top_face}
     
     def print_face(self,key):
@@ -590,8 +582,6 @@ class Zome:
             #hortogonal_faces:
             for key, face in self.hortogonal_faces.items():
                 for vertex_index,vertex in enumerate(face):
-
-
                     face[vertex_index]=self.RTM["M"]@vertex
                 self.hortogonal_faces[key]=face
 
@@ -610,75 +600,64 @@ class Zome:
         material_name=self.beam["material_name"]
         tot_beams=0
         t_0=time.time()
-        prototypes=[]
-        copies=[]
-        for layer_index, layer in enumerate(self.faces_by_shape):
-            prototypes_layer=[]
-            copies_layer=[]
-            for face_type, faces in layer.items():
-                #print(f"Layer {layer_index},{face_type}: ")
-                #itera su faces:
-                prototype=None
-                for i,face_index in enumerate(faces):#i is the index of the type, face_index is face identifier
-                    #print(f"{i}:{face_index}")
-                    face=self.faces[layer_index][face_index]
-                    if i==0:#only the first of each kind
-                        prototype=beams_polygon(
-                            add_to_collection=self.beams_collection,
-                            poly_name=f"{self.name}_beam_{layer_index}_{face_index}",
-                            beam_names=face["edge_names"],
-                            polyverts=face["vertices"],
-                            TW=self.beam["TW"],
-                            TT=self.beam["TT"],
-                            method="butt joint ccw",
-                            material_name=material_name
-                        )
-                        prototypes_layer.append(prototype)
-                        if self.physics["on"]: #rigid body and internal constraints
-                            for beam in prototype:
-                                bpy.context.view_layer.objects.active = beam
-                                bpy.ops.rigidbody.object_add()
-                                beam.rigid_body.type = "ACTIVE"
-                                if "volume" in beam:
-                                    beam.rigid_body.mass = self.physics["density"] * beam["volume"]
-                                else:
-                                    print("warning: volume not found in object",beam.name)
-                                beam.rigid_body.restitution = 0.05 #bounciness on blender interface
-                                beam.rigid_body.linear_damping = self.physics["friction"] #could be seen as friction with air
-                                beam.rigid_body.angular_damping = self.physics["friction"] #could be seen as friction with air
-                                beam.rigid_body.friction = self.physics["friction"]  # principalmente contro il pavimento
-                                beam["density"] = self.physics["density"]
-                            if self.physics["internal_type"]=="spring":#apply internal constraints, they can be copied to the other beams changing only the target 
-                                constraints_chain(prototype,stiffness=self.physics["internal_spring_stiffness"],damping=self.physics["internal_spring_damping"])                 
-                    else: #i>0 => duplicate
-                        if True:#i==1:
-                            copied_face=[]
-                            for beam_index, beam in enumerate(prototype):
-                                copied_beam = beam.copy()
-                                suffix_name=face["edge_names"][beam_index] if face["edge_names"][beam_index] in face["edge_names"] else "unknown"
-                                copied_beam.name = rename(f"{self.name}_beam_polygon_{layer_index}_{face_index}_{suffix_name}")#changes only the radial_index in the name
-                                #rotation:[i] steps from the prototype (which had i=0)
-                                #print (f"rotation of {copied_beam.name} of {i*(self.basic['alpha'])}° around {z_axis} + {self.local.location}")
-                                R_=mathutils.Matrix.Rotation(math.radians(self.basic["alpha"]*i), 4, z_axis)
-                                M = T @ R_ @ T_inv  
-                                #M = T_inv @ R_ @ T  
-                                copied_beam.matrix_world = M @ copied_beam.matrix_world  # Applicazione della trasformazione
+        #ordina self.faces per le sue chiavi: layer_index, shape_key, shape_index:
+        sorted_faces = sorted(self.faces.items(), key=lambda item: (item[1]["layer_index"], item[1]["shape_key"], item[1]["shape_index"]))
+        add_to_collection=self.beams_collection
 
-                                self.beams_collection.objects.link(copied_beam)  
-                                copied_face.append(copied_beam)
-                            copies_layer.append(copied_face)
-                prototypes.append(prototypes_layer)
-                copies.append(copies_layer)
-            if self.physics["on"]: #SVSV NEVER CHECKED
-                for layer_index, layer in enumerate(copies):
-                    for copy_index, copy in enumerate(layer):
-                        for beam_index, beam in enumerate(copy):# c) loop over polygon beams be                                   
-                            #now the poly is completed, it can rewrite the target object for rigid body constraints:
-                            if self.physics["internal_type"]=="spring":#which also means physics is on
-                                bpy.context.view_layer.objects.active = beam
-                                beam.rigid_body_constraint.object2 = copies[(layer_index+1)%len(copies)][(copy_index+1)%len(copy)][(beam_index+1)%len(copy)]
+        prototypes={}
+        copies={}
+        for key, face in sorted_faces:
+            if face["shape_index"]==0 :
+                prototype=beams_polygon(
+                    add_to_collection=add_to_collection,
+                    poly_name=f"{self.name}_beam_{face['layer_index']}_{face['radial_index']}",
+                    beam_names=face["edge_names"],
+                    polyverts=face["vertices"],
+                    TW=self.beam["TW"],
+                    TT=self.beam["TT"],
+                    method="butt joint ccw",
+                    material_name=material_name
+                )
+                prototypes[face["shape_key"]] = prototype
+                if self.physics["on"]: #rigid body and internal constraints
+                    for beam in prototype:
+                        bpy.context.view_layer.objects.active = beam
+                        bpy.ops.rigidbody.object_add()
+                        beam.rigid_body.type = "ACTIVE"
+                        if "volume" in beam:
+                            beam.rigid_body.mass = self.physics["density"] * beam["volume"]
+                        else:
+                            print("warning: volume not found in object",beam.name)
+                        beam.rigid_body.restitution = 0.05 #bounciness on blender interface
+                        beam.rigid_body.linear_damping = self.physics["friction"] #could be seen as friction with air
+                        beam.rigid_body.angular_damping = self.physics["friction"] #could be seen as friction with air
+                        beam.rigid_body.friction = self.physics["friction"]  # principalmente contro il pavimento
+                        beam["density"] = self.physics["density"]
+                    if self.physics["internal_type"]=="spring":#apply internal constraints, they can be copied to the other beams changing only the target 
+                        constraints_chain(prototype,stiffness=self.physics["internal_spring_stiffness"],damping=self.physics["internal_spring_damping"])                 
+            else: #duplicates
+                if True:
+                    for beam_index, beam in enumerate(prototypes[face["shape_key"]]):
+                        copied_beam = beam.copy()
+                        suffix_name=face["edge_names"][beam_index] if face["edge_names"][beam_index] in face["edge_names"] else "unknown"
+                        copied_beam.name = rename(f"{self.name}_beam_polygon_{face['layer_index']}_{face['radial_index']}_{suffix_name}")#changes only the radial_index in the name
+                        R_=mathutils.Matrix.Rotation(math.radians(self.basic["alpha"]*face["shape_index"]), 4, z_axis)
+                        M = T @ R_ @ T_inv  
+                        copied_beam.matrix_world = M @ copied_beam.matrix_world  # Applicazione della trasformazione
+                        add_to_collection.objects.link(copied_beam)  
+                        if (face["shape_key"],face["shape_index"]) not in copies:
+                            copies[(face["shape_key"],face["shape_index"])]=[]
+                        copies[(face["shape_key"],face["shape_index"])].append(copied_beam)                
+                    if self.physics["on"]: #SVSV NEVER CHECKED
+                        for shape_key, shape_index in copies:
+                            for beam_index, beam in enumerate(copies[(shape_key,shape_index)]):# c) loop over polygon beams be                                   
+                                #now the poly is completed, it can rewrite the target object for rigid body constraints:
+                                if self.physics["internal_type"]=="spring":#which also means physics is on
+                                    bpy.context.view_layer.objects.active = beam
+                                    beam.rigid_body_constraint.object2 = copies[(shape_key,shape_index+1)%len(copies)][(beam_index+1)%len(copies[(shape_key,shape_index)])]
         print("total time",time.time()-t_0)
         """
+
             times:
             no optimization: 
             16 secs, 30 with physics
