@@ -604,18 +604,22 @@ def constraints_chain(obj_list,loop=True,stiffness=1,damping=0.5):
 
 # DRAWING:
 
-def draw_vertices(points,name=None,size=0.01,joined=False,add_to_collection=None):
+def draw_vertices(points,name=None,size=0.01,material=None,joined=False,add_to_collection=None):
     if isinstance(points, list):
         if joined:
             obj=join_objects(objects_list=points,new_object_name=rename(name))
         else:
             obj=[]
             for index, point in enumerate(points):
-                obj.append(draw_vertices(point,name=rename(f"{name}_{index}"),size=size,add_to_collection=add_to_collection))
-    else:
-        # bpy.ops.mesh.primitive_cylinder_add(radius=size/2, depth=size, location=points)
-        bpy.ops.mesh.primitive_uv_sphere_add(radius=size/2, location=points)
+                obj.append(draw_vertices(point,name=rename(f"{name}_{index}"),size=size,material=material,add_to_collection=add_to_collection))
+    else: #core
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=0.03, location=points)
         obj = bpy.context.object
+        if material:
+            if obj.data.materials:
+                obj.data.materials[0] = material  
+            else:
+                obj.data.materials.append(material)  
         if name:
             obj.name = rename(name)
         bpy.context.collection.objects.unlink(obj)
@@ -651,7 +655,8 @@ def draw_face(vertices=[],name="face", fill=False, material=None, add_to_collect
     if add_to_collection:
         add_to_collection.objects.link(obj)
     else:
-        bpy.context.collection.objects.link(obj)
+        pass
+        #bpy.context.collection.objects.link(obj)
     if material:
         obj.data.materials.append(material)
     return obj
@@ -678,6 +683,21 @@ def draw_faces(faces,name=None,materials=None,fill=False,joined=False,add_to_col
             return result if not joined else join_objects(objects_list=result,name=rename(name),add_to_collection=add_to_collection)
         case _:
             return None
+
+def draw_plane(name, position, normal, size, add_to_collection=None):
+    bpy.ops.mesh.primitive_plane_add(size=size, location=position)
+    obj = bpy.context.object
+    obj.name = rename(name)
+    obj.location = position
+    
+    # Calcola la rotazione necessaria per allineare il piano alla normale
+    rot_quat = normal.to_track_quat('Z', 'Y')  # Allinea l'asse Z alla normale
+    obj.rotation_euler = rot_quat.to_euler()  # Imposta la rotazione dell'oggetto
+
+    bpy.context.collection.objects.unlink(obj)  # primitive add by default adds to the current collection
+    if add_to_collection:
+        add_to_collection.objects.link(obj)
+    return obj
 
 #CESTINO:
 

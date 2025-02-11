@@ -14,8 +14,7 @@ import helpers
 importlib.reload(helpers)
 from helpers import *
 
-print("Zome module loaded - Version 1.1.0")
-#*******************POLYZOME CLASS************************************************
+print("Zome module loaded - Version 2.1.0")
 """
 NB data structures aand conventions:
 vertices[layer][radial] where layer is base 0 bottom up, radial is a base 0 ccw index that goes from ;
@@ -25,6 +24,7 @@ faces edges are consequent to the vertex order. So EW or NE when applicable , fi
 #the order of the vertices is important to eventually label the beams and that in turn is important to connect them if physics is on
                 
 """
+
 zome_basic_face_colors = [
     (1.0, 0.0, 0.0),  # Red
     (0.0, 1.0, 0.0),  # Green
@@ -47,8 +47,6 @@ zome_basic_face_colors = [
     (0.2, 0.2, 0.2),   # Dark Gray
     (0.5, 0.3, 0.0),   # Dark brown
 ]     
-
-
 
 class Zome:
 
@@ -160,7 +158,7 @@ class Zome:
         self.show["beams"] = self.show["beams"] and (self.beam["TW"] > 0 and self.beam["TT"] > 0)           
         self.silent=silent
         #INITIALIZE BLENDER:
-        self.main_collection, self.basic_materials = self.initialize_blender(name=self.name,silent=self.silent,alpha=self.show["geometry_alpha"])
+        self.main_collection, self.basic_materials = self.initialize_blender(name=self.name,silent=self.silent,alpha=self.show["geometry_alpha"]) 
         #LOCAL: to pack up position and rotation of the zome (an possibly other global data)
         self.local = bpy.data.objects.new(rename(self.name + "_local"), None)
         self.local.empty_display_type = 'ARROWS'  # Imposta il tipo di visualizzazione dell'empty
@@ -184,53 +182,123 @@ class Zome:
         self.beams_strip = [] # 1 exemplar of 1 polygon per layer (for analysis and operations)    
         self.main()
 
+    def draw_inner_faces(self,faces,show=False, show_joined=False,materials_by=""):
+
+        #draw anyway both joined and not joined for technical reasons, show either of them on request:
+        #JOINED:
+        faces_vertices=self.get_faces_feature(key="vertices")
+        self.inner_surface=draw_faces(
+            faces=faces_vertices,
+            name=rename(self.basic["name"]+"_faces_joined"),
+            materials=None,
+            joined=True,
+            fill=True,
+            add_to_collection=self.main_collection if show and show_joined else None)
+        #NOT JOINED: each has info, so they are drawn separately 
+        if show and not show_joined:
+            faces_collection = bpy.data.collections.new(rename(self.basic["name"]+"_faces"))
+            self.main_collection.children.link(faces_collection)
+        else:
+            faces_collection = None       
+        for key, face in faces.items():
+            if face["on"]:  # Filtra solo le facce attive
+                faces[key]["object"]=draw_faces(
+                    faces=face["vertices"],
+                    name=rename(f"{self.basic['name']}_face_{face['layer_index']}_{face['radial_index']}"),
+                    materials=self.basic_materials[face[materials_by]%len(self.basic_materials)] if len(self.basic_materials)>0 and materials_by!="" else None,
+                    joined=True,
+                    fill=True,
+                    add_to_collection=faces_collection)  
+                faces[key]["normal"]=face["object"].data.polygons[0].normal.normalized() @ face["object"].matrix_world.to_3x3()  
+            pass      
+        #TODO: unifiy top bottom SVSV           
+        i=0
+        for key, value in self.hortogonal_faces.items():
+            material=self.basic_materials[i] if len(self.basic_materials)>0 else None
+            draw_faces(faces=value, name=rename(self.name+"_"+key), materials=material, joined=False, fill=True, add_to_collection=faces_collection)         
+            i+=1        
+        return 
+    
+    def vertex_neighbors(self,face,vertex_name,only_on=True):#the other faces sharing the vertex of this face
+        neighbors={}
+        for key,neighbor in face["neighbors"][vertex_name].items():
+            neighbor_face=self.faces.get((face["layer_index"]+neighbor["steps"][0], face["radial_index"]+neighbor["steps"][1]), None)
+            if neighbor_face is not None and (not only_on or neighbor_face["on"]):
+                neighbors[key]={
+                    "face":neighbor_face,
+                    "vertex_involved":neighbor["vertex_name"],
+                    "normal":neighbor_face["normal"],                   
+                }
+        return neighbors
+    
+    def get_external_vertex(self,face,vertex_name,distance,debug=False,size=10):
+        if face["named_vertices"][vertex_name] is not None:
+            main_ext_normal=face["normal"]
+            main_ext_position=face["named_vertices"]["H"]+distance*main_ext_normal
+            if debug:#main external plane
+                draw_plane(name=rename(f"outer_plane_{face['layer_index']}_{face['radial_index']}"), 
+                    position=main_ext_position, 
+                    normal=main_ext_normal, 
+                    size=size, add_to_collection=self.main_collection)
+            neighbors=self.vertex_neighbors(face=face,vertex_name=vertex_name)
+            intersection_segment=None
+            intersection_point=None
+            for key,neighbor in neighbors.items():
+                neighbor_normal=neighbor["face"]["normal"]
+                neighbor_position=neighbor["face"]["named_vertices"]["H"]+distance*neighbor_normal
+                if intersection_segment is None:#first intersection with neighbor:two planes
+                    intersection_segment=mathutils.geometry.intersect_plane_plane(main_ext_position,main_ext_normal,neighbor_position,neighbor_normal)                                                            
+                    if debug :
+                        draw_plane(name=f"neighbor_{key}_of_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}", 
+                            position=neighbor_position, 
+                            normal=neighbor_normal, 
+                            size=size, add_to_collection=self.main_collection)
+                        draw_segment(start=intersection_segment[0]-20*intersection_segment[1],end=intersection_segment[0]+20*intersection_segment[1],name=f"TEST_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}_intersection_segment",add_to_collection=self.main_collection)                                                        
+                elif intersection_point is None:
+                    intersection_point=mathutils.geometry.intersect_line_plane(intersection_segment[0],intersection_segment[0]+5*intersection_segment[1],neighbor_position,neighbor_normal)                    
+                    if debug:
+                        draw_plane(name=f"NEIGHBOR_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}_plane_{key}", position=neighbor_position, normal=neighbor_normal, size=size, add_to_collection=self.main_collection)
+                    draw_vertices(points=[intersection_point],
+                            name=f"external_of_{face['layer_index']}_{face['radial_index']}_{vertex_name}",
+                            size=self.basic['ZH']*0.01,add_to_collection=self.main_collection,
+                            material=self.basic_materials[0] if len(self.basic_materials)>0 else None)
+                    return intersection_point
+        return None
+
+    def draw_outer_faces(self,faces,distance,show=False,show_joined=False,materials_by=""):
+        if show:
+            faces_collection=bpy.data.collections.new(rename(self.basic["name"]+"_outer_faces"))
+            self.main_collection.children.link(faces_collection)
+        else:
+            faces_collection=None
+        size=self.basic["l"]*4
+        time_0=time.time()
+        sharing_faces={} #the current face and the ones around it
+        for face in faces.values():
+            debug=face["layer_index"]==0 and face["radial_index"]==7
+            if face["on"]:
+                if face["named_vertices"]["E"] is not None:
+                    intersection_point=self.get_external_vertex(face=face,vertex_name="E",distance=distance,debug=debug,size=size)
+                elif face["named_vertices"]["W"] is not None:
+                    intersection_point=self.get_external_vertex(face=face,vertex_name="W",distance=distance,debug=debug,size=size)
+        time_1=time.time()
+        print(f"TIME OUTER FACES: {time_1-time_0}")
+             
     def main(self):
-        #GEOMETRY:
+        #PURE GEOMETRY:
         self.vertices=self.basic_vertices(basic=self.basic)  # theoretical vertices of the basic zome (1 cut; no rototranslation)
         if self.modifications["top_modifications_type"] != "none":#top cut/top reduction
             self.vertices=self.top_mod_vertices(vertices=self.vertices,basic=self.basic,type=self.modifications["top_modifications_type"],levels=self.modifications["top_modifications_levels"],new_height=self.modifications["top_new_height"]) #involves the modification of the vertices set (adding,deleting)
         self.barycenter=self.set_barycenter(self.vertices)        
         self.hortogonal_faces=self.set_faces(self.vertices,cut_angle=self.modifications["longitudinal_cut"],adj_layers_distance=self.basic["h"]/10)#still on verttices not rototranslated         
         self.set_RT() #roto-translate all the vertices and the barycenter
+        #BLENDER OBJECTS:        
+        materials_by="shape_key_number" #"layer_index" | "radial_index"    
 
-        #FIRST SET FACES, THEN RT, THEN USING FACES!        
-        faces=self.get_faces_feature(key="vertices")
-        self.inner_surface=draw_faces(faces=faces,name=rename(self.basic["name"]+"_faces_joined"),materials=None,joined=True,fill=True)
-        #DRAWING:      
-        if self.show["faces"]:
-            faces_collection = bpy.data.collections.new(rename(self.basic["name"]+"_faces"))
-            self.main_collection.children.link(faces_collection)
-            materials_by="shape_key_number" #"layer_index" | "radial_index"     
-            faces=[]
-            face_vertices=[] 
-            #faces_collection.objects.link(self.inner_surface)
-            for key, face in self.faces.items():
-                if face["on"]:  # Filtra solo le facce attive
-                    faces.append(face)
-                    face_vertices.append(face["vertices"])
-            #più compatto:
-            faces=[face for face in self.faces.values() if face["on"]]
-            faces_vertices = self.get_faces_feature(key="vertices")
+        if self.silent==False:
+            self.draw_inner_faces(faces=self.faces,show=self.show["faces"],show_joined=False,materials_by=materials_by)
         
-            if False:
-            
-                draw_faces(faces=face_vertices,name=rename(self.basic["name"]+"_faces_from_dict"),materials=materials,joined=True,fill=True,add_to_collection=faces_collection)                
-            else:           
-                for index,face in enumerate(faces):
-                    dface=draw_faces(
-                        faces=face["vertices"],
-                        name=rename(f"{self.basic['name']}_face2_{face['layer_index']}_{face['radial_index']}"),
-                        materials=self.basic_materials[face[materials_by]%len(self.basic_materials)],
-                        joined=True,
-                        fill=True,
-                        add_to_collection=faces_collection) 
-                    for key, value in face.items():
-                        dface[key]=value
-            i=0
-            for key, value in self.hortogonal_faces.items():
-                material=self.basic_materials[i]
-                draw_faces(faces=value, name=rename(self.name+"_"+key), materials=material, joined=False, fill=True, add_to_collection=faces_collection)         
-                i+=1        
+            self.draw_outer_faces(faces=self.faces,show=self.show["faces"],distance=self.beam["TW"],show_joined=False,materials_by=materials_by)
 
         if self.show["vertices"]:
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
@@ -245,8 +313,6 @@ class Zome:
             draw_vertices(points=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis_top",size=self.basic['ZH']*0.01,joined=True,add_to_collection=utilities_collection)
             draw_segment(start=self.local.location,end=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis",add_to_collection=utilities_collection)
 
-  
-        self.beams_collection = None
         self.external_collection = None
         if self.show["beams"] == 1:
             self.draw_beams() 
@@ -259,6 +325,7 @@ class Zome:
         report+=f"{[len(vertex) for vertex in self.vertices]}\n"
         report+=f"{sum(1 for face in self.faces.values() if face['on'])} facce in {len(self.faces)} strati:"
         self.print(type="report",text=report)
+
 
     def initialize_blender(self,name,silent=False,alpha=0.5):
         main_collection=None
@@ -281,7 +348,8 @@ class Zome:
                 mat = bpy.data.materials.new(rename(f"Basic_Material_{i}"))
                 #mat.color is a tuple of 3 vals of color + alpha:
                 mat.diffuse_color = color + (alpha,)
-                basic_materials.append(mat)
+                print ("aggiunta materiale",mat.name)
+                basic_materials.append(mat)          
         return main_collection,basic_materials
 
     def basic_vertices(self,basic=None):
@@ -399,7 +467,6 @@ class Zome:
                     radial_angle=math.degrees(math.atan2(H[1],H[0]))
                     if radial_angle<0:
                         radial_angle+=360
-                    new_face=None
 
                     new_face={
                         "on":long_cut_type!="out",
@@ -414,10 +481,31 @@ class Zome:
                         "edge_names":None,
                         "shape_key":None,
                         "shape_index":None,
+                        "neighbors":{#vertex:{name_neighbor:{(+layer,+radial),"corresp.vertex_name":"name_vertex"}}
+                            "E":{
+                                "SE":{"steps":[-1,+1],"vertex_name":"N"},
+                                "W":{"steps":[0,+2],"vertex_name":"W"},#the W neighbour is same layer, +2 radials, and shares its W vertex 
+                                "NE":{"steps":[+1,+1],"vertex_name":"S"},
+                            },
+                            "W":{
+                                "SW":{"steps":[-1,+1],"vertex_name":"N"},
+                                "E":{"steps":[0,-2],"vertex_name":"E"},
+                                "NW":{"steps":[+1,+1],"vertex_name":"S"},
+                            },
+                            "N":{
+                                "NW":{"steps":[+1,+1],"vertex_name":"E"},
+                                "N":{"steps":[+1,0],"vertex_name":"S"},
+                                "NE":{"steps":[+1,-1],"vertex_name":"W"},                                
+                            },
+                            "S":{
+                                "SW":{"steps":[-1,-1],"vertex_name":"E"},
+                                "S":{"steps":[-1,0],"vertex_name":"N"},
+                                "SE":{"steps":[-1,+1],"vertex_name":"W"},
+                            },
+                        }
                     }
                     #MIDDLE UPSIDE DOWN TRIANGLE:
                     if N is not None and abs(N[2]-W[2])<adj_layers_distance:# this layer is overlapping with N (the next one): upside down triangle                            
-
                         new_face["layer_type"] = ["middle", "top"]  # Modifica per avere una lista
                         new_face["form_type"] = "upside_down_triangle"
                     #MIDDLE TRIANGLE:                           
@@ -436,8 +524,11 @@ class Zome:
                     elif N is None and S is not None: #lower is missing: upside down triangle (top)
                         new_face["layer_type"] = "top"
                         new_face["form_type"] = "upside_down_triangle"
-                    #endregion         
+                    #endregion  
+                    new_face["named_vertices"]={"E":E,"N":N,"W":W,"S":S,"H":H}     
+                    #finds N_ as N+ 
                     new_face["shape_key"]=str(new_face["layer_index"])+"_"+str(new_face["form_type"])+"_"+str(new_face["long_cut_type"])#unique key for actual form 
+
                     new_face["shape_key_number"] = 1000 + sum(ord(char) for char in new_face["shape_key"]) % 9000
                     # region 4) SET VERTICES , by type and top & bottom faces:                    
                     match new_face["form_type"]:
@@ -532,16 +623,6 @@ class Zome:
                 print(self.print_face(key))
         return {"bottom_face":bottom_face, "top_face":top_face}
     
-    def print_face(self,key):
-        results=""
-        face=self.faces[key]
-        face_copy = face.copy()
-        face_copy["vertices"] = [f"({round(vertex.x, 2)}, {round(vertex.y, 2)}, {round(vertex.z, 2)})" for vertex in face["vertices"]]
-        results+=f"Face {key}:\n"
-        for property, value in face_copy.items():
-            results+=f"  {property}: {value}\n"
-        return results
-
     def set_barycenter(self,vertices):
         barycenter = (0,0,0)      
         total_vertices = 0
@@ -578,7 +659,11 @@ class Zome:
                 for vertex_index,vertex in enumerate(face["vertices"]):
                     face_vertices.append(self.RTM["M"]@vertex)
                 self.faces[key]["vertices"]=face_vertices
-
+                face_named_vertices={}
+                for vertex_name,vertex in face["named_vertices"].items():
+                    if isinstance(vertex, mathutils.Vector): #there are various None here
+                        face_named_vertices[vertex_name]=self.RTM["M"]@vertex
+                        self.faces[key]["named_vertices"]=face_named_vertices
             #hortogonal_faces:
             for key, face in self.hortogonal_faces.items():
                 for vertex_index,vertex in enumerate(face):
@@ -666,23 +751,6 @@ class Zome:
             all, optimized:
             8 secs, (physics/constraints not tested)
         """
-    
-    def create_plane(self, name, target_collection=None):
-        #actually is filled:
-        bpy.ops.mesh.primitive_plane_add(size=3*max(self.ZH,self.layer_data("circum_radius")), location=self.barycenter)
-        #fill the plane:
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.mesh.fill()
-        bpy.ops.object.mode_set(mode='OBJECT')
-        obj = bpy.context.object
-        obj.name = rename(name)
-        #rotate the plane to match the zome: axis self.z_axis:
-        #obj.matrix_world=self.R
-        bpy.context.collection.objects.unlink(obj)
-        if target_collection:
-            target_collection.objects.link(obj)
-        return obj
     
     def add_constraints(self):
         if (self.physics["on"]):            
@@ -797,6 +865,16 @@ class Zome:
             print(f"{self.name}> " + "\n".join(text.splitlines()))
         if self.zome_output:
             self.zome_output(type=type, text=text)
+
+    def print_face(self,key):
+        results=""
+        face=self.faces[key]
+        face_copy = face.copy()
+        face_copy["vertices"] = [f"({round(vertex.x, 2)}, {round(vertex.y, 2)}, {round(vertex.z, 2)})" for vertex in face["vertices"]]
+        results+=f"Face {key}:\n"
+        for property, value in face_copy.items():
+            results+=f"  {property}: {value}\n"
+        return results
 
     def info(self,type="all",precision=2    ):
         info=""
@@ -971,8 +1049,6 @@ def find_theta(N,S,ZH,target_value,type="base_area"):
     constraint.spring_damping_x = 0.5
     constraint.spring_damping_y = 0.5
     constraint.spring_damping_z = 0.5
-
-
 
 
 

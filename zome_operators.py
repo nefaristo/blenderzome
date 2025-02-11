@@ -71,7 +71,8 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
         inner_surface=zome1.inner_surface
         if inner_surface and plane:
             verts=mesh_plane_intersection(inner_surface, plane)
-            draw_faces(faces=verts,name="poligono area selezionata",joined=True)
+            print(zome1.main_collection)
+            draw_faces(faces=verts,name="poligono area selezionata",joined=True,add_to_collection=zome1.main_collection)
             area_selezionata = area_polygon(verts)  # Calcola l'area
             info+=f"area intersezione col piano: {area_selezionata:.2f} m2\n"  # Stampa l'area formattata
         else:
