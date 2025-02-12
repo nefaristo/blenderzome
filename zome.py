@@ -212,7 +212,7 @@ class Zome:
             if face["on"]:  # Filtra solo le facce attive
                 faces[key]["obj_inner"]=draw_faces(
                     faces=face["vertices"],
-                    name=rename(f"{self.basic['name']}_face_{face['layer_index']}_{face['radial_index']}"),
+                    name=rename(f"{self.basic['name']}_inner_face_{face['layer_index']}_{face['radial_index']}"),
                     materials=self.basic_materials[face[materials_by]%len(self.basic_materials)] if len(self.basic_materials)>0 and materials_by!="" else None,
                     joined=True,
                     fill=True,)  
@@ -262,7 +262,7 @@ class Zome:
                         draw_plane(name=f"neighbor_{key}_of_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}", 
                             position=neighbor_position, 
                             normal=neighbor_normal, 
-                            size=debug_size, add_to_collection=self.main_collection)
+                            size=debug_size, add_to_collection=faces_collection)
                         draw_segment(start=intersection_segment[0]-20*intersection_segment[1],end=intersection_segment[0]+20*intersection_segment[1],name=f"TEST_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}_intersection_segment",add_to_collection=faces_collection)                                                        
                 elif intersection_point is None:
                     intersection_point=mathutils.geometry.intersect_line_plane(intersection_segment[0],intersection_segment[0]+5*intersection_segment[1],neighbor_position,neighbor_normal)                    
@@ -277,21 +277,30 @@ class Zome:
 
     def set_outer_faces(self,faces,distance,materials_by="radial_index"):               
         time_0=time.time()
+        added_by={"E":0,"W":0,"H":0}
+        faces_n=len(faces)
         for face in faces.values():
-            if face["on"] :#tops and bottoms dont have named vertices and should stay out
+            if face["on"] :
                 if "named_vertices" in face and face["named_vertices"]["E"] is not None:
                     intersection_point=self.get_external_vertex(face=face,vertex_name="E",distance=distance)
-                elif "named_vertices" in face and   face["named_vertices"]["W"] is not None:
+                    if intersection_point is not None:
+                        added_by["E"]+=1
+                        face["outer_vertices"]["E"]=intersection_point
+                        for key,neighbor in self.vertex_neighbors(face=face,vertex_name="E").items(): 
+                            neighbor["face"]["outer_vertices"][neighbor["vertex_involved"]]=intersection_point
+                if  "named_vertices" in face and face["named_vertices"]["W"] is not None:
                     intersection_point=self.get_external_vertex(face=face,vertex_name="W",distance=distance)
-                if intersection_point is not None:
-                    face["outer_vertices"]["E"]=intersection_point
-                    for key,neighbor in self.vertex_neighbors(face=face,vertex_name="E").items(): 
-                        neighbor["face"]["outer_vertices"][neighbor["vertex_involved"]]=intersection_point        
+                    if intersection_point is not None:
+                        added_by["W"]+=1
+               
+  
+        #copies the new propery onto obj_inner custom property:
+        for face in faces.values():
+            if "obj_inner" in face:
+                face["obj_inner"]["outer_vertices"]=face["outer_vertices"]
+        print(f"SET>Es: {added_by['E']}, Ws: {added_by['W']}, Hs: {added_by['H']}, tot:{faces_n}")      
         time_1=time.time()
         print(f"TIME OUTER FACES: {time_1-time_0}")
-
-        #per ogni self.faces element, prendi il dizionario outer_vertices={"W":(x,y,z), "E":(x,y,z)} 
-        #e crea una lista di vertici ordinati secondo le keys di vertices_names=["W","E"..]
         faces_vertices=[]
         for key, face in faces.items():
             if face["on"]:
@@ -333,7 +342,7 @@ class Zome:
             self.set_inner_faces(faces=self.faces,materials_by="shape_key_number")        
             self.set_outer_faces(faces=self.faces,distance=self.beam["TW"],materials_by="radial_index")
             if self.show["faces"]:
-                self.draw_faces(type="inner",joined=True)
+                self.draw_faces(type="inner",joined=False)
                 self.draw_faces(type="outer",joined=False)
         if self.show["vertices"]:
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
@@ -358,7 +367,9 @@ class Zome:
         #memoriazza la somma di tutit i vertici:
         report+=f"{sum(len(vertex) for vertex in self.vertices)} vertici in {len(self.vertices)} strati:"
         report+=f"{[len(vertex) for vertex in self.vertices]}\n"
-        report+=f"{sum(1 for face in self.faces.values() if face['on'])} facce in {len(self.faces)} strati:"
+        unique_layers = len(set(layer_index for layer_index, _ in self.faces.keys()))  # Conta i layer unici
+        faces_per_layer = {layer: sum(1 for face in self.faces.values() if face['on'] and face['layer_index'] == layer) for layer in range(unique_layers)}
+        report += f"{sum(1 for face in self.faces.values() if face['on'])} facce in {unique_layers} strati: {faces_per_layer}"        
         self.print(type="report",text=report)
 
     def initialize_blender(self,name,silent=False,alpha=0.5):
