@@ -76,7 +76,7 @@ class ZomePanel(bpy.types.Panel):
             #vertical cut:
             row = box.row()
             row.label(text="Taglio longitudinale°:")
-            row.prop(scene, "longitudinal_cut", text="")
+            row.prop(scene, "radial_cut", text="")
 
             #top_modifications_on_off:
             row = box.row()

@@ -348,7 +348,7 @@ def join_objects(objects_list, name, add_to_collection=None):
             temp_objects.append(join_objects(objects_list=obj, name=rename(f"{name}_{index}"), add_to_collection=add_to_collection))
         elif obj and obj.type == 'MESH':  # It's a mesh: core function            
             temp_objects.append(obj)  # Add the original object to the
-        if not obj.name in bpy.context.collection.objects.keys():
+        if obj and not obj.name in bpy.context.collection.objects.keys():
             bpy.context.collection.objects.link(obj)  # Temporarily add to collection, needed for selection, in turn for joining
     if temp_objects:  # If there are temporary objects
         bpy.context.view_layer.objects.active = temp_objects[0]  # Set first object as active

@@ -59,7 +59,7 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
                 "top_modifications_type": context.scene.top_modifications_type,
                 "top_modifications_levels": context.scene.top_modifications_levels,
                 "top_new_height": context.scene.top_new_height,                
-                "longitudinal_cut": context.scene.longitudinal_cut,
+                "radial_cut": context.scene.radial_cut,
                 "layer_types": [],
                 "position": (context.scene.pos_x,context.scene.pos_y,context.scene.pos_z),
                 "rotation": (0,math.radians(context.scene.rot_y),math.radians(context.scene.rot_z))
@@ -248,9 +248,9 @@ def register():
         max=20.0,
         update=basic_data_updated
     )
-    bpy.types.Scene.longitudinal_cut = bpy.props.FloatProperty(
-        name="Taglio longitudinale",
-        description="Taglio longitudinale",
+    bpy.types.Scene.radial_cut = bpy.props.FloatProperty(
+        name="Taglio radiale",
+        description="Taglio radiale",
         default=0.0,
         min=0.0,
         max=270.0,
@@ -380,7 +380,7 @@ def unregister():
         del bpy.types.Scene.pos_x
         del bpy.types.Scene.pos_y
         del bpy.types.Scene.pos_z
-        del bpy.types.Scene.longitudinal_cut
+        del bpy.types.Scene.radial_cut
         del bpy.types.Scene.top_modifications_type
         del bpy.types.Scene.top_modifications_levels
         del bpy.types.Scene.top_new_height
