@@ -4,7 +4,7 @@ import math
 import mathutils
 import bmesh
 import numpy as np
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 """
 NOTICE ABOUT THE LOCAL AXES SETTING IN THE FUNCTION create_parallelepiped():
@@ -24,7 +24,9 @@ then rotating the object back to its original position. WHY such a convoluted an
 
 print("Blender utilities loaded - Version 2.0.3")
 
-# BLENDER:
+#endregion HANDLERS:
+
+# region BLENDER GENERAL:
 
 def clear_console():
     # Questo comando funziona su Windows
@@ -116,7 +118,9 @@ def rename(new_name): #resets name avoiding the ".001" suffix
     
     return new_name
 
-# GEOMETRY:
+# endregion BLENDER:
+
+# region GEOMETRY:
 
 def cleanup_polygon(verts, tolerance=0.001): 
     # Rimuovi duplicati considerando la tolleranza
@@ -128,6 +132,9 @@ def cleanup_polygon(verts, tolerance=0.001):
     # Ordina per angolo
     unique_verts.sort(key=lambda x: math.atan2(x[1], x[0]))
     return unique_verts
+
+def perimeter_polygon(verts):
+    return sum((Vector(verts[i]) - Vector(verts[(i + 1) % len(verts)])).length for i in range(len(verts)))
 
 def area_polygon(verts):
     """
@@ -247,8 +254,10 @@ def vertices_scale(vertices,origin,scale_factor):
             print("ERROR: vertices is neither a tuple nor a mathutils.Vector")
 
             return None
-        
-# BLENDER OBJECTS:
+
+# endregion GEOMETRY:
+
+# region BLENDER OBJECTS:
 
 def display_paths():
     # Display material paths
@@ -331,7 +340,6 @@ def boolean_union_selected(new_object_name):
         # Rimuovi l'oggetto originale
         bpy.data.objects.remove(obj, do_unlink=True)
 
-
     # Rinominare l'oggetto unito
     active_obj.name = rename(new_object_name)
     #metti nella scene collection e togli dalle altre
@@ -374,7 +382,6 @@ def beams_polygon(polyverts,
                   material_name=""):
     result = []
     z = mathutils.geometry.normal(polyverts[0], polyverts[1], polyverts[2])#normal to the plane
-
 
     for i in range(len(polyverts)):
         #prep: edge (beam length), thickness (in the plane), adjiacents edges data
@@ -545,7 +552,33 @@ def mesh_plane_intersection(main_obj, plane_obj):
         print("Errore: oggetti non validi")
         return []
 
-# PHYSICS:
+def set_origin(obj):
+    if not obj or obj.type != 'MESH':
+        print("Errore: Seleziona un oggetto mesh valido")
+        return
+
+    # Creare una bmesh dalla mesh attuale
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+
+    # Calcolare il centro di massa locale (media dei vertici)
+    center_of_mass = sum((v.co for v in bm.verts), Vector()) / len(bm.verts)
+    bm.free()  # Liberare la memoria
+
+    # Convertire il centro di massa in coordinate globali
+    center_of_mass_global = obj.matrix_world @ center_of_mass
+
+    # Traslare la mesh per compensare il nuovo punto di origine
+    obj.data.transform(Matrix.Translation(-center_of_mass))
+
+    # Aggiornare l'origine dell'oggetto senza spostarlo
+    obj.matrix_world.translation += center_of_mass_global - obj.location
+
+
+
+# endregion BLENDER OBJECTS:
+
+# region PHYSICS:
 
 def set_physics(obj, type="PASSIVE", density=1,friction=0.8,damping=0.8,active=True):
     # Assegna il corpo rigido attivo
@@ -699,7 +732,9 @@ def draw_plane(name, position, normal, size, add_to_collection=None):
         add_to_collection.objects.link(obj)
     return obj
 
-#CESTINO:
+# endregion DRAWING:
+
+# region TESTING:
 
 import random
 
@@ -766,4 +801,4 @@ def update_text_from_file(text_object_name, file_path):
     else:
         print(f"Oggetto di testo non trovato o non è un oggetto di tipo FONT: {text_object_name}")
 
-
+# endregion TESTING:

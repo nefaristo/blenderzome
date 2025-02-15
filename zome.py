@@ -171,6 +171,8 @@ class Zome:
         self.RTM["M"]=self.RTM["T"] @ self.RTM["R"]
         #GEOMETRY DATA:
         self.vertices = []
+        self.inner_vertices={}
+        self.outer_vertices={}
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces={}
         self.faces_by_shape = [] #eg: [ {'rhombus_EAST': [0], 'rhombus_FULL': [1, 2, 3, 4], 'rhombus_WEST': [5]} , other layers...]
@@ -181,21 +183,6 @@ class Zome:
         self.beams = []
         self.beams_strip = [] # 1 exemplar of 1 polygon per layer (for analysis and operations)    
         self.main()
-
-
-    def draw_faces(self,type="inner",joined=True):
-        if joined:
-            if type=="inner":
-                self.main_collection.objects.link(self.inner_surface) 
-            else:
-                self.main_collection.objects.link(self.outer_surface)
-        else:
-            faces_collection = bpy.data.collections.new(rename(self.basic["name"]+f"_{type}_faces"))
-            self.main_collection.children.link(faces_collection)
-            for face in self.faces.values():
-                if face["on"] and face[f"obj_{type}"] is not None:
-                    faces_collection.objects.link(face[f"obj_{type}"])
-
         
     def set_inner_faces(self,faces,show=False, show_joined=False,materials_by=""):
         #draw anyway both joined and not joined for technical reasons, show either of them on request:
@@ -216,54 +203,101 @@ class Zome:
                     materials=self.basic_materials[face[materials_by]%len(self.basic_materials)] if len(self.basic_materials)>0 and materials_by!="" else None,
                     joined=True,
                     fill=True,)  
+                set_origin(face["obj_inner"])
                 faces[key]["normal"]=face["obj_inner"].data.polygons[0].normal.normalized() @ face["obj_inner"].matrix_world.to_3x3()  
                 for face_key,face_data in face.items():
-                    face["obj_inner"][face_key]=face[face_key]
+                    if face_key!="obj_inner" and face_key!="obj_outer":
+                        face["obj_inner"][face_key]=face[face_key]
         # TOP AND BOTTOM       
      
         return 
     
-    def vertex_neighbors(self,face,vertex_name,only_on=True):#the other faces sharing the vertex of this face
+    def get_vertex_neighbors(self,face,vertex_name,only_on=True):#the other faces sharing the vertex of this face
+        # region neighbors_map
+        # neighbors_map used to enlist the neighbors of a vertex *where not None*
+        # Format example for the first element:"E" has neighbours at "SE" 1 layer down, +1 radial right; its shared vertex is its "N". And so on
+        # NB the name of the neighbor is just for readability, not used for indexing
+        neighbors_map={
+            "E":{
+                "SE":{"steps":[-1,+1],"shared_vertex":"N"},
+                "W":{"steps":[0,+2],"shared_vertex":"W"},
+                "NE":{"steps":[+1,+1],"shared_vertex":"S"},
+            },
+            "W":{
+                "SW":{"steps":[-1,-1],"shared_vertex":"N"},
+                "E":{"steps":[0,-2],"shared_vertex":"E"},
+                "NW":{"steps":[+1,-1],"shared_vertex":"S"},
+            },
+            "N":{
+                "NW":{"steps":[+1,-1],"shared_vertex":"E"},
+                "N":{"steps":[+2,0],"shared_vertex":"S"},
+                "NE":{"steps":[+1,+1],"shared_vertex":"W"},                                
+            },
+            "S":{ 
+                "SW":{"steps":[-1,-1],"shared_vertex":"E"},
+                "S":{"steps":[-2,0],"shared_vertex":"N"},
+                "SE":{"steps":[-1,+1],"shared_vertex":"W"},
+            },
+        }
+        #map modification for apex | antiapex : north | south respectively are different
+        if face["form_type"]=="rhombus" and face["layer_type"] in ["top","bottom"]:#apex rhombus: north has to be changed
+            print(f"MOD FOR APEX:{face['layer_index']}_{face['radial_index']}")
+            neighbors_map["N" if face["layer_type"]=="top" else "S"]={
+                "E":{"steps":[0,+2],"shared_vertex":"E"},#could be +1, +N... +2 is presumably more precise than +1
+                "W":{"steps":[0,-2],"shared_vertex":"W"},
+            }
+        #map modification for middle triangles and upside down triangles: east | west are different, H added for half faces
+        elif face["form_type"]in ["triangle","upside_down_triangle"] and face["layer_type"]=="middle":#middle triangles and upside down triangles share H as a vertex; no neighbours otherwise
+            print(f"MOD FOR MIDDLE TRIANGLE:{face['layer_index']}_{face['radial_index']}")
+            neighbors_map["H"]={#just for half faces, ignored by full faces: middle triangles and upside down triangles share H as a vertex 
+                ("S" if face["form_type"]=="triangle" else "N"):{"steps":[-1 if face["form_type"]=="triangle" else +1,0],"shared_vertex":"H"},#could be +1, +N... +2 is presumably more precise than +1
+            }
+        
+            
+        # endregion neighbors_map
+
         neighbors={}
-        if face["vertex_neighbors"] is None:
+        if vertex_name not in neighbors_map:
             return neighbors
-        for key,neighbor in face["vertex_neighbors"][vertex_name].items():
+        for key,neighbor in neighbors_map[vertex_name].items():
             neighbor_face=self.faces.get(
                 (face["layer_index"]+neighbor["steps"][0], 
                  (face["radial_index"]+neighbor["steps"][1])%(self.basic["N"]*2)), 
                  None)
-            if neighbor_face is not None and (not only_on or neighbor_face["on"]):
+            if neighbor_face is not None and neighbor_face["form_type"]!="polygon" and(not only_on or neighbor_face["on"]):#only existing, not topbottom, and on if not requested
                 neighbors[key]={
                     "face":neighbor_face,
-                    "vertex_involved":neighbor["vertex_name"],
+                    "shared_vertex":neighbor["shared_vertex"],
                     "normal":neighbor_face["normal"],                   
                 }
+        
+        
         return neighbors
     
     def get_external_vertex(self,face,vertex_name,distance,debug=False):
         debug_size=6
-        if face["named_vertices"][vertex_name] is not None:
-            main_ext_normal=face["normal"]
-            main_ext_position=face["named_vertices"]["H"]+distance*main_ext_normal
+        if face["all_vertices"][vertex_name] is not None:
+            face_normal=face["normal"]
+            outer_plane_point=face["all_vertices"]["H"]+distance*face_normal #(H always exists so it's the simplest choice)
             if debug:#main external plane
                 draw_plane(name=rename(f"outer_plane_{face['layer_index']}_{face['radial_index']}"), 
-                    position=main_ext_position, 
-                    normal=main_ext_normal, 
+                    position=outer_plane_point, 
+                    normal=face_normal, 
                     size=debug_size, add_to_collection=self.main_collection)
-            neighbors=self.vertex_neighbors(face=face,vertex_name=vertex_name)
+            neighbors=self.get_vertex_neighbors(face=face,vertex_name=vertex_name)
             intersection_segment=None
             intersection_point=None
             for key,neighbor in neighbors.items():
                 neighbor_normal=neighbor["face"]["normal"]
-                neighbor_position=neighbor["face"]["named_vertices"]["H"]+distance*neighbor_normal
-                if intersection_segment is None:#first intersection with neighbor:two planes
-                    intersection_segment=mathutils.geometry.intersect_plane_plane(main_ext_position,main_ext_normal,neighbor_position,neighbor_normal)                                                            
+                neighbor_position=neighbor["face"]["all_vertices"]["H"]+distance*neighbor_normal
+                if intersection_segment is None:#first intersection with neighbor:this face outer plane with its first neighbor's outer plane
+                    intersection_segment=mathutils.geometry.intersect_plane_plane(outer_plane_point,face_normal,neighbor_position,neighbor_normal)                                                            
                     if debug : 
                         draw_plane(name=f"neighbor_{key}_of_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}", 
                             position=neighbor_position, 
                             normal=neighbor_normal, 
-                            size=debug_size, add_to_collection=faces_collection)
-                        draw_segment(start=intersection_segment[0]-20*intersection_segment[1],end=intersection_segment[0]+20*intersection_segment[1],name=f"TEST_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}_intersection_segment",add_to_collection=faces_collection)                                                        
+                            size=debug_size, add_to_collection=self.main_collection)
+                        draw_segment(start=intersection_segment[0]-20*intersection_segment[1],end=intersection_segment[0]+20*intersection_segment[1],name=f"TEST_{neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}_intersection_segment",add_to_collection=self.main_collection)                                                        
                 elif intersection_point is None:
                     intersection_point=mathutils.geometry.intersect_line_plane(intersection_segment[0],intersection_segment[0]+5*intersection_segment[1],neighbor_position,neighbor_normal)                    
                     if debug:
@@ -271,34 +305,43 @@ class Zome:
                         draw_vertices(points=[intersection_point],
                             name=f"external_of_{face['layer_index']}_{face['radial_index']}_{vertex_name}",
                             size=self.basic['ZH']*0.01,add_to_collection=self.main_collection,
-                            material=self.basic_materials[0] if len(self.basic_materials)>0 else None)
-                    return intersection_point
+                            material=self.basic_materials[0] if len(self.basic_materials)>0 else None)                
+            if intersection_point is None and (intersection_segment is not None): 
+                #less then neighbours in that point: that means it's in a corner of both radial and longitudinal cut. 
+                # takes the intersection between the already found segment and the vertical plane through the lower vertex and with normal= segment X face normal                      
+                new_plane_normal=mathutils.Vector(intersection_segment[1]-intersection_segment[0]).cross(mathutils.Vector(face_normal))
+                intersection_point=mathutils.geometry.intersect_line_plane(intersection_segment[0],intersection_segment[0]+5*intersection_segment[1],face["all_vertices"][vertex_name],new_plane_normal)                    
+            return intersection_point
         return None
 
-    def set_outer_faces(self,faces,distance,materials_by="radial_index"):               
+    def set_outer_faces(self,faces,distance,materials_by="radial_index"):       
         time_0=time.time()
-        added_by={"E":0,"W":0,"H":0}
-        faces_n=len(faces)
         for face in faces.values():
             if face["on"] :
-                if "named_vertices" in face and face["named_vertices"]["E"] is not None:
-                    intersection_point=self.get_external_vertex(face=face,vertex_name="E",distance=distance)
-                    if intersection_point is not None:
-                        added_by["E"]+=1
-                        face["outer_vertices"]["E"]=intersection_point
-                        for key,neighbor in self.vertex_neighbors(face=face,vertex_name="E").items(): 
-                            neighbor["face"]["outer_vertices"][neighbor["vertex_involved"]]=intersection_point
-                if  "named_vertices" in face and face["named_vertices"]["W"] is not None:
-                    intersection_point=self.get_external_vertex(face=face,vertex_name="W",distance=distance)
-                    if intersection_point is not None:
-                        added_by["W"]+=1
-               
-  
+                if "all_vertices" in face: #exclude top and bottom
+                    for vertex_name,vertex_position in face["all_vertices"].items():
+                        if vertex_name not in face["outer_vertices"] :
+                            intersection_point=self.get_external_vertex(face=face,vertex_name=vertex_name,distance=distance)
+                            if intersection_point is not None:
+                                #print(f"TROVATA INTERSEZIONE PER {face['layer_index']}_{face['radial_index']},v={vertex_name}")
+                                face["outer_vertices"][vertex_name]=intersection_point   
+                                if face["layer_index"]==0 and face["radial_index"]==3:
+                                    print(f"outer vertices di {face['layer_index']}_{face['radial_index']}: {face['outer_vertices']}")
+                                for key,neighbor in self.get_vertex_neighbors(face=face,vertex_name=vertex_name).items():
+                                    if neighbor["shared_vertex"] not in neighbor["face"]["outer_vertices"]:
+                                        neighbor["face"]["outer_vertices"][neighbor["shared_vertex"]]=intersection_point
+                                        if neighbor["face"]["layer_index"]==0 and neighbor["face"]["radial_index"]==3:
+                                            print(f"outer vertices di {neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}: {neighbor['face']['outer_vertices']}")
+                    #the non filled outer_vertices are the ones that have only 1 neighbor (which happens in radial+longitudinal cuts): 
+                    # sets them as the top of its beam (inner_vertex + TW) 
+                    for vertex_name,vertex_position in face["all_vertices"].items():
+                        if vertex_name not in face["outer_vertices"]:
+                            pass#face["outer_vertices"][vertex_name]=face["all_vertices"][vertex_name]+face["normal"]*self.beam["TW"]
+        
         #copies the new propery onto obj_inner custom property:
         for face in faces.values():
             if "obj_inner" in face:
-                face["obj_inner"]["outer_vertices"]=face["outer_vertices"]
-        print(f"SET>Es: {added_by['E']}, Ws: {added_by['W']}, Hs: {added_by['H']}, tot:{faces_n}")      
+                face["obj_inner"]["outer_vertices"]=face["outer_vertices"]     
         time_1=time.time()
         print(f"TIME OUTER FACES: {time_1-time_0}")
         faces_vertices=[]
@@ -307,6 +350,27 @@ class Zome:
                 # Ordina i vertici secondo le chiavi di vertices_names
                 ordered_outer_vertices = [face["outer_vertices"][name] for name in face["vertices_names"] if name in face["outer_vertices"]]
                 faces_vertices.append(ordered_outer_vertices)
+        #NOT JOINED:
+        results=[]
+        for face in self.faces.values():
+            if True or face["on"]:
+                ordered_outer_vertices = [face["outer_vertices"][name] for name in face["vertices_names"] if name in face["outer_vertices"]]                
+                new_face=draw_face(name=(f"{self.basic['name']}_outer_face_{face['layer_index']}_{face['radial_index']}"),
+                    vertices=ordered_outer_vertices,
+                    fill=True,
+                    material=self.basic_materials[face[materials_by]%len(self.basic_materials)] if len(self.basic_materials)>0 and materials_by!="" else None,
+                )
+                results.append(new_face)
+                #puts the origin in its barycenter
+
+                if new_face is not None:
+                    face["obj_outer"]=new_face
+                    set_origin(new_face)
+                    new_face["tool_type"]="outer_face"
+                    new_face["info"]=f"face: {face['layer_index']}_{face['radial_index']}:{type(new_face)} = {len(face['outer_vertices'])}"
+                #print(f"face: {face['layer_index']}_{face['radial_index']}:{type(new_face)} = {len(face['outer_vertices'])}")
+                
+        #JOINED:
         self.outer_surface=draw_faces(
             faces=faces_vertices,
             name=rename(self.basic["name"]+"_outer_surface"),
@@ -315,16 +379,6 @@ class Zome:
             fill=True)
         if self.outer_surface is None:
             raise Exception("outer surface not found")
-        for face in faces.values():
-            if face["on"]:
-                ordered_outer_vertices = [face["outer_vertices"][name] for name in face["vertices_names"] if name in face["outer_vertices"]]                
-                face["obj_outer"]=draw_face(name=rename(f"{self.basic['name']}_outer_face_{face['layer_index']}_{face['radial_index']}"),
-                    vertices=ordered_outer_vertices,
-                    fill=True,
-                    material=self.basic_materials[face[materials_by]%len(self.basic_materials)] if len(self.basic_materials)>0 and materials_by!="" else None, 
-                )
-
-   
 
     def main(self):
         #PURE GEOMETRY:
@@ -339,7 +393,7 @@ class Zome:
             #materials_by="shape_key_number" #"layer_index" | "radial_index" 
             show_inner="joined" if self.show["faces"] else None
             show_outer="joined" if self.show["faces"] else None
-            self.set_inner_faces(faces=self.faces,materials_by="shape_key_number")        
+            self.set_inner_faces(faces=self.faces)        
             self.set_outer_faces(faces=self.faces,distance=self.beam["TW"],materials_by="radial_index")
             if self.show["faces"]:
                 self.draw_faces(type="inner",joined=False)
@@ -359,7 +413,7 @@ class Zome:
 
         self.external_collection = None
         if self.show["beams"] == 1:
-            self.draw_beams(prototypes_only=True) 
+            self.draw_beams(prototypes_only=False) 
             #self.add_constraints()        
                 
         bpy.ops.object.select_all(action='DESELECT')#deselect all objects
@@ -412,8 +466,6 @@ class Zome:
                         vertices_layer.append(mathutils.Vector((x, y, z)))
                 case _ if 2 <= layer_index <= basic["S"]:  # RHOMBI 
                     for radial_index in range(basic["N"]): #from 0 to N-1                        
-
-
                         #goes back by 2 layers to find the A vertex to project for the new D vertex of the rhombus
                         A = vertices[0][0] if layer_index == 2 else vertices[layer_index-2][(radial_index+1) % basic["N"]]
                         B = vertices[layer_index-1][radial_index]
@@ -517,61 +569,32 @@ class Zome:
                         "radial_angle":radial_angle,
                         "radial_index":round(radial_angle/stepalpha),#0-2*N-1 
                         "radial_cut_type":radial_cut_type,
-                        "layer_type":None,#"bottom","middle","top", set right in the following
-                        "form_type":None,#"triangle","upside_down_triangle","rhombus", set right in the following
-                        "vertices":None,#list of vertices, set right in the following
-                        "vertices_names":None,#list of vertices names, set right in the following
+                        "layer_type":None,#"bottom","middle","top"
+                        "form_type":None,#"triangle","upside_down_triangle","rhombus",
+                        "all_vertices":None,#dict of all 4+1 (H) vertices, regardless of None or not
+                        "vertices":None,#list of vertices
+                        "inner_vertices":None,#dict of inner vertices 
                         "outer_vertices":{},#dict of outer vertices, set by set_outer_faces()
-                        "edge_names":None,#list of edge names, set right in the following - IS IT NEEDED?
+                        "vertices_names":None,#list of vertices names, 
+                        "edge_names":None,#list of edge names, used mainly for beams??SVSV 
                         "shape_key":None,#unique key for actual form in the form f"{layer_index}_{form_type}_{radial_cut_type}"  
                         "shape_index":None,#index of the shape_key
-                        #vertex_neighbors: the following default is ok for all full but:
-                        # - B/R (bottom rhombi: SOUTH has to be changed 
-                        # - M/T and M/U: EAST AND WEST 
-                        # - T/R: NORTH has to be changed
-                        # radial cuts: 
-                        # the cut vertex will be disregarded (similarly to top or bottom missing layers)
-                        # you would add the H vertex only to layer+radial borders, which have no neighbour anyway
-                        # consider to set the external vertices of either kind of border over the plane of cut
-                        # (and in that case the beams as well)   
-                        "vertex_neighbors":{#vertex:{name_neighbor:{(+layer,+radial),"corresp.vertex_name":"name_vertex"}}
-                            "E":{
-                                "SE":{"steps":[-1,+1],"vertex_name":"N"},
-                                "W":{"steps":[0,+2],"vertex_name":"W"},#the W neighbour is same layer, +2 radials, and shares its W vertex 
-                                "NE":{"steps":[+1,+1],"vertex_name":"S"},
-                            },
-                            "W":{
-                                "SW":{"steps":[-1,+1],"vertex_name":"N"},
-                                "E":{"steps":[0,-2],"vertex_name":"E"},
-                                "NW":{"steps":[+1,+1],"vertex_name":"S"},
-                            },
-                            "N":{
-                                "NW":{"steps":[+1,+1],"vertex_name":"E"},
-                                "N":{"steps":[+1,0],"vertex_name":"S"},
-                                "NE":{"steps":[+1,-1],"vertex_name":"W"},                                
-                            },
-                            "S":{
-                                "SW":{"steps":[-1,-1],"vertex_name":"E"},
-                                "S":{"steps":[-1,0],"vertex_name":"N"},
-                                "SE":{"steps":[-1,+1],"vertex_name":"W"},
-                            },
-                        },
                         "obj_inner":None,
                         "obj_outer":None,
                     }
                     #NON DEFAULT VALUES:
                     #MIDDLE UPSIDE DOWN TRIANGLE:
                     if N is not None and abs(N[2]-W[2])<adj_layers_distance:# this layer is overlapping with N (the next one): upside down triangle                            
-                        new_face["layer_type"] = ["middle", "top"]  # Modifica per avere una lista
                         new_face["form_type"] = "upside_down_triangle"
+                        new_face["layer_type"] = ["middle", "top"]  # Modifica per avere una lista
                     #MIDDLE TRIANGLE:                           
                     elif S is not None and abs(S[2]-W[2])<adj_layers_distance:# this layer is overlapping with S (the previous one): middle triangle
                         new_face["layer_type"] = "middle"
                         new_face["form_type"] = "triangle"
                     #MIDDLE AND TOP RHOMBI:
                     elif N is not None and S is not None: # all 4 are there: rhombus 
-                        new_face["layer_type"] = "middle" if layer_index<len(vertices)-2 else "top"
                         new_face["form_type"] = "rhombus"
+                        new_face["layer_type"] = "middle" if layer_index<len(vertices)-1 else "top"
                     #BOTTOM TRIANGLE: 
                     elif N is not None and S is None: #lower is missing: bottom triangle 
                         new_face["layer_type"] = "bottom"
@@ -581,7 +604,7 @@ class Zome:
                         new_face["layer_type"] = "top"
                         new_face["form_type"] = "upside_down_triangle"
                     #endregion  
-                    new_face["named_vertices"]={"E":E,"N":N,"W":W,"S":S,"H":H}     
+                    new_face["all_vertices"]={"E":E,"N":N,"W":W,"S":S,"H":H}     
                     #finds N_ as N+ 
                     new_face["shape_key"]=str(new_face["layer_index"])+"_"+str(new_face["form_type"])+"_"+str(new_face["radial_cut_type"])#unique key for actual form 
 
@@ -673,7 +696,6 @@ class Zome:
                     "shape_key":f"0_polygon"  ,
                     "shape_key_number":1000 + sum(ord(char) for char in new_face["shape_key"]) % 9000,
                     "shape_index":0,
-                    "vertex_neighbors":None,
                     "obj_inner":None,
                     "obj_outer":None,
                 }
@@ -695,7 +717,6 @@ class Zome:
                     "shape_key":f"{max_layer_index+1}_polygon"  ,
                     "shape_key_number":1000 + sum(ord(char) for char in new_face["shape_key"]) % 9000,
                     "shape_index":0,#creates from the key string a unique number ,#index of the shape_key
-                    "vertex_neighbors":None,
                     "obj_inner":None,
                     "obj_outer":None,
                 }
@@ -755,13 +776,26 @@ class Zome:
                 for vertex_index,vertex in enumerate(face["vertices"]):
                     face_vertices.append(self.RTM["M"]@vertex)
                 self.faces[key]["vertices"]=face_vertices
-                face_named_vertices={}
-                if "named_vertices" in face:
-                    for vertex_name,vertex in face["named_vertices"].items():
+                face_all_vertices={}
+                if "all_vertices" in face:
+                    for vertex_name,vertex in face["all_vertices"].items():
                         if isinstance(vertex, mathutils.Vector): #there are various None here
-                            face_named_vertices[vertex_name]=self.RTM["M"]@vertex
-                        self.faces[key]["named_vertices"]=face_named_vertices
+                            face_all_vertices[vertex_name]=self.RTM["M"]@vertex
+                        self.faces[key]["all_vertices"]=face_all_vertices
 
+    def draw_faces(self,type="inner",joined=True):
+        if joined:
+            if type=="inner":
+                self.main_collection.objects.link(self.inner_surface) 
+            else:
+                self.main_collection.objects.link(self.outer_surface)
+        else:
+            faces_collection = bpy.data.collections.new(rename(self.basic["name"]+f"_{type}_faces"))
+            self.main_collection.children.link(faces_collection)
+            for face in self.faces.values():
+                if face["on"] and face[f"obj_{type}"] is not None:
+                    faces_collection.objects.link(face[f"obj_{type}"])
+        
     def draw_beams(self,prototypes_only=False):
         #COLLECTIONS:
         self.beams_collection = bpy.data.collections.new(rename(self.name + "_beams"))
@@ -1093,6 +1127,36 @@ class Zome:
                     # Gestisci il caso in cui face non è un dizionario o non contiene la chiave
                     print(f"Warning: face is not a dict or missing key '{key}': {face}")
         return result
+
+#region WIP???
+    #polyhedron: dictionary of basic vertices[layer_index][radial_angle] 
+    # if you'll ever want to built up the whole class method upon this better vertices...
+    #or possibly based on faces, not vertices
+    def polyhedron(self,N,theta,H):
+        vertices = {}
+        if not N:
+            return
+        alpha=360/N
+        h=H/(N+1)
+        l=h/math.tan(math.radians(theta))
+        for layer_index in range(N+1):            
+            match layer_index:
+                case _ if layer_index==0 :  # ANTIAPEX & APEX 
+                    vertices[layer_index][0]=mathutils.Vector((0, 0, layer_index*h))  # appends to the layer a tuple with the apex
+                case 1:  # FIRST LAYER 
+                    for radial_index in range(N):
+                        vertices[layer_index][radial_index]=mathutils.Vector((l * math.sin(math.radians(theta)) * math.cos(math.radians(radial_index * alpha)),l * math.sin(math.radians(theta)) * math.sin(math.radians(radial_index * alpha)),H))
+                case _ if 2 <= layer_index <= N:  # RHOMBI 
+                    for radial_index in range(N): #from 0 to N-1                        
+                        #goes back by 2 layers to find the A vertex to project for the new D vertex of the rhombus
+                        A = vertices[0][0] if layer_index == 2 else vertices[layer_index-2][(radial_index+1) % N]
+                        B = vertices[layer_index-1][radial_index]
+                        C = vertices[layer_index-1][(radial_index+1) % N]
+                        M = (mathutils.Vector(B) + mathutils.Vector(C)) / 2  
+                        vertices[layer_index][radial_index]=2 * M - mathutils.Vector(A)  # new point=symmetric of A wrt B-C
+        return vertices
+
+#endregion
 
 def find_theta(N,S,ZH,target_value,type="base_area"):
     #finds theta to the specified error with numeric method, by starting from theta0

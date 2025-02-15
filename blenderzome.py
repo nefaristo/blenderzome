@@ -1,4 +1,5 @@
 #IMPORT:
+
 import os
 import sys
 import importlib
@@ -14,6 +15,9 @@ global_zome=None
 import blender_base
 importlib.reload(blender_base)
 from blender_base import *
+import global_declarations
+importlib.reload(global_declarations)
+from global_declarations import *
 clear_console()#other import could write to console
 #importa zome
 import zome
@@ -53,22 +57,19 @@ def main():
         print("Registrazioni:")
         all_unregister() 
         all_register()
-        
-    bpy.ops.object.select_all(action='DESELECT')
-    #bb.set_collection(delete_root=True) #DELETE ALL COLLECTIONS
-    if False:
-        dummy_collection = bpy.data.collections.get("dummy")
-        if dummy_collection is None:
-            dummy_collection = bpy.data.collections.new("dummy")    
-            bpy.context.scene.collection.children.link(dummy_collection)
-        vertices = [[-0.5,-0.5,0],[0.5,-0.5,0],[0,0.5,0]]
-        draw_polygon(name="dummy_polygon2423qwe",polyverts=vertices,fill=True,add_to_collection=dummy_collection)
 
-    if False:#list all operators
-        for op in dir(bpy.ops.object):
-            print(">operator:",op)
 
-    #display_paths()
+
+
+
+
+
+
+
+
+
+
+
 
 import bpy
 import bmesh
@@ -76,18 +77,4 @@ from mathutils import Vector, geometry
 
 
 
-
-def test_sezione():
-    #deseleziona tutti gli oggetti
-    obj =bpy.data.objects.get("Gennaro_inner_faces_joined")
-    print(type(obj))
-    plane =bpy.data.objects.get("Plane")
-    verts=mesh_plane_intersection(obj, plane)
-    print(len(verts))
-    print(area_polygon(verts)) 
-
-    polygon = draw_face(name="dummy_polygon2423qwe",vertices=verts,fill=False)
-    
-
 main()
-test_sezione()

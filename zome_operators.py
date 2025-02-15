@@ -1,7 +1,146 @@
 from zome import *
 import bpy
+import global_declarations
 
 print("Zome operators loaded - Version 1.0.2")
+
+
+#region HANDLERS:
+
+
+# Funzione di callback definita normalmente
+def on_click(obj):
+    result = ""
+    if "tool_type" in obj.keys():
+        zome1=global_declarations.zome1    
+        print("tool_type is :",obj["tool_type"])
+        match obj["tool_type"]:  # Controlla se l'oggetto ha la proprietà "measure"
+            case "info_text":
+                # it's a text, for now does nothing
+                print("it's a text, for now does nothing")
+                pass
+            case "surface_measure":
+                if zome1 :
+                    if zome1.inner_surface:
+                        verts=mesh_plane_intersection(zome1.inner_surface, obj)
+                        draw_faces(faces=verts,name=rename(str(random.randint(0,1000000))),joined=True)
+                        result+=f"interno:\n area: {area_polygon(verts):.2f} m2\n perimetro: {perimeter_polygon(verts):.2f} m\n"
+                    if zome1.outer_surface:
+                        verts=mesh_plane_intersection(zome1.outer_surface, obj)
+                        draw_faces(faces=verts,name=rename(str(random.randint(0,1000000))),joined=True)
+                        result+=f"esterno:\n area: {area_polygon(verts):.2f} m2\n perimetro: {perimeter_polygon(verts):.2f} m\n"                    
+                else:
+                    result+="-\n"
+            case "outer_face" | "inner_face":     
+                if obj.get("info"):
+                    result += f"{obj.name}\n"
+            
+    if result!="" : show_info(obj, result, location=obj.location, rotation=obj.rotation_euler)  # if is to stop infinite loop
+    return result
+
+def on_move(obj):
+    result = f"Moved {obj.name} to {obj.location}\n"
+    if bpy.context.object.get("tool_type")=="surface_measure":
+        return on_click(obj)
+    if bpy.context.object.get("tool_type") in ["outer_face","inner_face"]:
+        return on_click(obj)
+    if bpy.context.object.get("tool_type")=="info_text":
+        return on_click(obj)
+    return result
+
+def show_info(obj, message, location=(0, 0, 0), rotation=(0, 0, 0)):
+    #PREPARAZIONE UNA TANTUM
+    if message=="":
+        return
+    if "tools" not in bpy.data.collections:
+        bpy.data.collections.new(rename("tools"))
+    if not bpy.data.materials.get("text_material"): 
+        material = bpy.data.materials.new(name="text_material")
+        material.diffuse_color = (0, 0, 0, 1)  # Colore nero (RGBA)
+    else:
+        material = bpy.data.materials.get("text_material")
+    # Elimina tutti i testi di tool_type info_text:
+    for text_obj in bpy.context.scene.objects:
+        if text_obj.get("tool_type") == "info_text":
+            bpy.data.objects.remove(text_obj)  # Rimuove l'oggetto dalla scena
+
+    # Crea un oggetto di testo 3D se non esiste già
+    text_obj = bpy.data.objects.get(f"InfoText_{obj.name}")  # Usa un nome unico per ogni oggetto
+    if text_obj is None:
+        print(f"create nw text obj named {rename(f'InfoText_{obj.name}')}") 
+        bpy.ops.object.text_add()
+        text_obj = bpy.context.object
+        text_obj.name = rename(f"InfoText_{obj.name}")  # Assegna un nome unico all'oggetto di testo
+        text_obj["tool_type"] = "info_text"
+        text_obj.data.materials.append(material)
+    
+        text_obj.location = obj.location + obj.matrix_world.to_quaternion() @ Vector((-obj.dimensions.x/2, +obj.dimensions.y/2, 0.2))  # Posiziona il testo 1 cm sopra l'oggetto    
+        #text_obj.location = obj.location + obj.matrix_world.to_quaternion() @ Vector((0,0,0.3))  # Posiziona il testo 1 cm sopra l'oggetto    
+        #text_obj.rotation_euler = Vector((0,0,0))
+        #la rotazione è in modo che guardi verso la viewport
+        text_obj.rotation_euler = Vector((0,math.pi/2,0))
+        text_obj.data.size = max(math.sqrt(obj.dimensions.x**2 + obj.dimensions.y**2) / 20, 0.1)  # Assicurati che la dimensione sia almeno 0.1
+        text_obj.data.align_x = 'LEFT'  # Allinea il testo al centro
+        text_obj.data.align_y = 'TOP'   # Allinea il testo al centro
+        text_obj.rotation_euler = rotation  # Imposta la rotazione
+ 
+        text_obj.select_set(True)  # Seleziona l'oggetto di testo
+        bpy.context.view_layer.objects.active = obj  # Imposta l'oggetto descrittivo come attivo
+        bpy.ops.object.parent_set(type='OBJECT')  # Imposta il genitore
+
+        for collection in text_obj.users_collection:
+            collection.objects.unlink(text_obj)
+
+        if text_obj.name not in bpy.data.collections.get("tools").objects:
+            bpy.data.collections.get("tools").objects.link(text_obj)
+        #seleziona l'obj originale:
+        obj.select_set(True)
+        
+    text_obj.data.body = message # Imposta il messaggio come corpo del testo
+    
+last_object={"obj":None,"location":None,"rotation":None}
+updating_post = False  # Variabile statica per controllare l'esecuzione
+
+def manage_update_post(scene):
+    global last_object,updating_post
+    if updating_post:  # Controlla se è già in esecuzione
+        return
+    updating_post = True  # Imposta la variabile a True per indicare che è in esecuzione
+    print(f"updating in corso   ")
+    current_selection = set(bpy.context.selected_objects)  # Ottieni la selezione corrente
+    if len(current_selection) == 1:
+        sel_obj=next(iter(current_selection))            
+        if sel_obj != last_object["obj"] : #new click
+            on_click(sel_obj)  # Chiama il callback    
+            last_object = {
+                "obj": sel_obj,
+                "location": sel_obj.location.copy(),  # Copia della posizione
+                "rotation": sel_obj.rotation_euler.copy()  # Copia della rotazione
+            }  # Aggiorna la selezione precedente 
+        else: #same selection
+            if last_object["location"] != sel_obj.location:
+                on_move(sel_obj)
+            elif last_object["rotation"] != sel_obj.rotation_euler:
+                on_move(sel_obj)
+        #either way saves obj position and rotation:
+        
+    else:
+        last_object["obj"]=None
+    updating_post = False  # Ripristina la variabile al termine dell'esecuzione
+    print(f"updating done")
+
+def register_handlers():
+    if manage_update_post not in bpy.app.handlers.depsgraph_update_post:    
+        bpy.app.handlers.depsgraph_update_post.append(manage_update_post)
+
+def unregister_handlers():
+    if manage_update_post  in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(manage_update_post)
+
+#endregion HANDLERS:
+
+
+#region operators and property updates:
 
 class OBJECT_OT_call_zome(bpy.types.Operator):
     bl_idname = "object.call_zome"
@@ -21,6 +160,7 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
         bpy.context.scene.expand_report = True
         bpy.context.scene.report_text = ""
         bpy.context.scene.is_updating = True
+        unregister_handlers
         zome1 = Zome(
             basic={
                 "N": context.scene.N,
@@ -66,6 +206,8 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             },
             zome_output= self.zome_input
         )
+        global_declarations.zome1 = zome1
+        print(f"zome1 inizializzato: {zome1}")  # Aggiungi questo per il debug
         info=""
         plane=bpy.data.objects.get("Piano per calcolo aree")#eventually code created
         inner_surface=zome1.inner_surface
@@ -80,6 +222,7 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
         info+=zome1.info("all")
 
         bpy.context.scene.report_text=info
+        #register_handlers()#per ora disabilitato il click ecc
         bpy.context.scene.is_updating = False
         return {'FINISHED'}
 
@@ -409,3 +552,4 @@ def unregister():
     
 
     # Deregistra altre classi se necessario
+#endregion operators and property updates:
