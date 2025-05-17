@@ -171,7 +171,10 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
             },
             show={
                 "vertices": context.scene.show_vertices ,
-                "faces": context.scene.show_faces ,
+                "faces": {
+                    "inner": "top|bottom|side" ,
+                    "outer": "top|bottom|side" ,
+                },
                 "edges": context.scene.edges ,
                 "geometry_alpha": context.scene.geometry_alpha,
                 "utilities": context.scene.show_utilities ,
@@ -222,7 +225,11 @@ class OBJECT_OT_call_zome(bpy.types.Operator):
         info+=zome1.info("all")
 
         bpy.context.scene.report_text=info
+        zome1.set_faces_features()
+
+        #assign_material(zome1.outer_surface,bpy.data.materials.get("plank_01"))
         #register_handlers()#per ora disabilitato il click ecc
+
         bpy.context.scene.is_updating = False
         return {'FINISHED'}
 

@@ -48,6 +48,20 @@ zome_basic_face_colors = [
     (0.5, 0.3, 0.0),   # Dark brown
 ]     
 
+zome_material_names={
+    "inner": {
+        "wall":    "planks_01",
+        "roof":    "planks_01",
+        "glass":    "basic_glass",
+    },
+    "outer": {
+        "wall":    "wood_01",
+        "roof":    "tiles_01",
+        "glass":    "basic_glass",
+    },
+    "beams":            "wood_01",
+}
+
 class Zome:
 
     def __init__(
@@ -61,7 +75,10 @@ class Zome:
             },
             show={ 
                 "vertices": 0,
-                "faces": 0, 
+                "faces": {
+                    "inner": "top|side|bottom",
+                    "outer": "top|side|bottom",
+                },
                 "edges": 0,
                 "geometry_alpha": 0.5,
                 "utilities": 0 ,
@@ -130,13 +147,17 @@ class Zome:
         }, **modifications}
         self.show={**{
             "vertices": 0,
-            "faces": 0, 
-            "fill_faces": 0,
+            "faces": {
+                "inner": "top|side|bottom",
+                "outer": "top|side|bottom",
+            },
             "geometry_alpha": 0.5,
             "utilities": 0 ,
             "beams": 0,
             "plane": 0
         }, **show}    
+        self.non_default_materials = {"inner": [[None]]}  # Inizializza con "inner" e una lista di liste
+        self.non_default_materials["inner"][0][0]=None
         self.beam = {**{
             "TW":0.1,
             "TT":0.03,
@@ -171,8 +192,8 @@ class Zome:
         self.RTM["M"]=self.RTM["T"] @ self.RTM["R"]
         #GEOMETRY DATA:
         self.vertices = []
-        self.inner_vertices={}
-        self.outer_vertices={}
+        #self.inner_vertices={}
+        #self.outer_vertices={}
         self.barycenter = (0, 0, 0)  # single tuple (x, y, z) to be updated after building
         self.faces={}
         self.faces_by_shape = [] #eg: [ {'rhombus_EAST': [0], 'rhombus_FULL': [1, 2, 3, 4], 'rhombus_WEST': [5]} , other layers...]
@@ -207,9 +228,7 @@ class Zome:
                 faces[key]["normal"]=face["obj_inner"].data.polygons[0].normal.normalized() @ face["obj_inner"].matrix_world.to_3x3()  
                 for face_key,face_data in face.items():
                     if face_key!="obj_inner" and face_key!="obj_outer":
-                        face["obj_inner"][face_key]=face[face_key]
-        # TOP AND BOTTOM       
-     
+                        face["obj_inner"][face_key]=face[face_key]        
         return 
     
     def get_vertex_neighbors(self,face,vertex_name,only_on=True):#the other faces sharing the vertex of this face
@@ -275,6 +294,8 @@ class Zome:
         return neighbors
     
     def get_external_vertex(self,face,vertex_name,distance,debug=False):
+        exp_factor=1.05 #to properly cover beams notwithstandind approximations
+        distance=distance*exp_factor
         debug_size=6
         if face["all_vertices"][vertex_name] is not None:
             face_normal=face["normal"]
@@ -314,31 +335,26 @@ class Zome:
             return intersection_point
         return None
 
-    def set_outer_faces(self,faces,distance,materials_by="radial_index"):       
+    def set_outer_faces(self,faces,distance,materials_by="radial_index"):
         time_0=time.time()
         for face in faces.values():
             if face["on"] :
-                if "all_vertices" in face: #exclude top and bottom
+                if "all_vertices" in face: #exclude top and bottom!
                     for vertex_name,vertex_position in face["all_vertices"].items():
                         if vertex_name not in face["outer_vertices"] :
                             intersection_point=self.get_external_vertex(face=face,vertex_name=vertex_name,distance=distance)
                             if intersection_point is not None:
                                 #print(f"TROVATA INTERSEZIONE PER {face['layer_index']}_{face['radial_index']},v={vertex_name}")
                                 face["outer_vertices"][vertex_name]=intersection_point   
-                                if face["layer_index"]==0 and face["radial_index"]==3:
-                                    print(f"outer vertices di {face['layer_index']}_{face['radial_index']}: {face['outer_vertices']}")
                                 for key,neighbor in self.get_vertex_neighbors(face=face,vertex_name=vertex_name).items():
                                     if neighbor["shared_vertex"] not in neighbor["face"]["outer_vertices"]:
-                                        neighbor["face"]["outer_vertices"][neighbor["shared_vertex"]]=intersection_point
-                                        if neighbor["face"]["layer_index"]==0 and neighbor["face"]["radial_index"]==3:
-                                            print(f"outer vertices di {neighbor['face']['layer_index']}_{neighbor['face']['radial_index']}: {neighbor['face']['outer_vertices']}")
-                    #the non filled outer_vertices are the ones that have only 1 neighbor (which happens in radial+longitudinal cuts): 
+                                        neighbor["face"]["outer_vertices"][neighbor["shared_vertex"]]=intersection_point                   #the non filled outer_vertices are the ones that have only 1 neighbor (which happens in radial+longitudinal cuts): 
                     # sets them as the top of its beam (inner_vertex + TW) 
                     for vertex_name,vertex_position in face["all_vertices"].items():
                         if vertex_name not in face["outer_vertices"]:
                             pass#face["outer_vertices"][vertex_name]=face["all_vertices"][vertex_name]+face["normal"]*self.beam["TW"]
         
-        #copies the new propery onto obj_inner custom property:
+        #copies the new property onto obj_inner custom property:
         for face in faces.values():
             if "obj_inner" in face:
                 face["obj_inner"]["outer_vertices"]=face["outer_vertices"]     
@@ -380,6 +396,55 @@ class Zome:
         if self.outer_surface is None:
             raise Exception("outer surface not found")
 
+    def get_material_by_name(self,name):
+        return bpy.data.materials.get(name) if name in bpy.data.materials else None
+        
+    def draw_faces(self):
+        self.main_collection.objects.link(self.inner_surface) 
+        for type in ["inner","outer"]:
+            print(self.show["faces"]) #es è :{'inner': 'top', 'outer': 'side'}
+                #voglio solo top e side:
+            show=self.show["faces"][type]
+            print(type,show)
+            if show:                
+                faces_collection = bpy.data.collections.new(rename(self.basic["name"]+f"_{type}_faces"))
+                self.main_collection.children.link(faces_collection)
+                for face in self.faces.values():
+                    layer_type=getattr(face,"layer_type",None)
+                    if face["on"] and face[f"obj_{type}"] is not None:
+                        if ("bottom" in show and layer_type == "bottom_face") or \
+                            ("top" in show and layer_type == "top_face") or \
+                            ("side" in show and layer_type not in ["bottom_face", "top_face"]):
+                            faces_collection.objects.link(face[f"obj_{type}"])
+    
+    def set_faces_features(self):
+        #faces is a dictionary of layer_index and radial_index, apply materials_map [l][i]["material"]
+        for inout_type in ["inner","outer"]:
+            wall = self.get_material_by_name(zome_material_names[inout_type]["wall"])
+            roof = self.get_material_by_name(zome_material_names[inout_type]["roof"])
+            for (layer_index, radial_index), face in self.faces.items(): 
+                material=None           
+                if face[f"obj_{inout_type}"] is not None:
+                    if face[f"obj_{inout_type}"].name in bpy.context.view_layer.objects:   
+                        # Tenta di accedere al valore usando la tripla chiave, restituendo None se non trovato
+                        try:
+                            non_default = self.non_default_materials["inner"][layer_index][radial_index][inout_type]
+                        except (IndexError, KeyError, TypeError):
+                            non_default = None
+                        if non_default:
+                            material=self.get_material_by_name(zome_material_names[inout_type][non_default])
+                        else:   
+                            if face["normal"][2]>0:  
+                                material=roof  
+                            else:
+                                material=wall
+                    if material is not None:
+                        blender_base.assign_material(face[f"obj_{inout_type}"],material)
+                    else:#unlinks to make it invisible:
+                        for collection in bpy.data.collections:
+                            if face[f"obj_{inout_type}"].name in collection.objects:
+                                collection.objects.unlink(face[f"obj_{inout_type}"])
+
     def main(self):
         #PURE GEOMETRY:
         self.vertices=self.basic_vertices(basic=self.basic)  # theoretical vertices of the basic zome (1 cut; no rototranslation)
@@ -391,13 +456,47 @@ class Zome:
         #BLENDER OBJECTS:        
         if self.silent==False:#SVSV check
             #materials_by="shape_key_number" #"layer_index" | "radial_index" 
-            show_inner="joined" if self.show["faces"] else None
-            show_outer="joined" if self.show["faces"] else None
             self.set_inner_faces(faces=self.faces)        
             self.set_outer_faces(faces=self.faces,distance=self.beam["TW"],materials_by="radial_index")
-            if self.show["faces"]:
-                self.draw_faces(type="inner",joined=False)
-                self.draw_faces(type="outer",joined=False)
+            self.draw_faces()
+            # tapullo:
+            for face in self.faces.values():
+                if face["on"]:
+                    if face["layer_type"]=="top_face" and face["obj_inner"] is not None:
+                        print(face["obj_inner"],"OBJ_INNER")
+                        z_axis = (self.RTM["R"] @ mathutils.Vector((0,0,1))).normalized()
+                        #move obj_inner of -0.5 along z_axis:
+                        face["obj_inner"].location=face["obj_inner"].location-0.5*z_axis
+                        # Imposta la scala utilizzando il vettore trasformato da RTM
+                        face["obj_inner"].scale = (3,3,3)#self.RTM["M"].to_scale() * 3
+                        new_verts=mesh_plane_intersection(self.inner_surface,face["obj_inner"])
+                        
+                        test_plane = bpy.context.scene.objects.get("Plane")  # Ottieni l'oggetto "Plane" dalla scena
+                        test_verts=mesh_plane_intersection(self.inner_surface,test_plane)
+                        #takes first(and only)  collection of the obj_inner:
+                        collection=face["obj_inner"].users_collection[0]
+                        print(collection,"COLLECTION")
+                        print(new_verts,"new_verts")
+                        print(test_verts,"test_verts")
+                        print (get_face_normal(test_plane),"testnorm")
+                        print (get_face_normal(face["obj_inner"]),"newnorm")
+
+                        draw_face(name=f"TEST",
+                            vertices=test_verts,
+                            fill=True,
+                            material=face["obj_inner"].data.materials[0] if len(face["obj_inner"].data.materials)>0 else None,
+                            add_to_collection=collection
+                        )                        
+                        draw_face(name=f"{face['obj_inner'].name}_test",
+                            vertices=new_verts,
+                            fill=True,
+                            material=face["obj_inner"].data.materials[0] if len(face["obj_inner"].data.materials)>0 else None,
+                            add_to_collection=collection
+                        )
+            #calc the z as 0,0,1 rotated: 
+                        #new_verts=mesh_plane_intersection(inner_surface, plane)
+
+                #self.set_faces_features()
         if self.show["vertices"]:
             vertices_collection = bpy.data.collections.new(rename(self.name+"_vertices"))
             self.main_collection.children.link(vertices_collection)
@@ -410,6 +509,7 @@ class Zome:
             z_axis = (self.RTM["R"] @ mathutils.Vector((0,0,1))).normalized()
             draw_vertices(points=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis_top",size=self.basic['ZH']*0.01,joined=True,add_to_collection=utilities_collection)
             draw_segment(start=self.local.location,end=self.local.location+z_axis*self.basic['ZH'],name=f"{self.basic['name']}_z_axis",add_to_collection=utilities_collection)
+        
 
         self.external_collection = None
         if self.show["beams"] == 1:
@@ -447,7 +547,8 @@ class Zome:
                 mat = bpy.data.materials.new(rename(f"Basic_Material_{i}"))
                 #mat.color is a tuple of 3 vals of color + alpha:
                 mat.diffuse_color = color + (alpha,)
-                basic_materials.append(mat)          
+                basic_materials.append(mat)  
+
         return main_collection,basic_materials
 
     def basic_vertices(self,basic=None):
@@ -573,7 +674,7 @@ class Zome:
                         "form_type":None,#"triangle","upside_down_triangle","rhombus",
                         "all_vertices":None,#dict of all 4+1 (H) vertices, regardless of None or not
                         "vertices":None,#list of vertices
-                        "inner_vertices":None,#dict of inner vertices 
+                        #"inner_vertices":None,#dict of inner vertices TODO: NOT USED ANYMORE?????
                         "outer_vertices":{},#dict of outer vertices, set by set_outer_faces()
                         "vertices_names":None,#list of vertices names, 
                         "edge_names":None,#list of edge names, used mainly for beams??SVSV 
@@ -687,7 +788,7 @@ class Zome:
                     "radial_angle":0,
                     "radial_index":0,
                     "radial_cut_type":"full",
-                    "layer_type":"bottom",
+                    "layer_type":"bottom_face",
                     "form_type":"polygon",#"triangle","upside_down_triangle","rhombus", set right in the following
                     "vertices":bottom_face,#list of vertices, set right in the following
                     "vertices_names":[],#list of vertices names, set right in the following
@@ -708,7 +809,7 @@ class Zome:
                     "radial_angle":0,
                     "radial_index":0,
                     "radial_cut_type":"full",
-                    "layer_type":"top",
+                    "layer_type":"top_face",
                     "form_type":"polygon",#"triangle","upside_down_triangle","rhombus", set right in the following
                     "vertices":top_face,#list of vertices, set right in the following
                     "vertices_names":[],#list of vertices names, set right in the following
@@ -782,19 +883,6 @@ class Zome:
                         if isinstance(vertex, mathutils.Vector): #there are various None here
                             face_all_vertices[vertex_name]=self.RTM["M"]@vertex
                         self.faces[key]["all_vertices"]=face_all_vertices
-
-    def draw_faces(self,type="inner",joined=True):
-        if joined:
-            if type=="inner":
-                self.main_collection.objects.link(self.inner_surface) 
-            else:
-                self.main_collection.objects.link(self.outer_surface)
-        else:
-            faces_collection = bpy.data.collections.new(rename(self.basic["name"]+f"_{type}_faces"))
-            self.main_collection.children.link(faces_collection)
-            for face in self.faces.values():
-                if face["on"] and face[f"obj_{type}"] is not None:
-                    faces_collection.objects.link(face[f"obj_{type}"])
         
     def draw_beams(self,prototypes_only=False):
         #COLLECTIONS:
@@ -808,7 +896,7 @@ class Zome:
         T = mathutils.Matrix.Translation(mathutils.Vector(self.local.location))
         self.beams_strip = []
         self.beams = []
-        material_name=self.beam["material_name"]
+        material_name=zome_material_names["beams"]
         tot_beams=0
         t_0=time.time()
         #ordina self.faces per le sue chiavi: layer_index, shape_key, shape_index:
@@ -818,7 +906,8 @@ class Zome:
         prototypes={}
         copies={}
         for key, face in sorted_faces:
-            if face["shape_index"]==0 :
+            layer_type=getattr(face,"layer_type",None)
+            if face["shape_index"]==0 and layer_type!="top_face" and layer_type!="bottom_face":
                 prototype=beams_polygon(
                     add_to_collection=add_to_collection,
                     poly_name=f"{self.name}_beam_{face['layer_index']}_{face['radial_index']}",
@@ -1204,6 +1293,11 @@ def find_theta(N,S,ZH,target_value,type="base_area"):
     constraint.spring_damping_x = 0.5
     constraint.spring_damping_y = 0.5
     constraint.spring_damping_z = 0.5
+
+
+
+
+
 
 
 

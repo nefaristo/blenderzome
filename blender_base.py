@@ -286,26 +286,16 @@ def display_paths():
         if texture.filepath:
             print(f"Texture: {texture.name}, Path: {texture.filepath}")
 
-def assign_material(obj, material_name):
-    if obj is None or obj.type != 'MESH':
-        print("Object not a mesh.")
-        return
-    print("Assigning material:",material_name,"to",obj.name)
-    # Cerca il materiale per nome
-    material = bpy.data.materials.get(material_name)
-    
-    # Se il materiale non esiste, segnala e termina
-    if material is None:
-        print(f"Material not found: '{material_name}'.")
-        return
-
-    # Assicura che l'oggetto abbia uno slot materiale
-    if len(obj.data.materials) == 0:
-        obj.data.materials.append(material)
-    else:
+def assign_material(obj, material):
+    if obj.data.materials:
         obj.data.materials[0] = material
-    
-    print(f"Material '{material_name}' assigned to '{obj.name}'.")
+    else:
+        obj.data.materials.append(material)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.uv.unwrap(method='ANGLE_BASED')
+    bpy.ops.object.mode_set(mode='OBJECT')
 
 def boolean_union_selected(new_object_name):
     # Ottieni gli oggetti selezionati
@@ -574,7 +564,26 @@ def set_origin(obj):
     # Aggiornare l'origine dell'oggetto senza spostarlo
     obj.matrix_world.translation += center_of_mass_global - obj.location
 
+def get_texture_dimensions(material):
+    for node in material.node_tree.nodes:
+        if node.type == 'TEX_IMAGE':  # Look for an image texture node
+            image = node.image
+            if image:
+                return image.size
+    return None
 
+def get_face_normal(obj):
+    """
+    Calculate the face normal of a mesh object.
+    """
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.verts.ensure_lookup_table()  # Assicurati che la tabella degli indici sia aggiornata
+    bm.faces.ensure_lookup_table()  # Assicurati che la tabella degli indici sia aggiornata
+
+    normal = bm.faces[0].normal.copy()  # Get the normal of the first face
+    bm.free()  # Free memory
+    return normal
 
 # endregion BLENDER OBJECTS:
 
