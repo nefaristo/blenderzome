@@ -475,12 +475,12 @@ class Zome:
                         test_verts=mesh_plane_intersection(self.inner_surface,test_plane)
                         #takes first(and only)  collection of the obj_inner:
                         collection=face["obj_inner"].users_collection[0]
-                        print(collection,"COLLECTION")
+                        """print(collection,"COLLECTION")
                         print(new_verts,"new_verts")
                         print(test_verts,"test_verts")
                         print (get_face_normal(test_plane),"testnorm")
                         print (get_face_normal(face["obj_inner"]),"newnorm")
-
+                        """
                         draw_face(name=f"TEST",
                             vertices=test_verts,
                             fill=True,
