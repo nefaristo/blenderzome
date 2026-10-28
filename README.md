@@ -1,4 +1,4 @@
-# Zome 2.0.4
+# Zome 2.0.5
 
 Serve Blender 5.2.
 

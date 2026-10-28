@@ -1,11 +1,11 @@
-"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.4, 2026-10-28).
+"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.5, 2026-10-28).
 
 Disegna l'INTERNO di una zome con la geometria di zome_core.py (stessa cartella).
 Uso: nel Text editor di Blender aprire carica_zome.py e premere "Esegui script",
 oppure (da codice) aggiungere la cartella a sys.path e chiamare blenderzome.register().
 Il pannello compare nella barra laterale della vista 3D (tasto N), scheda "Zome".
 """
-VERSIONE = "2.0.4"   # tag della release su github.com/nefaristo/blenderzome.
+VERSIONE = "2.0.5"   # tag della release su github.com/nefaristo/blenderzome.
 _REPO = "nefaristo/blenderzome"
 
 bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 4), "blender": (5, 2, 0),
