@@ -1,14 +1,14 @@
-"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.3, 2026-10-28).
+"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.4, 2026-10-28).
 
 Disegna l'INTERNO di una zome con la geometria di zome_core.py (stessa cartella).
 Uso: nel Text editor di Blender aprire carica_zome.py e premere "Esegui script",
 oppure (da codice) aggiungere la cartella a sys.path e chiamare blenderzome.register().
 Il pannello compare nella barra laterale della vista 3D (tasto N), scheda "Zome".
 """
-VERSIONE = "2.0.3"   # tag della release su github.com/nefaristo/blenderzome.
+VERSIONE = "2.0.4"   # tag della release su github.com/nefaristo/blenderzome.
 _REPO = "nefaristo/blenderzome"
 
-bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 3), "blender": (5, 2, 0),
+bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 4), "blender": (5, 2, 0),
            "location": "Vista 3D > barra laterale > Zome", "description": "Interno di una zome (N, M, theta, ZH)",
            "category": "Mesh"}
 
@@ -75,6 +75,15 @@ zome_foglio = _carica_modulo("zome_foglio")
 zome_scena = _carica_modulo("zome_scena")
 
 _REBUILDING = False
+
+
+def _foglio_prezzi():
+    """Riferimenti/proprieta_materiali.xlsx nel progetto. Nella release il foglio sta in sistema/, così arriva anche con Aggiorna."""
+    for cartella in (os.path.join(_HERE, "Riferimenti"), _CODICE):
+        percorso = os.path.join(cartella, "proprieta_materiali.xlsx")
+        if os.path.isfile(percorso):
+            return percorso
+    raise FileNotFoundError("Manca proprieta_materiali.xlsx: non è in Riferimenti/ né in sistema/")
 
 
 def _catalogo(z):
@@ -996,7 +1005,7 @@ def _voci_isolanti(self, context):
     """Nomi del foglio materiali, categoria isolanti. Il valore salvato è il nome della riga."""
     if _ISOLANTI_VOCI["elenco"] is None:
         try:
-            prezzi = zome_foglio.carica_prezzi(os.path.join(_HERE, "Riferimenti", "proprieta_materiali.xlsx"))
+            prezzi = zome_foglio.carica_prezzi(_foglio_prezzi())
             _ISOLANTI_VOCI["elenco"] = zome_foglio.elenco_isolanti(prezzi)
         except (OSError, KeyError, ValueError):
             _ISOLANTI_VOCI["elenco"] = [("Canapa", "Canapa", "")]
@@ -1902,7 +1911,7 @@ class ZOME_OT_foglio(bpy.types.Operator):
             zome_foglio = _carica_modulo("zome_foglio")
             zome_scena = _carica_modulo("zome_scena")
             oggetti, meta = _oggetti_foglio(z)
-            prezzi = zome_foglio.carica_prezzi(os.path.join(_HERE, "Riferimenti", "proprieta_materiali.xlsx"))
+            prezzi = zome_foglio.carica_prezzi(_foglio_prezzi())
             statica = ""
             try:
                 modello = _model_for(z)
@@ -2535,7 +2544,7 @@ def _statica_disegna(context, nome, esito, fuori_m=0.08):
 
 def _pelli_statica(z):
     """Densità dal foglio materiali. Il vetro è il pacco, non il volume della lastra disegnata."""
-    prezzi = zome_foglio.carica_prezzi(os.path.join(_HERE, "Riferimenti", "proprieta_materiali.xlsx"))
+    prezzi = zome_foglio.carica_prezzi(_foglio_prezzi())
 
     def dens(chiave):
         riga = prezzi.get(zome_foglio.NOMI[chiave]) or {}

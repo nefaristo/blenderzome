@@ -6,7 +6,10 @@ from zome_foglio import NOMI, blocco_termico, carica_prezzi, guadagno_faccia, ht
 
 QUI = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(QUI) if os.path.basename(QUI).lower() == "sistema" else QUI
-PREZZI = carica_prezzi(os.path.join(ROOT, "Riferimenti", "proprieta_materiali.xlsx"))
+_FOGLIO = os.path.join(ROOT, "Riferimenti", "proprieta_materiali.xlsx")
+if not os.path.isfile(_FOGLIO):  # nella release sta in sistema/
+    _FOGLIO = os.path.join(QUI, "proprieta_materiali.xlsx")
+PREZZI = carica_prezzi(_FOGLIO)
 
 assert abs(PREZZI[NOMI["c24"]]["prezzo"] - 661.38) < 1e-6
 assert abs(PREZZI[NOMI["vetro"]]["prezzo"] - 110) < 1e-6

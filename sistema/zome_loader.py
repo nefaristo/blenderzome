@@ -11,7 +11,7 @@ Cosi' non c'e' un percorso con il nome utente scritto nel codice: sul secondo co
 stesso posto sotto la cartella utente, parte da sola; altrimenti basta compilare il campo nelle preferenze.
 Il pannello sta in BlenderZome/sistema/blenderzome.py. Il campo delle preferenze indica la cartella BlenderZome, non sistema/.
 """
-bl_info = {"name": "Zome (pannello)", "author": "Stefano", "version": (2, 0, 3), "blender": (5, 2, 0),
+bl_info = {"name": "Zome (pannello)", "author": "Stefano", "version": (2, 0, 4), "blender": (5, 2, 0),
            "location": "Vista 3D > barra laterale (N) > Zome",
            "description": "Pannello Zome per Blender 5.2. Carica sistema/blenderzome.py", "category": "Mesh"}
 
