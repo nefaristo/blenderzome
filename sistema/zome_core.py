@@ -349,9 +349,10 @@ def _selez_triangoli(kind, pts, p: Params, off, soglia):
 
 
 def _chiusure_pavimento(kind, pts, p: Params, off, soglia):
-    """Triangoli scartati dal baricentro ma che arrivano alla soglia con un vertice: chiudono il buco fra i pezzi tenuti e il
-    pavimento. Non entrano nel calcolo della quota, cosi' l'altezza resta quella gia' scelta. Se scendono sotto il piano,
-    chi li posa li accorcia sul pavimento e li lascia triangoli."""
+    """Triangoli scartati dal baricentro ma che salgono sopra il pavimento. Chiudono il buco fra i pezzi tenuti e il piano:
+    la soglia dei baricentri sta piu' in alto del pavimento, e un triangolo puo' essere tutto sopra il piano senza
+    raggiungerla. Non entrano nel calcolo della quota, cosi' l'altezza resta quella gia' scelta. La parte sotto il piano
+    si accorcia e resta un triangolo."""
     tenuti = []
     for nome, tri in _selez_triangoli(kind, pts, p, off, soglia):
         tenuti.extend(_triangoli_di(nome, tri) or [(nome, tri)])
@@ -363,7 +364,7 @@ def _chiusure_pavimento(kind, pts, p: Params, off, soglia):
         if chiave(tri) in gia:
             continue
         zt = [_add(_rot(q, p.tilt, p.orient), off)[2] for q in tri]
-        if max(zt) >= soglia - _EPS_Z:
+        if max(zt) > p.zfloor + _EPS_Z:
             out.append((nome, tri))
     return out
 

@@ -49,7 +49,8 @@ assert "approssimati" in testo
 assert "Travi e travetti" in testo and "Vetrocamera" in testo
 
 from zome_pavimento import interasse_massimo
-from zome_scena import _estensioni, _si_incrocia, _viste_tipo, componi, espandi, firma, html_scena, svg_schema
+from zome_scena import (_estensioni, _si_incrocia, _viste_tipo, componi, espandi, firma, html_scena,
+                        pagine_report, svg_schema)
 
 
 def _box(origine, size):
@@ -138,6 +139,32 @@ assert det_trav["comanda"] == "freccia" and 0.40 < i_trav < 0.48, (i_trav, det_t
 solo_s = componi(oggetti, {"nome": "prova"}, dict(opz_s, esterno=False, perline=False, vetro=False), PREZZI)
 assert all(r["chiave"] == "c24" for r in solo_s["righe"])
 assert "<h2>Vetrocamera</h2>" not in html_scena(solo_s)
+pagine = pagine_report(dati_s)
+assert set(pagine) == {"report.html", "preventivo.html", "statica.html", "termico.html",
+                       "costruttivi.html", "manufatti.html"}
+assert "Preventivo e capitolato" in pagine["preventivo.html"] and "id='note'" in pagine["preventivo.html"]
+assert "Valutazione statica" in pagine["statica.html"]
+assert "Luglio e agosto" in pagine["termico.html"] or "Manca" in pagine["termico.html"]
+assert "Isometrica" in pagine["costruttivi.html"] and "Sezione" in pagine["costruttivi.html"]
+assert "preventivo.html" in pagine["report.html"] and "costruttivi.html" in pagine["report.html"]
+assert "manufatti.html" in pagine["report.html"] and "non ho trovato manufatti" in pagine["manufatti.html"]
+
+
+def _manufatto(nome, origine, size):
+    v, f = _box(origine, size)
+    return {"nome": nome, "pezzi": [{"ruolo": "legno", "verts": v, "faces": f}]}
+
+
+casa = _manufatto("casa", (0, 0, 0), (4, 3, 2.5))
+bagno = _manufatto("bagno", (0.2, 5, 0), (2, 2, 2.2))
+pag_m = pagine_report(dict(dati_s, manufatti=[casa, bagno], punti_igienico=[(1.2, 6.0, 1.0)]))["manufatti.html"]
+assert "4,00 m (est-ovest)" in pag_m and "3,00 m (nord-sud)" in pag_m and "2,50 m" in pag_m
+assert "«bagno»: il servizio igienico è presente all&#x27;interno." in pag_m
+assert "non è presente all&#x27;interno" in pag_m and "2,00 m" in pag_m and "4,50 m a nord" in pag_m
+assert all(voce in pag_m for voce in ("Isometrica", "Pianta", "Fronte", "Laterale"))
+assert pag_m.count("<svg") == 4
+solo = pagine_report(dict(dati_s, manufatti=[casa], punti_igienico=[]))["manufatti.html"]
+assert "non risulta dal modello" in solo
 
 solo = dict(opz, esterno=False, perline=False, vetro=False)
 d2 = prepara(m, solo, PREZZI)

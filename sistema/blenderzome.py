@@ -1,20 +1,21 @@
-"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.2, 2026-10-28).
+"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.3, 2026-10-28).
 
 Disegna l'INTERNO di una zome con la geometria di zome_core.py (stessa cartella).
 Uso: nel Text editor di Blender aprire carica_zome.py e premere "Esegui script",
 oppure (da codice) aggiungere la cartella a sys.path e chiamare blenderzome.register().
 Il pannello compare nella barra laterale della vista 3D (tasto N), scheda "Zome".
 """
-VERSIONE = "2.0.2"   # tag della release su github.com/nefaristo/blenderzome.
+VERSIONE = "2.0.3"   # tag della release su github.com/nefaristo/blenderzome.
 _REPO = "nefaristo/blenderzome"
 
-bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 2), "blender": (5, 2, 0),
+bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 3), "blender": (5, 2, 0),
            "location": "Vista 3D > barra laterale > Zome", "description": "Interno di una zome (N, M, theta, ZH)",
            "category": "Mesh"}
 
 import colorsys
 import importlib
 import io
+import importlib.util
 import json
 import math
 import os
@@ -50,10 +51,28 @@ import zome_viste
 importlib.reload(zome_viste)
 import zome_statica
 importlib.reload(zome_statica)
-import zome_foglio
-import zome_scena
-importlib.reload(zome_foglio)
-importlib.reload(zome_scena)
+
+
+def _carica_modulo(nome):
+    """Carica un modulo da sistema/ con il percorso del file.
+
+    importlib.reload fallisce con «spec not found» se il modulo era stato
+    importato da una cartella che non c'è più (la copia su Drive, vuota dal 28/10).
+    """
+    percorso = os.path.join(_CODICE, nome + ".py")
+    if not os.path.isfile(percorso):
+        raise ModuleNotFoundError(f"Manca {nome}.py in {_CODICE}")
+    spec = importlib.util.spec_from_file_location(nome, percorso)
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(f"Non riesco a leggere {nome}.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[nome] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+zome_foglio = _carica_modulo("zome_foglio")
+zome_scena = _carica_modulo("zome_scena")
 
 _REBUILDING = False
 
@@ -1784,14 +1803,84 @@ def _oggetti_foglio(z):
     return oggetti, meta
 
 
+_RUOLI_GUSCIO = ("Esterno", "Tetto", "Porta", "Pavimento")
+_PAROLE_IGIENICO = ("sanitari", "bidet", "doccia", "lavandino", "lavabo", "water", "igien")
+
+
+def _ruolo_collection(nome):
+    return nome.split(" · ", 1)[1] if " · " in nome else ""
+
+
+def _centro_mondo(ob):
+    mw = ob.matrix_world
+    pts = [mw @ mathutils.Vector(c) for c in ob.bound_box]
+    return tuple(sum(p[i] for p in pts) / len(pts) for i in range(3))
+
+
+def _e_igienico(ob):
+    if ob.type != "MESH":
+        return False
+    nomi = " ".join([ob.name.lower()] + [c.name.lower() for c in ob.users_collection])
+    if "etichett" in nomi:
+        return False
+    if any(p in nomi for p in _PAROLE_IGIENICO):
+        return True
+    return "wc" in ob.name.lower()
+
+
+def _manufatti_file():
+    """Guscio di ogni manufatto nel file, e i punti dei sanitari. Il bagno è una collection a parte, se c'è."""
+    figli = set()
+    for coll in bpy.data.collections:
+        for ch in coll.children:
+            figli.add(ch.name)
+    manufatti, punti = [], []
+    visti = set()
+
+    def pezzi_di(coll):
+        fuori = []
+        for nodo in [coll, *coll.children_recursive]:
+            ruolo = _ruolo_collection(nodo.name)
+            if not any(ruolo == voce or ruolo.startswith(voce + " ") or ruolo.startswith(voce + " · ")
+                       for voce in _RUOLI_GUSCIO):
+                continue
+            chiave = "vetro" if "vetro" in ruolo.lower() else (
+                "tetto" if ruolo.startswith("Tetto") else
+                "porta" if ruolo.startswith("Porta") else
+                "pavimento" if ruolo.startswith("Pavimento") else "legno")
+            for ob in nodo.objects:
+                if ob.type != "MESH" or ob.data is None or not ob.data.polygons:
+                    continue
+                if ob.as_pointer() in visti:
+                    continue
+                visti.add(ob.as_pointer())
+                mw = ob.matrix_world
+                verts = [tuple((mw @ v.co)[i] for i in range(3)) for v in ob.data.vertices]
+                faces = [list(p.vertices) for p in ob.data.polygons]
+                fuori.append({"ruolo": chiave, "verts": verts, "faces": faces})
+        return fuori
+
+    for coll in bpy.data.collections:
+        if coll.name in figli or coll.name in ("Collection", "Scene Collection", "environment"):
+            continue
+        pezzi = pezzi_di(coll)
+        if pezzi:
+            manufatti.append({"nome": coll.name, "pezzi": pezzi})
+    for ob in bpy.data.objects:
+        if _e_igienico(ob):
+            punti.append(_centro_mondo(ob))
+    return manufatti, punti
+
+
 class ZOME_OT_foglio(bpy.types.Operator):
-    """Scrive il report dai solidi della collection e lo apre"""
+    """Scrive indice, preventivo, statica, termico, costruttivi e manufatti, e apre l'indice"""
     bl_idname = "zome.foglio"
     bl_label = "Crea report"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
         import webbrowser
+        global zome_foglio, zome_scena
         z = context.scene.zome
         nome = z.nome or "zome"
         if bpy.data.collections.get(nome) is None:
@@ -1806,18 +1895,36 @@ class ZOME_OT_foglio(bpy.types.Operator):
             percorso = os.path.join(cartella_ist, "report.html")
         else:
             sicuro = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in nome)
-            percorso = os.path.join(_ROOT, "reports", sicuro + ".html")
+            cartella = os.path.join(_ROOT, "reports", sicuro)
+            os.makedirs(cartella, exist_ok=True)
+            percorso = os.path.join(cartella, "report.html")
         try:
-            importlib.reload(zome_foglio)
-            importlib.reload(zome_scena)
+            zome_foglio = _carica_modulo("zome_foglio")
+            zome_scena = _carica_modulo("zome_scena")
             oggetti, meta = _oggetti_foglio(z)
             prezzi = zome_foglio.carica_prezzi(os.path.join(_HERE, "Riferimenti", "proprieta_materiali.xlsx"))
-            dati = zome_scena.scrivi_scena(percorso, oggetti, meta, opz, prezzi)
+            statica = ""
+            try:
+                modello = _model_for(z)
+                if modello is None:
+                    statica = z.errore or "Modello non disponibile per la statica."
+                else:
+                    esito = zome_statica.analizza(
+                        modello, TT=z.TT / 100.0, TW=z.TW / 100.0, density=z.densita,
+                        snow_kN_m2=z.statica_neve, pelli=_pelli_statica(z))
+                    statica = esito.get("testo") or ""
+                    if statica:
+                        z.statica_testo = statica
+            except Exception as exc:
+                statica = "Analisi non riuscita: " + str(exc)
+            manufatti, punti_igienico = _manufatti_file()
+            dati = zome_scena.scrivi_scena(percorso, oggetti, meta, opz, prezzi, statica=statica,
+                                           manufatti=manufatti, punti_igienico=punti_igienico)
         except Exception as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
         webbrowser.open(percorso)
-        self.report({'INFO'}, f"Report: {dati['totale']:.2f} €  ({percorso})")
+        self.report({'INFO'}, f"Report: {dati['totale']:.2f} €  ({os.path.dirname(percorso)})")
         return {'FINISHED'}
 
 
@@ -1829,9 +1936,10 @@ class ZOME_PT_dati(_SottoPannello):
     def draw(self, context):
         z = context.scene.zome
         lay = self.layout
-        lay.label(text="Strati, pezzi, pesi e preventivo stanno nel report")
+        lay.label(text="Un clic scrive i sei file e apre l'indice")
         box = lay.box()
-        box.label(text="Report")
+        box.label(text="Preventivo, statica, termico,")
+        box.label(text="costruttivi, manufatti")
         row = box.row(align=True)
         row.prop(z, "foglio_esterno", toggle=True)
         row.prop(z, "foglio_perline", toggle=True)

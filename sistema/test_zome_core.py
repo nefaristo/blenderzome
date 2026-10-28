@@ -1,7 +1,7 @@
 """Prove di zome_core.py.  Esecuzione: python3 test_zome_core.py (dalla cartella)"""
 import math
 from collections import Counter
-from zome_core import Params, build, rings, ground_radius, solve_secondary_total_height
+from zome_core import Params, build, rings, ground_radius, solve_secondary_total_height, _area, _clip_poly
 
 def close(a, b, tol=1e-9): return abs(a - b) <= tol * max(1.0, abs(a), abs(b))
 
@@ -392,6 +392,24 @@ for t_ in (0, 20, 50, 80, 100):
     cnt_.append(len(fz_))
 # chiudere i buchi alla base aggiunge triangoli, quindi il numero di facce non scende in modo monotono
 assert cnt_[0] == 50 and cnt_[-1] >= 1 and cnt_[-1] < cnt_[0], cnt_
+def _area_guscio(model, zf=None):
+    a = 0.0
+    for st in model["strata"]:
+        for _, f in st["facce"]:
+            poly = list(f)
+            if zf is not None and min(q[2] for q in poly) < zf - 1e-8:
+                poly, _ = _clip_poly(poly, (0.0, 0.0, 1.0), zf)
+                if not poly:
+                    continue
+            a += _area(poly)
+    return a
+# sopra il pavimento non mancano triangoli: l'area e' quella della zome intera tagliata col piano
+for kw in ({"N": 10, "M": 6, "theta": 44.0, "ZH": 3.9},
+           {"N": 12, "M": 12, "theta": 50.0, "ZH": 5.78, "cut": 2, "M2": 3, "theta2": 70.0}):
+    for t_ in (20.0, 40.0, 50.0, 80.0):
+        mc = build(Params(**kw, tilt=90.0, floor=True, zfloor=0.38, pav_taglio=t_))
+        mf = build(Params(**kw, tilt=90.0, floor=False, pz=mc["params"].pz))
+        assert abs(_area_guscio(mc) - _area_guscio(mf, mc["params"].zfloor)) < 1e-3, (kw["N"], t_)
 ma_ = build(Params(N=10, M=6, theta=44.0, ZH=3.9, tilt=90.0, floor=True, zfloor=0.4, pav_taglio=50.0))
 mp_ = build(Params(N=10, M=6, theta=44.0, ZH=3.9, tilt=90.0, floor=True, zfloor=0.4, pz=0.0))
 assert ma_["summary"]["area_pavimento"] > 5 and ma_["pavimento"] is not None

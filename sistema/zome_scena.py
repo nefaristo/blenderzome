@@ -924,6 +924,8 @@ def componi(oggetti, meta, opz, prezzi):
     termico_meta["area_opaca_m2"], termico_meta["area_vetro_m2"] = _aree_guscio(capitoli, meta)
     return {"nome": meta.get("nome", "zome"), "testa": testa, "note": note, "capitoli": capitoli,
             "righe": righe, "totale": totale, "fette": fette, "peso": peso,
+            "ferramenta": int(meta.get("ferramenta") or 0),
+            "porta_esclusa": bool(meta.get("porta_esclusa")),
             "termico": blocco_termico(prezzi, termico_meta)}
 
 
@@ -983,8 +985,7 @@ def _capitolo_da_voce(voce):
     return "aggiunto"
 
 
-def html_scena(dati):
-    note = "".join(f"<li>{_esc(t)}</li>" for t in dati["note"])
+def _corpo_costruttivi(dati):
     blocchi = []
     dida = ("<p class='meta'>Pianta, laterale e sezione sono in proporzione vera. I centimetri stanno sul lato. "
             "Il grado sta sul vertice: è l'angolo interno, e tra parentesi c'è quanto manca a 90. "
@@ -1015,6 +1016,11 @@ def html_scena(dati):
             + "<table class='tipi'><tbody>" + "".join(righe) + "</tbody></table>"
             + _somma_capitolo(cap))
         prima = False
+    return "".join(blocchi)
+
+
+def html_scena(dati):
+    note = "".join(f"<li>{_esc(t)}</li>" for t in dati["note"])
     return f"""<!DOCTYPE html>
 <html lang="it"><head><meta charset="utf-8"><title>Report — {_esc(dati['nome'])}</title>
 <style>
@@ -1062,7 +1068,7 @@ svg.termico text.ora {{ text-anchor: middle; }}
 <h2>Note</h2>
 <ul>{note}</ul>
 {dati.get("termico") or ""}
-{''.join(blocchi)}
+{_corpo_costruttivi(dati)}
 </body></html>"""
 
 
@@ -1116,9 +1122,481 @@ def _somma_capitolo(cap):
     return f"<p class='somma'>Totale {qta} · {massa}{metri}</p>"
 
 
-def scrivi_scena(percorso, oggetti, meta, opz, prezzi):
+_PAGINE = (
+    ("report.html", "Indice"),
+    ("preventivo.html", "Preventivo e capitolato"),
+    ("statica.html", "Valutazione statica"),
+    ("termico.html", "Valutazione termica"),
+    ("costruttivi.html", "Dettagli costruttivi"),
+    ("manufatti.html", "Manufatti e servizio igienico"),
+)
+
+_COLORI_GUSCIO = {
+    "legno": "#c4b49a", "vetro": "#9bb8c4", "tetto": "#3e6b4f",
+    "porta": "#8d6e4a", "pavimento": "#a07850",
+}
+_VISTE_MANUFATTO = (
+    ("iso", "Isometrica", "I manufatti insieme, stessa scala."),
+    ("pianta", "Pianta", "Nord in alto, est a destra."),
+    ("fronte", "Fronte", "Da sud. Est a destra, altezza in verticale."),
+    ("laterale", "Laterale", "Da est. Nord a destra, altezza in verticale."),
+)
+
+
+def _bbox_punti(verts):
+    xs, ys, zs = zip(*verts)
+    return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
+
+
+def _volume_bbox(b):
+    return max(b[1] - b[0], 0.0) * max(b[3] - b[2], 0.0) * max(b[5] - b[4], 0.0)
+
+
+def _dentro_bbox(p, b, tol=0.05):
+    return (b[0] - tol <= p[0] <= b[1] + tol and b[2] - tol <= p[1] <= b[3] + tol
+            and b[4] - tol <= p[2] <= b[5] + tol)
+
+
+def _misure_assi(b):
+    """Lunghezza = lato maggiore in pianta. L'est è +X, il nord è +Y."""
+    eo, ns, h = b[1] - b[0], b[3] - b[2], b[5] - b[4]
+    if eo >= ns:
+        return eo, "est-ovest", ns, "nord-sud", h
+    return ns, "nord-sud", eo, "est-ovest", h
+
+
+def _verso_plan(dx, dy):
+    parti = []
+    if abs(dx) >= 0.05:
+        parti.append(f"{_n(abs(dx), 2)} m a {'est' if dx > 0 else 'ovest'}")
+    if abs(dy) >= 0.05:
+        parti.append(f"{_n(abs(dy), 2)} m a {'nord' if dy > 0 else 'sud'}")
+    return " e ".join(parti) if parti else "nello stesso punto in pianta"
+
+
+def _gap_firmato(a, b):
+    """Distanza netta in pianta, con segno: positivo se `b` sta a est o a nord di `a`."""
+
+    def uno(a0, a1, b0, b1):
+        if a1 < b0:
+            return b0 - a1
+        if b1 < a0:
+            return -(a0 - b1)
+        return 0.0
+
+    return uno(a[0], a[1], b[0], b[1]), uno(a[2], a[3], b[2], b[3])
+
+
+def _prepara_manufatti(manufatti, punti):
+    """Ingombro, servizio igienico e frasi di ubicazione. Un sanitario dentro due ingombri va al più piccolo."""
+    voci = []
+    for m in manufatti or []:
+        verts = [p for pz in m.get("pezzi") or [] for p in pz.get("verts") or []]
+        if len(verts) < 2:
+            continue
+        b = _bbox_punti(verts)
+        lung, dlung, larg, dlarg, h = _misure_assi(b)
+        voci.append({
+            "nome": m.get("nome") or "manufatto",
+            "pezzi": m.get("pezzi") or [],
+            "bbox": b,
+            "centro": ((b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2),
+            "lung": lung, "dlung": dlung, "larg": larg, "dlarg": dlarg, "h": h,
+            "igienico": False,
+        })
+    fuori = []
+    for p in punti or []:
+        contenitori = [v for v in voci if _dentro_bbox(p, v["bbox"])]
+        if not contenitori:
+            fuori.append(p)
+            continue
+        min(contenitori, key=lambda v: _volume_bbox(v["bbox"]))["igienico"] = True
+    return voci, fuori
+
+
+def _frasi_igienico(voci, fuori):
+    if not voci:
+        return ["Nel file non ho trovato manufatti da misurare."]
+    frasi = []
+    con = [v for v in voci if v["igienico"]]
+    for v in voci:
+        nome = v["nome"]
+        if v["igienico"]:
+            frasi.append(f"«{nome}»: il servizio igienico è presente all'interno.")
+            continue
+        if con:
+            altro = min(con, key=lambda a: _dist(v["centro"], a["centro"]))
+            dx = altro["centro"][0] - v["centro"][0]
+            dy = altro["centro"][1] - v["centro"][1]
+            gx, gy = _gap_firmato(v["bbox"], altro["bbox"])
+            netta = math.hypot(gx, gy)
+            dove = _verso_plan(dx, dy)
+            if netta < 0.05:
+                coda = "Gli ingombri si toccano o uno rientra nell'altro."
+            else:
+                coda = f"Fra i due ingombri restano {_n(netta, 2)} m{_direzione_gap(gx, gy)}."
+            frasi.append(
+                f"«{nome}»: il servizio igienico non è presente all'interno. "
+                f"Sta in «{altro['nome']}»: il centro di «{altro['nome']}» è {dove} "
+                f"rispetto al centro di «{nome}». {coda}")
+            continue
+        if fuori:
+            p = min(fuori, key=lambda q: (q[0] - v["centro"][0]) ** 2 + (q[1] - v["centro"][1]) ** 2)
+            dove = _verso_plan(p[0] - v["centro"][0], p[1] - v["centro"][1])
+            frasi.append(
+                f"«{nome}»: il servizio igienico non è presente all'interno. "
+                f"Un sanitario nel file sta {dove} dal centro del manufatto.")
+            continue
+        frasi.append(
+            f"«{nome}»: il servizio igienico non è presente all'interno. "
+            "Nel file non c'è un altro manufatto né un sanitario, quindi l'ubicazione non risulta dal modello.")
+    return frasi
+
+
+def _direzione_gap(gx, gy):
+    assi = []
+    if abs(gx) >= 0.05:
+        assi.append((abs(gx), "est" if gx > 0 else "ovest"))
+    if abs(gy) >= 0.05:
+        assi.append((abs(gy), "nord" if gy > 0 else "sud"))
+    if not assi:
+        return ""
+    assi.sort(reverse=True)
+    if len(assi) == 1 or assi[0][0] > assi[1][0] * 3:
+        return f" verso {assi[0][1]}"
+    return " verso " + " e ".join(a[1] for a in assi)
+
+
+def _testo_quota(x, y, testo):
+    return (f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="middle" stroke="#fafafa" stroke-width="3" '
+            f'paint-order="stroke">{_esc(testo)}</text>')
+
+
+def _linea_quota(p, q, testo, ox, oy):
+    ax, ay = p[0] + ox, p[1] + oy
+    bx, by = q[0] + ox, q[1] + oy
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    tratto = 'stroke="#1a5276" stroke-width="0.7"'
+    corpo = (
+        f'<line x1="{p[0]:.1f}" y1="{p[1]:.1f}" x2="{ax:.1f}" y2="{ay:.1f}" {tratto}/>'
+        f'<line x1="{q[0]:.1f}" y1="{q[1]:.1f}" x2="{bx:.1f}" y2="{by:.1f}" {tratto}/>'
+        f'<line x1="{ax:.1f}" y1="{ay:.1f}" x2="{bx:.1f}" y2="{by:.1f}" {tratto}/>')
+    if abs(bx - ax) >= abs(by - ay):
+        corpo += _testo_quota(mx, my - 5, testo)
+    else:
+        corpo += _testo_quota(mx + (14 if ox <= 0 else -14), my + 4, testo)
+    return corpo
+
+
+def _quote_rettangolo(mappa, rect, testo_x, testo_y, passo):
+    """rect in metri della vista, y verso l'alto. Le quote stanno fuori, in basso e a sinistra."""
+    x0, x1, y0, y1 = rect
+    so = mappa((x0, y0))
+    se = mappa((x1, y0))
+    no = mappa((x0, y1))
+    extra = 26 + passo * 16
+    return (_linea_quota(so, se, testo_x, 0, extra) + _linea_quota(so, no, testo_y, -extra, 0))
+
+
+def _vista_ortografica(voci, modo, w, h):
+    if modo == "pianta":
+        proietta = lambda p: (p[0], p[1])
+        profondita = lambda p: p[2]
+        rettangolo = lambda b: (b[0], b[1], b[2], b[3])
+        misura_x = lambda v: f"{_n(v['bbox'][1] - v['bbox'][0], 2)} m"
+        misura_y = lambda v: f"{_n(v['bbox'][3] - v['bbox'][2], 2)} m"
+    elif modo == "fronte":
+        proietta = lambda p: (p[0], p[2])
+        profondita = lambda p: -p[1]
+        rettangolo = lambda b: (b[0], b[1], b[4], b[5])
+        misura_x = lambda v: f"{_n(v['bbox'][1] - v['bbox'][0], 2)} m"
+        misura_y = lambda v: f"{_n(v['h'], 2)} m"
+    else:
+        proietta = lambda p: (p[1], p[2])
+        profondita = lambda p: p[0]
+        rettangolo = lambda b: (b[2], b[3], b[4], b[5])
+        misura_x = lambda v: f"{_n(v['bbox'][3] - v['bbox'][2], 2)} m"
+        misura_y = lambda v: f"{_n(v['h'], 2)} m"
+
+    facce = []
+    punti = []
+    for v in voci:
+        for pz in v["pezzi"]:
+            col = _COLORI_GUSCIO.get(pz.get("ruolo"), "#b0b0b0")
+            verts = pz["verts"]
+            for f in pz["faces"]:
+                if len(f) < 3:
+                    continue
+                if any(i >= len(verts) for i in f):
+                    continue
+                pts3 = [verts[i] for i in f]
+                q = [proietta(p) for p in pts3]
+                punti.extend(q)
+                z = sum(profondita(p) for p in pts3) / len(pts3)
+                opac = ' fill-opacity="0.5"' if pz.get("ruolo") == "vetro" else ""
+                facce.append((z, q, col, opac))
+    for v in voci:
+        r = rettangolo(v["bbox"])
+        punti.extend(((r[0], r[2]), (r[1], r[3])))
+    if not punti:
+        return ""
+    facce.sort(key=lambda t: t[0])
+    mappa, _s = _scala(punti, w, h, 72)
+    parti = []
+    for _z, q, col, opac in facce:
+        punti_svg = " ".join(f"{mappa(p)[0]:.1f},{mappa(p)[1]:.1f}" for p in q)
+        filo = _tonalita(col, 0.45)
+        parti.append(f'<polygon points="{punti_svg}" fill="{col}"{opac} stroke="{filo}" stroke-width="0.4" stroke-linejoin="round"/>')
+    for i, v in enumerate(voci):
+        r = rettangolo(v["bbox"])
+        a = mappa((r[0], r[2]))
+        b = mappa((r[1], r[2]))
+        c = mappa((r[1], r[3]))
+        d = mappa((r[0], r[3]))
+        contorno = " ".join(f"{p[0]:.1f},{p[1]:.1f}" for p in (a, b, c, d))
+        parti.append(f'<polygon points="{contorno}" fill="none" stroke="#222" stroke-width="1.1" stroke-dasharray="5 3"/>')
+        cx = (a[0] + c[0]) / 2
+        cy = (a[1] + c[1]) / 2
+        parti.append(_testo_quota(cx, cy, v["nome"]))
+        parti.append(_quote_rettangolo(mappa, r, misura_x(v), misura_y(v), i))
+    if modo == "pianta" and len(voci) >= 2:
+        a, b = voci[0], voci[1]
+        gx, gy = _gap_firmato(a["bbox"], b["bbox"])
+        if abs(gy) >= 0.05 and abs(gx) < 0.05:
+            basso, alto = (a, b) if a["bbox"][3] <= b["bbox"][2] else (b, a)
+            y0, y1 = basso["bbox"][3], alto["bbox"][2]
+            x = (max(a["bbox"][0], b["bbox"][0]) + min(a["bbox"][1], b["bbox"][1])) / 2
+            p = mappa((x, y0))
+            q = mappa((x, y1))
+            parti.append(_linea_quota(p, q, f"{_n(abs(y1 - y0), 2)} m", 18, 0))
+        elif abs(gx) >= 0.05 and abs(gy) < 0.05:
+            ovest, est = (a, b) if a["bbox"][1] <= b["bbox"][0] else (b, a)
+            x0, x1 = ovest["bbox"][1], est["bbox"][0]
+            y = (max(a["bbox"][2], b["bbox"][2]) + min(a["bbox"][3], b["bbox"][3])) / 2
+            p = mappa((x0, y))
+            q = mappa((x1, y))
+            parti.append(_linea_quota(p, q, f"{_n(abs(x1 - x0), 2)} m", 0, -18))
+    if modo == "pianta":
+        xn = w / 2
+        parti.append(f'<line x1="{xn:.0f}" y1="30" x2="{xn:.0f}" y2="16" stroke="#222" stroke-width="1.2"/>')
+        parti.append(f'<polygon points="{xn:.0f},8 {xn - 4:.0f},16 {xn + 4:.0f},16" fill="#222"/>')
+        parti.append(f'<text x="{xn + 12:.0f}" y="16" stroke="#fafafa" stroke-width="3" paint-order="stroke">N</text>')
+    return f'<svg class="manufatto" viewBox="0 0 {w} {h}" width="{w}" height="{h}">{"".join(parti)}</svg>'
+
+
+def _vista_iso(voci, w, h):
+    pezzi, colori = [], {}
+    for v in voci:
+        for pz in v["pezzi"]:
+            i = len(pezzi)
+            pezzi.append({"verts": pz["verts"], "faces": pz["faces"], "_tipo": i})
+            colori[i] = _COLORI_GUSCIO.get(pz.get("ruolo"), "#b0b0b0")
+    if not pezzi:
+        return ""
+    return svg_schema(pezzi, colori, w, h, bordo=1.1)
+
+
+def _tabella_manufatti(voci):
+    if not voci:
+        return ""
+    corpo = []
+    for v in voci:
+        ig = "presente all'interno" if v["igienico"] else "non presente all'interno"
+        corpo.append(
+            "<tr>"
+            f"<td>{_esc(v['nome'])}</td>"
+            f"<td class='n'>{_n(v['lung'], 2)} m ({_esc(v['dlung'])})</td>"
+            f"<td class='n'>{_n(v['larg'], 2)} m ({_esc(v['dlarg'])})</td>"
+            f"<td class='n'>{_n(v['h'], 2)} m</td>"
+            f"<td>{ig}</td></tr>")
+    return ("<table><thead><tr><th>Manufatto</th><th class='n'>Lunghezza</th>"
+            "<th class='n'>Larghezza</th><th class='n'>Altezza</th><th>Servizio igienico</th>"
+            "</tr></thead><tbody>" + "".join(corpo) + "</tbody></table>")
+
+
+def _corpo_manufatti(dati):
+    voci, fuori = _prepara_manufatti(dati.get("manufatti"), dati.get("punti_igienico"))
+    frasi = "".join(f"<li>{_esc(t)}</li>" for t in _frasi_igienico(voci, fuori))
+    if not voci:
+        return ("<h2>Manufatti e servizio igienico</h2>"
+                "<p>Nel file non ho trovato manufatti da misurare.</p>")
+    figure = []
+    for chiave, titolo, dida in _VISTE_MANUFATTO:
+        if chiave == "iso":
+            disegno = _vista_iso(voci, 560, 400)
+            nomi = "; ".join(
+                f"{v['nome']}: {_n(v['lung'], 2)} × {_n(v['larg'], 2)} × {_n(v['h'], 2)} m" for v in voci)
+            dida = nomi
+        else:
+            disegno = _vista_ortografica(voci, chiave, 640, 460)
+        figure.append(f"<figure>{disegno}<figcaption>{_esc(titolo)}<br><span class='dida'>{_esc(dida)}</span></figcaption></figure>")
+    return (
+        "<h2>Manufatti e servizio igienico</h2>"
+        "<p class='meta'>Lunghezza è il lato maggiore in pianta, larghezza il minore; "
+        "fra parentesi la direzione. L'est è +X, il nord è +Y. "
+        "L'altezza va dal punto più basso dell'ingombro al più alto. "
+        "L'ingombro comprende legno esterno, vetro, tetto, porta e pavimento. "
+        "Il tratteggio è il rettangolo di quell'ingombro; le quote sono in metri.</p>"
+        + _tabella_manufatti(voci)
+        + f"<h2>Servizio igienico</h2><ul>{frasi}</ul>"
+        + "<div class='quadri'>" + "".join(figure) + "</div>"
+    )
+
+_STILE_PAGINA = """
+body { font: 14px/1.4 "Segoe UI", sans-serif; color: #1c1c1c; margin: 28px auto; max-width: 1180px; }
+h1 { font-size: 22px; font-weight: 650; margin: 0; }
+h2 { font-size: 16px; margin: 28px 0 8px; padding-bottom: 4px; border-bottom: 1px solid #ccc; }
+.sottotitolo, .meta { color: #444; margin: 4px 0 8px; }
+.nav { margin: 10px 0 0; }
+.nav a { color: #1a5276; }
+ul { margin: 8px 0; padding-left: 18px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid #e2e2e2; padding: 4px 6px; text-align: left; vertical-align: top; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+table.tipi td.nome { width: 150px; font-size: 13px; }
+table.tipi i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; }
+.cap { color: #666; font-size: 11px; margin-bottom: 2px; }
+.schema { margin: 4px 0 10px; }
+.doppio { display: flex; gap: 12px; }
+.doppio figure { flex: 1; margin: 0; }
+.doppio figcaption { font-size: 12px; color: #444; text-align: center; margin-top: 2px; }
+svg.solido { width: 100%; height: auto; background: #f7f7f7; }
+svg.disegno { background: #fafafa; }
+svg.disegno text { font: 10px "Segoe UI", sans-serif; fill: #333; text-anchor: middle; }
+svg.disegno text.ang { font-weight: 650; fill: #111; }
+.somma { font-size: 17px; font-weight: 650; margin: 10px 0 22px; }
+.totale { font-size: 18px; font-weight: 650; margin-top: 8px; }
+.costo { display: flex; gap: 18px; align-items: center; margin: 8px 0 4px; }
+.legenda { list-style: none; padding: 0; margin: 0; }
+.legenda li { margin: 4px 0; }
+.legenda i { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; }
+svg.torta { background: transparent; }
+svg.termico { width: 100%; height: auto; background: #fafafa; }
+svg.termico text { font: 11px "Segoe UI", sans-serif; fill: #444; }
+svg.termico text.asse { text-anchor: end; }
+svg.termico text.ora { text-anchor: middle; }
+.doppio figure figcaption { font-weight: 650; text-align: left; }
+pre.rapporto { white-space: pre-wrap; font: 13px/1.45 Consolas, "Segoe UI", sans-serif; background: #f7f7f7; padding: 12px 14px; }
+.quadri { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+.quadri figure { margin: 0; }
+.quadri figcaption { font-size: 13px; font-weight: 650; margin-top: 4px; }
+.quadri .dida { font-weight: 400; color: #444; }
+svg.manufatto { width: 100%; height: auto; background: #fafafa; }
+svg.manufatto text { font: 12px "Segoe UI", sans-serif; fill: #1a5276; }
+"""
+
+
+def _nav(corrente):
+    voci = []
+    for nome, titolo in _PAGINE:
+        if nome == corrente:
+            voci.append(f"<b>{_esc(titolo)}</b>")
+        else:
+            voci.append(f"<a href='{nome}'>{_esc(titolo)}</a>")
+    return "<p class='nav'>" + " · ".join(voci) + "</p>"
+
+
+def _pagina(dati, titolo, corrente, corpo):
+    return f"""<!DOCTYPE html>
+<html lang="it"><head><meta charset="utf-8"><title>{_esc(titolo)} — {_esc(dati['nome'])}</title>
+<style>{_STILE_PAGINA}</style></head><body>
+<h1>{_esc(titolo)} — {_esc(dati['nome'])}</h1>
+<p class="sottotitolo">{_esc(dati['testa'])}</p>
+<p class="meta">{date.today().isoformat()} · sola materia prima · solidi della collection</p>
+{_nav(corrente)}
+{corpo}
+</body></html>"""
+
+
+def _corpo_preventivo(dati):
+    note = "".join(f"<li>{_esc(t)}</li>" for t in dati["note"])
+    extra = []
+    if dati.get("porta_esclusa"):
+        extra.append("<p>La porta non è nel capitolato: l'anta di legno, come cornice e pannello, non è ancora conteggiata.</p>")
+    if dati.get("ferramenta"):
+        extra.append(f"<p>Ferramenta della porta, non prezzata: {dati['ferramenta']} pezzi fra cerniere e maniglia.</p>")
+    return (
+        "<h2>Preventivo e capitolato</h2>"
+        "<p class='meta'>Ogni riga è una voce di capitolato: cosa, materiale, quantità. "
+        "Il prezzo è solo la materia prima, mai la posa.</p>"
+        + _tabella(dati["righe"])
+        + f"<p class='totale'>Totale {_euro(dati['totale'])} €</p>"
+        + f"<p class='totale' id='peso'>Peso {_n(dati['peso'], 0)} kg</p>"
+        + _blocco(dati)
+        + "<p class='meta'>Prezzi e densità da Riferimenti/proprieta_materiali.xlsx, foglio Materiali. "
+        "Sono approssimati: il numero esatto si scrive in quel file. Una cella vuota non è stata riempita.</p>"
+        + "".join(extra)
+        + f"<h2 id='note'>Note</h2><ul>{note}</ul>"
+    )
+
+
+def _corpo_statica(dati):
+    testo = (dati.get("statica") or "").strip()
+    if not testo:
+        corpo = "<p>Il calcolo del telaio non è stato eseguito.</p>"
+    else:
+        corpo = f"<pre class='rapporto'>{_esc(testo)}</pre>"
+    return (
+        "<h2>Valutazione statica</h2>"
+        "<p class='meta'>Telaio dello scheletro: peso del legno, dei rivestimenti, dell'isolante e neve. "
+        "Serve a confrontare le pose. Non è un calcolo secondo norma. "
+        "Le aste colorate nella vista si aggiornano con «Calcola sollecitazioni», non con questo file.</p>"
+        + corpo
+    )
+
+
+def _corpo_termico(dati):
+    blocco = dati.get("termico") or ""
+    if not blocco:
+        blocco = "<p>Manca uno spessore o un dato termico: la curva non è stata calcolata.</p>"
+    return "<h2>Valutazione termica</h2>" + blocco
+
+
+def _corpo_indice(dati):
+    return (
+        "<h2>Pagine</h2>"
+        "<ul>"
+        "<li><a href='preventivo.html'>Preventivo e capitolato</a> — "
+        "voci, quantità, prezzi, IVA, peso, torta. Le note e la ferramenta non prezzata stanno in fondo.</li>"
+        "<li><a href='statica.html'>Valutazione statica</a> — "
+        "abbassamento, spinta, compressione e momento del telaio.</li>"
+        "<li><a href='termico.html'>Valutazione termica</a> — "
+        "parete opaca e vetrocamera, luglio-agosto e gennaio a Neirone, con il flusso verso l'interno.</li>"
+        "<li><a href='costruttivi.html'>Dettagli costruttivi</a> — "
+        "scheletro, pali, travetti, pavimento, esterno, pareti, interno, isolante, vetrocamera e copertura: "
+        "schema, isometrica, pianta, laterale e sezione.</li>"
+        "<li><a href='manufatti.html'>Manufatti e servizio igienico</a> — "
+        "lunghezza, larghezza e altezza di ogni manufatto nel file, in isometrica, pianta, fronte e laterale. "
+        "Se il servizio igienico non è dentro, la pagina dice dov'è e a che distanza.</li>"
+        "</ul>"
+        f"<p class='totale'>Totale {_euro(dati['totale'])} €</p>"
+        f"<p class='totale'>Peso {_n(dati['peso'], 0)} kg</p>"
+        "<p class='meta'>Peso, torta e note sono nel preventivo. I pezzi quotati sono nei dettagli costruttivi. "
+        "Le misure dell'ingombro e il servizio igienico sono nella pagina dei manufatti.</p>"
+    )
+
+
+def pagine_report(dati):
+    """Sei HTML: indice, quattro capitoli e la scheda dei manufatti."""
+    return {
+        "report.html": _pagina(dati, "Report", "report.html", _corpo_indice(dati)),
+        "preventivo.html": _pagina(dati, "Preventivo e capitolato", "preventivo.html", _corpo_preventivo(dati)),
+        "statica.html": _pagina(dati, "Valutazione statica", "statica.html", _corpo_statica(dati)),
+        "termico.html": _pagina(dati, "Valutazione termica", "termico.html", _corpo_termico(dati)),
+        "costruttivi.html": _pagina(dati, "Dettagli costruttivi", "costruttivi.html", _corpo_costruttivi(dati)),
+        "manufatti.html": _pagina(dati, "Manufatti e servizio igienico", "manufatti.html", _corpo_manufatti(dati)),
+    }
+
+
+def scrivi_scena(percorso, oggetti, meta, opz, prezzi, statica="", manufatti=None, punti_igienico=None):
+    """Scrive l'indice, i quattro capitoli e la scheda dei manufatti nella cartella di `percorso`."""
     dati = componi(oggetti, meta, opz, prezzi)
-    os.makedirs(os.path.dirname(percorso), exist_ok=True)
-    with open(percorso, "w", encoding="utf-8") as f:
-        f.write(html_scena(dati))
+    dati["statica"] = statica or ""
+    dati["manufatti"] = manufatti or []
+    dati["punti_igienico"] = punti_igienico or []
+    cartella = os.path.dirname(percorso) or "."
+    os.makedirs(cartella, exist_ok=True)
+    for nome, html in pagine_report(dati).items():
+        with open(os.path.join(cartella, nome), "w", encoding="utf-8") as f:
+            f.write(html)
     return dati
