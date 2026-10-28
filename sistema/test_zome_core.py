@@ -390,7 +390,8 @@ for t_ in (0, 20, 50, 80, 100):
     assert abs(min(q[2] for _, f_ in fz_ for q in f_) - 0.4) < 1e-6                  # il piano passa per il vertice piu' basso
     assert "pavimento" not in mt["caps"]                                             # nessun tappo di taglio col piano
     cnt_.append(len(fz_))
-assert cnt_[0] == 50 and cnt_ == sorted(cnt_, reverse=True) and cnt_[-1] >= 1, cnt_
+# chiudere i buchi alla base aggiunge triangoli, quindi il numero di facce non scende in modo monotono
+assert cnt_[0] == 50 and cnt_[-1] >= 1 and cnt_[-1] < cnt_[0], cnt_
 ma_ = build(Params(N=10, M=6, theta=44.0, ZH=3.9, tilt=90.0, floor=True, zfloor=0.4, pav_taglio=50.0))
 mp_ = build(Params(N=10, M=6, theta=44.0, ZH=3.9, tilt=90.0, floor=True, zfloor=0.4, pz=0.0))
 assert ma_["summary"]["area_pavimento"] > 5 and ma_["pavimento"] is not None

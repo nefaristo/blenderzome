@@ -1,19 +1,19 @@
 """zome_loader.py - add-on minimo che carica il pannello Zome ad ogni avvio di Blender.
 
-Copia in: %APPDATA%/Blender Foundation/Blender/5.2/scripts/addons/zome_loader.py
-Poi Preferenze > Add-on > "Zome (pannello)" acceso. Il codice resta nella cartella BlenderZome:
+Serve Blender 5.2. La prima volta lo copia installa.bat, senza un Python di Windows.
+Poi Preferenze > Add-on > "Zome (pannello)" acceso. Il codice resta nella cartella estratta:
 il loader la trova da solo, nell'ordine:
   1. il campo "Cartella BlenderZome" nelle preferenze di questo add-on (se compilato);
   2. la variabile d'ambiente ZOME_CARTELLA;
-  3. ~/Documents/@DriveMirror/Appunti/Valle degli eremi/Strutturali zome/BlenderZome  (~ = cartella utente di questo computer);
+  3. ~/Documents/Projects/BlenderZome  (~ = cartella utente di questo computer);
   4. la cartella del file .blend aperto, o una delle sue cartelle madri (anche una sottocartella "BlenderZome").
 Cosi' non c'e' un percorso con il nome utente scritto nel codice: sul secondo computer, se la cartella e' sincronizzata nello
 stesso posto sotto la cartella utente, parte da sola; altrimenti basta compilare il campo nelle preferenze.
 Il pannello sta in BlenderZome/sistema/blenderzome.py. Il campo delle preferenze indica la cartella BlenderZome, non sistema/.
 """
-bl_info = {"name": "Zome (pannello)", "author": "Stefano", "version": (1, 3, 0), "blender": (5, 2, 0),
+bl_info = {"name": "Zome (pannello)", "author": "Stefano", "version": (2, 0, 1), "blender": (5, 2, 0),
            "location": "Vista 3D > barra laterale (N) > Zome",
-           "description": "Carica il pannello Zome da BlenderZome/sistema/blenderzome.py", "category": "Mesh"}
+           "description": "Pannello Zome per Blender 5.2. Carica sistema/blenderzome.py", "category": "Mesh"}
 
 import importlib
 import os
@@ -23,7 +23,7 @@ import bpy
 from bpy.app.handlers import persistent
 from bpy.props import StringProperty
 
-RELATIVO = os.path.join("Documents", "@DriveMirror", "Appunti", "Valle degli eremi", "Strutturali zome", "BlenderZome")
+RELATIVO = os.path.join("Documents", "Projects", "BlenderZome")
 _mod = None
 
 
@@ -90,6 +90,9 @@ class ZomeLoaderPrefs(bpy.types.AddonPreferences):
         trovata = _trova()
         col.label(text=("In uso: " + trovata) if trovata else "Cartella non trovata: compila il campo qui sopra",
                   icon='CHECKMARK' if trovata else 'ERROR')
+        col.label(text="Serve Blender 5.2")
+        ver = getattr(_mod, "VERSIONE", "") if _mod is not None else ""
+        col.label(text=("Pannello " + ver) if ver else "Pannello non ancora caricato")
 
 
 def _carica():

@@ -1,14 +1,14 @@
-"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0, 2026-10-19).
+"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.1, 2026-10-28).
 
 Disegna l'INTERNO di una zome con la geometria di zome_core.py (stessa cartella).
 Uso: nel Text editor di Blender aprire carica_zome.py e premere "Esegui script",
 oppure (da codice) aggiungere la cartella a sys.path e chiamare blenderzome.register().
 Il pannello compare nella barra laterale della vista 3D (tasto N), scheda "Zome".
 """
-VERSIONE = "2.0.0"   # tag della release su github.com/nefaristo/blenderzome.
+VERSIONE = "2.0.1"   # tag della release su github.com/nefaristo/blenderzome.
 _REPO = "nefaristo/blenderzome"
 
-bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 0), "blender": (5, 2, 0),
+bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 1), "blender": (5, 2, 0),
            "location": "Vista 3D > barra laterale > Zome", "description": "Interno di una zome (N, M, theta, ZH)",
            "category": "Mesh"}
 
@@ -206,6 +206,9 @@ def _segna(ob, chiave):
         return None
     ob["materiale"] = zome_foglio.NOMI.get(chiave, chiave)
     return ob
+
+
+def _mesh_poliedri(nome, poliedri, mat, L, ruolo):
     """Un oggetto con piu' poliedri {"v": vertici, "f": facce}: le facce guardano verso fuori."""
     from mathutils import Vector
     vs, fs = [], []
@@ -1374,15 +1377,46 @@ class ZOME_OT_aggiorna(bpy.types.Operator):
         if _aggiornamento.get("stato") != "nuova" or not tag:
             self.report({"WARNING"}, "Non c'è una versione più nuova")
             return {"CANCELLED"}
+        self._dati = None
+        self._errore = ""
+        self._fatto = False
+
+        def _scarica():
+            try:
+                url = f"https://github.com/{_REPO}/archive/refs/tags/{tag}.zip"
+                richiesta = urllib.request.Request(url, headers={"User-Agent": "BlenderZome"})
+                with urllib.request.urlopen(richiesta, timeout=120) as risposta:
+                    self._dati = risposta.read()
+            except Exception as exc:
+                self._errore = str(exc)
+            self._fatto = True
+
+        _aggiornamento["stato"] = "scarico"
+        threading.Thread(target=_scarica, daemon=True).start()
+        self._timer = context.window_manager.event_timer_add(0.4, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
+
+    def modal(self, context, event):
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+        for finestra in context.window_manager.windows:
+            for area in finestra.screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+        if not self._fatto:
+            return {"PASS_THROUGH"}
+        context.window_manager.event_timer_remove(self._timer)
+        if self._errore or not self._dati:
+            _aggiornamento["stato"] = "nuova"
+            self.report({"ERROR"}, "Aggiornamento non riuscito: %s" % (self._errore or "file vuoto"))
+            return {"CANCELLED"}
         try:
-            url = f"https://github.com/{_REPO}/archive/refs/tags/{tag}.zip"
-            richiesta = urllib.request.Request(url, headers={"User-Agent": "BlenderZome"})
-            with urllib.request.urlopen(richiesta, timeout=60) as risposta:
-                dati = risposta.read()
-            n = _estrai_sistema(dati, os.path.join(_ROOT, "sistema"))
-            sandbox = _estrai_sandbox_se_manca(dati, _ROOT)
+            n = _estrai_sistema(self._dati, os.path.join(_ROOT, "sistema"))
+            sandbox = _estrai_sandbox_se_manca(self._dati, _ROOT)
             _copia_loader()
         except Exception as exc:
+            _aggiornamento["stato"] = "nuova"
             self.report({"ERROR"}, "Aggiornamento non riuscito: %s" % exc)
             return {"CANCELLED"}
 
@@ -1399,7 +1433,7 @@ class ZOME_OT_aggiorna(bpy.types.Operator):
 
 
 class ZOME_PT_panel(bpy.types.Panel):
-    bl_label = "Zome " + VERSIONE
+    bl_label = "Zome " + VERSIONE + "  ·  Blender 5.2"
     bl_idname = "ZOME_PT_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -1408,7 +1442,9 @@ class ZOME_PT_panel(bpy.types.Panel):
     def draw(self, context):
         z = context.scene.zome
         lay = self.layout
-        if _aggiornamento.get("stato") == "nuova":
+        if _aggiornamento.get("stato") == "scarico":
+            lay.label(text="Scarico la versione " + _aggiornamento.get("remota", "") + "…", icon="FILE_REFRESH")
+        elif _aggiornamento.get("stato") == "nuova":
             avviso = lay.box()
             avviso.alert = True
             avviso.label(text="C'è una versione nuova: " + _aggiornamento.get("remota", ""), icon="FILE_REFRESH")

@@ -1,20 +1,14 @@
-Zome 2.0.0
+# Zome 2.0.1
 
-La prima volta il pannello non c'è ancora, quindi non può aggiornarsi da solo.
+Serve **Blender 5.2** su Windows.
 
-1. Estrai questo ZIP in una cartella nuova, vuota.
-   Non estrarlo sopra una cartella dove hai già dei blend:
-   l'unico blend qui dentro è la sandbox di partenza.
+La prima volta il pannello non c'è ancora, quindi non può aggiornarsi da solo. Il file di installazione è `installa.bat`. Non installa Python: copia solo il pannello negli add-on di Blender 5.2.
 
-2. In questa cartella lancia:
-   python installa.py
-   Copia solo il pannello negli add-on di Blender.
-   Non apre e non sovrascrive nessun blend.
+1. Estrai questo ZIP in una cartella nuova, vuota. Non sopra blend già tuoi. L'unico blend qui dentro è la sandbox di partenza.
+2. Doppio clic su `installa.bat`. Scrive «Zome 2.0.1» e «Serve Blender 5.2», e copia il pannello. Non apre e non sovrascrive nessun blend.
+3. Apri Blender 5.2. Preferenze, Add-ons, accendi «Zome (pannello)». Nelle preferenze dell'add-on, e in testata del pannello, sono riportate la versione e Blender 5.2.
+4. File, Apri: `Istanze\Sandbox\Sandbox.blend`.
 
-3. Apri Blender. Preferenze, Add-on, accendi «Zome (pannello)».
+Dalle volte dopo, se c'è una versione nuova, il pannello lo scrive in alto. Il tasto **Aggiorna** usa il Python già dentro Blender e sostituisce solo la cartella `sistema`. Se `Sandbox.blend` c'è già, non lo sostituisce.
 
-4. File, Apri: Istanze\Sandbox\Sandbox.blend
-
-Dalle volte dopo, se c'è una versione nuova, il pannello lo scrive in alto.
-Il tasto Aggiorna sostituisce solo la cartella sistema.
-Se Sandbox.blend c'è già, non lo sostituisce.
+Dentro questo pacchetto: `installa.bat`, `sistema/`, `textures/` e, come unica istanza, `Istanze/Sandbox/`.

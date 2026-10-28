@@ -317,6 +317,21 @@ def pose_planes(p: Params):
 _EPS_Z = 1e-6
 
 
+def _triangoli_di(kind, pts):
+    """Un rombo si spezza lungo la diagonale orizzontale. Un triangolo resta com'e'."""
+    if kind == "rombo" and len(pts) == 4:
+        zl = [q[2] for q in pts]
+        i = 0 if abs(zl[0] - zl[2]) < 1e-9 else (1 if abs(zl[1] - zl[3]) < 1e-9 else None)
+        if i is None:
+            return []
+        alto = max(range(4), key=lambda k: zl[k])
+        return [("triangolo" if alto in idx else "triangolo_giu", tuple(pts[k] for k in idx))
+                for idx in ([i, (i + 1) % 4, (i + 2) % 4], [(i + 2) % 4, (i + 3) % 4, i])]
+    if len(pts) == 3:
+        return [(kind, pts)]
+    return []
+
+
 def _selez_triangoli(kind, pts, p: Params, off, soglia):
     """Taglio del pavimento a triangoli: si tiene una faccia se il suo baricentro (nel mondo) sta a quota >= soglia; un rombo
     che non passa si spezza lungo la diagonale orizzontale (nel sistema della zome) e si tengono i triangoli il cui baricentro passa.
@@ -325,18 +340,44 @@ def _selez_triangoli(kind, pts, p: Params, off, soglia):
     zw = [_add(_rot(q, p.tilt, p.orient), off)[2] for q in pts]
     if sum(zw) / len(zw) >= soglia - _EPS_Z:
         return [(kind, pts)]
-    if kind != "rombo" or len(pts) != 4:
-        return []
-    zl = [q[2] for q in pts]
-    i = 0 if abs(zl[0] - zl[2]) < 1e-9 else (1 if abs(zl[1] - zl[3]) < 1e-9 else None)
-    if i is None:
-        return []
-    alto = max(range(4), key=lambda k: zl[k])
     out = []
-    for idx in ([i, (i + 1) % 4, (i + 2) % 4], [(i + 2) % 4, (i + 3) % 4, i]):
-        if sum(zw[k] for k in idx) / 3.0 >= soglia - _EPS_Z:
-            out.append(("triangolo" if alto in idx else "triangolo_giu", tuple(pts[k] for k in idx)))
+    for nome, tri in _triangoli_di(kind, pts):
+        zt = [_add(_rot(q, p.tilt, p.orient), off)[2] for q in tri]
+        if sum(zt) / len(zt) >= soglia - _EPS_Z:
+            out.append((nome, tri))
     return out
+
+
+def _chiusure_pavimento(kind, pts, p: Params, off, soglia):
+    """Triangoli scartati dal baricentro ma che arrivano alla soglia con un vertice: chiudono il buco fra i pezzi tenuti e il
+    pavimento. Non entrano nel calcolo della quota, cosi' l'altezza resta quella gia' scelta. Se scendono sotto il piano,
+    chi li posa li accorcia sul pavimento e li lascia triangoli."""
+    tenuti = []
+    for nome, tri in _selez_triangoli(kind, pts, p, off, soglia):
+        tenuti.extend(_triangoli_di(nome, tri) or [(nome, tri)])
+    def chiave(tri):
+        return frozenset(tuple(round(c, 6) for c in q) for q in tri)
+    gia = {chiave(tri) for _, tri in tenuti}
+    out = []
+    for nome, tri in _triangoli_di(kind, pts):
+        if chiave(tri) in gia:
+            continue
+        zt = [_add(_rot(q, p.tilt, p.orient), off)[2] for q in tri]
+        if max(zt) >= soglia - _EPS_Z:
+            out.append((nome, tri))
+    return out
+
+
+def _pezzi_sul_pavimento(poly, zfloor):
+    """Parte del poligono a quota >= pavimento, spezzata in triangoli. Il poligono gia' sopra torna intero."""
+    if min(q[2] for q in poly) >= zfloor - 1e-8:
+        return [poly]
+    sopra, _ = _clip_poly(poly, (0.0, 0.0, 1.0), zfloor)
+    if sopra is None:
+        return []
+    if len(sopra) <= 3:
+        return [sopra]
+    return [[sopra[0], sopra[i], sopra[i + 1]] for i in range(1, len(sopra) - 1)]
 
 
 def _livello_taglio(p0: Params):
@@ -389,7 +430,11 @@ def apply_pose_and_cuts(strata, p: Params):
         faces = []
         lista = []
         for kind, pts in st["facce"]:
-            lista.extend(_selez_triangoli(kind, pts, p, off, p.zfloor + p.pav_soglia) if sel else [(kind, pts)])
+            if sel:
+                lista.extend(_selez_triangoli(kind, pts, p, off, p.zfloor + p.pav_soglia))
+                lista.extend(_chiusure_pavimento(kind, pts, p, off, p.zfloor + p.pav_soglia))
+            else:
+                lista.append((kind, pts))
         for kind, pts in lista:
             loc = pts
             if door is not None:
@@ -397,25 +442,28 @@ def apply_pose_and_cuts(strata, p: Params):
                 if abs(math.atan2(cy, cx)) < door:
                     continue
             poly = [_add(_rot(q, p.tilt, p.orient), off) for q in pts]
-            ok = True
-            for nm, n, d in planes:
-                poly2, seg = _clip_poly(poly, n, d)
-                if poly2 is None:
-                    ok = False
-                    break
-                if seg:
-                    segs.setdefault(nm, []).append(seg)
-                poly = poly2
-            if ok and corr:
-                originali.append(poly)
-                for nm, n, d in corr["muri"]:   # segmenti per le pareti del corridoio (sezione della zome)
-                    _, seg = _clip_poly(poly, n, d)
+            pezzi = _pezzi_sul_pavimento(poly, p.zfloor) if sel else [poly]
+            for poly in pezzi:
+                tipo = kind if len(poly) == len(pts) else "triangolo"
+                ok = True
+                for nm, n, d in planes:
+                    poly2, seg = _clip_poly(poly, n, d)
+                    if poly2 is None:
+                        ok = False
+                        break
                     if seg:
                         segs.setdefault(nm, []).append(seg)
-                for pezzo in _sottrai_scatola(poly, corr["scatola"]):
-                    faces.append((kind, tuple(pezzo)))
-            elif ok:
-                faces.append((kind, tuple(poly)))
+                    poly = poly2
+                if ok and corr:
+                    originali.append(poly)
+                    for nm, n, d in corr["muri"]:   # segmenti per le pareti del corridoio (sezione della zome)
+                        _, seg = _clip_poly(poly, n, d)
+                        if seg:
+                            segs.setdefault(nm, []).append(seg)
+                    for pezzo in _sottrai_scatola(poly, corr["scatola"]):
+                        faces.append((tipo, tuple(pezzo)))
+                elif ok:
+                    faces.append((tipo, tuple(poly)))
         st["facce"] = faces
         if faces:
             kept.append(st)
@@ -577,7 +625,7 @@ def _pareti_fuori(p: Params, facce):
     ft, fu, fo = _dot(tw, foot), _dot(up, foot), _dot(out, foot)
     s0 = fo - p.porta_dist
     def pt(s, u, z):
-        return _add(_add(_scale(out, s), _scale(tw, ft + u)), _scale(up, z))
+        return _add(_add(_add(foot, _scale(out, s - fo)), _scale(tw, u)), _scale(up, z - fu))
     z0, zl, zc = fu, fu + p.porta_z0 + H - R, fu + p.porta_z0 + H
     rett = {"corridoio: parete sinistra": [pt(s0, -W2, z0), pt(fo, -W2, z0), pt(fo, -W2, zl), pt(s0, -W2, zl)],
             "corridoio: parete destra": [pt(s0, W2, z0), pt(s0, W2, zl), pt(fo, W2, zl), pt(fo, W2, z0)],
@@ -608,14 +656,29 @@ def _pareti_fuori(p: Params, facce):
 
 
 def _porta_frame(p: Params):
-    """Riferimento della porta nel mondo: (piede dell'asse sul piano, asse u lungo la parete, asse z, uscente dal solido)."""
+    """Riferimento della porta nel mondo: (piede sul piano della porta, asse u lungo la parete, asse z verso l'alto, uscente dal solido).
+    Con la zome coricata l'asse del solido è orizzontale: la porta resta verticale nel mondo e la direzione è quella in pianta
+    (solo la rotazione attorno a Z). La riduzione della punta, invece, ruota insieme al solido."""
     a = math.radians(porta_angolo(p))
     off = (p.px, p.py, p.pz)
+    if p.floor and abs(p.tilt) >= 45.0:
+        out = _rot((math.cos(a), math.sin(a), 0.0), 0.0, p.orient)
+        tw = _rot((-math.sin(a), math.cos(a), 0.0), 0.0, p.orient)
+        up = (0.0, 0.0, 1.0)
+        mezzo = _add(off, _scale(_rot((0.0, 0.0, p.ZH), p.tilt, p.orient), 0.5))
+        foot = (mezzo[0] + out[0] * p.porta_dist, mezzo[1] + out[1] * p.porta_dist, p.zfloor)
+        return foot, tw, up, out
     out = _rot((math.cos(a), math.sin(a), 0.0), p.tilt, p.orient)
     tw = _rot((-math.sin(a), math.cos(a), 0.0), p.tilt, p.orient)
     up = _rot((0.0, 0.0, 1.0), p.tilt, p.orient)
     foot = _add(off, _scale(out, p.porta_dist))
     return foot, tw, up, out
+
+
+def _porta_punto(p: Params, u, z, v):
+    """Punto della porta: u lungo la parete, z dalla soglia, v dal piano della porta (positivo verso l'esterno)."""
+    foot, tw, up, out = _porta_frame(p)
+    return _add(_add(_add(foot, _scale(tw, u)), _scale(up, z)), _scale(out, v))
 
 
 def _porta_pezzi(poly, p: Params):
@@ -714,13 +777,9 @@ def porta_h_utile(p: Params):
 
 
 def _porta_pt(p: Params, u, z, w):
-    """Punto della porta nel mondo: u lungo la parete, z dalla base della zome, w dal piano della porta verso la parte tolta del prisma."""
-    a = math.radians(porta_angolo(p))
-    out = (math.cos(a), math.sin(a), 0.0)
-    tg = (-math.sin(a), math.cos(a), 0.0)
+    """Punto della porta nel mondo: u lungo la parete, z dalla soglia, w dal piano della porta verso la parte tolta del prisma."""
     verso = -1.0 if p.porta_fuori else 1.0
-    q = _add(_add(_scale(out, p.porta_dist + verso * w), _scale(tg, u)), (0.0, 0.0, z))
-    return _add(_rot(q, p.tilt, p.orient), (p.px, p.py, p.pz))
+    return _porta_punto(p, u, z, verso * w)
 
 
 def porta_timpano(p: Params, TT=0.02):
@@ -729,13 +788,7 @@ def porta_timpano(p: Params, TT=0.02):
         return None
     zl, zc = p.porta_z0 + porta_h_utile(p) + TT, p.porta_z0 + p.porta_h
     W2 = p.porta_w / 2
-    a = math.radians(porta_angolo(p))
-    out = (math.cos(a), math.sin(a), 0.0)
-    tg = (-math.sin(a), math.cos(a), 0.0)
-    def pt(u, z):
-        q = _add(_add(_scale(out, p.porta_dist), _scale(tg, u)), (0.0, 0.0, z))
-        return _add(_rot(q, p.tilt, p.orient), (p.px, p.py, p.pz))
-    return [pt(-W2, zl), pt(W2, zl), pt(0.0, zc)]
+    return [_porta_punto(p, -W2, zl, 0.0), _porta_punto(p, W2, zl, 0.0), _porta_punto(p, 0.0, zc, 0.0)]
 
 
 def porta_anta(p: Params, TT=0.02, spessore=0.04, apertura=20.0):
@@ -755,11 +808,7 @@ def porta_anta(p: Params, TT=0.02, spessore=0.04, apertura=20.0):
         du, dv = u - u0, v - vc                                 # cerniera sul lato sinistro; ruota di -apertura: il bordo libero va verso la zome
         u2 = u0 + du * math.cos(ph) + dv * math.sin(ph)
         v2 = vc - du * math.sin(ph) + dv * math.cos(ph)
-        a = math.radians(porta_angolo(p))
-        out = (math.cos(a), math.sin(a), 0.0)
-        tg = (-math.sin(a), math.cos(a), 0.0)
-        q = _add(_add(_scale(out, p.porta_dist + v2), _scale(tg, u2)), (0.0, 0.0, z))
-        return _add(_rot(q, p.tilt, p.orient), (p.px, p.py, p.pz))
+        return _porta_punto(p, u2, z, v2)
     pent = [[(u0, cy), (-ra, cy), (0, cy + rb), (0, zt), (u0, zt)],
             [(0, cy + rb), (ra, cy), (u1, cy), (u1, zt), (0, zt)],
             [(u0, zb), (0, zb), (0, cy - rb), (-ra, cy), (u0, cy)],
@@ -778,12 +827,8 @@ def porta_anta(p: Params, TT=0.02, spessore=0.04, apertura=20.0):
 
 
 def _porta_pv(p: Params, u, z, v):
-    """Punto nel mondo: u lungo la parete (verso destra entrando), z dalla base, v dal piano della porta (positivo verso l'esterno)."""
-    a = math.radians(porta_angolo(p))
-    out = (math.cos(a), math.sin(a), 0.0)
-    tg = (-math.sin(a), math.cos(a), 0.0)
-    q = _add(_add(_scale(out, p.porta_dist + v), _scale(tg, u)), (0.0, 0.0, z))
-    return _add(_rot(q, p.tilt, p.orient), (p.px, p.py, p.pz))
+    """Punto nel mondo: u lungo la parete (verso destra entrando), z dalla soglia, v dal piano della porta (positivo verso l'esterno)."""
+    return _porta_punto(p, u, z, v)
 
 
 def porta_cerniera(p: Params, spessore=0.04):
@@ -795,7 +840,8 @@ def porta_cerniera(p: Params, spessore=0.04):
     verso = -1.0 if p.porta_fuori else 1.0
     v0, v1 = (0.005, 0.005 + spessore) if verso > 0 else (-0.005 - spessore, -0.005)
     vc = (v0 + v1) / 2
-    asse = _unit(_rot((0.0, 0.0, 1.0), p.tilt, p.orient))
+    _, _, up, _ = _porta_frame(p)
+    asse = up
     res = []
     n = 8
     for zc in (z0 + 0.25, z0 + H / 2, z0 + H - 0.25):
@@ -922,10 +968,9 @@ def build(p: Params, _pav=True):
         from zome_pavimento import pavimento
         pa, modo, dist_h = None, None, None
         if p0.porta:
-            a_ = math.radians(porta_angolo(p0))
-            dd = _rot((math.cos(a_), math.sin(a_), 0.0), p0.tilt, p0.orient)
-            pa = math.degrees(math.atan2(dd[1], dd[0]))
-            dist_h = p0.porta_dist * math.hypot(dd[0], dd[1])
+            _, _, _, out_p = _porta_frame(p0)
+            pa = math.degrees(math.atan2(out_p[1], out_p[0]))
+            dist_h = p0.porta_dist * max(math.hypot(out_p[0], out_p[1]), 1e-9)
             modo = "parete" if p0.porta_modo == "parete" else ("fuori" if fuori else "dentro")
         pav = pavimento(fz0, {"zf": p0.zfloor, "tipo": p0.pav_tipo, "interasse": p0.pav_interasse, "carico": p0.pav_carico,
                               "seme": p0.pav_seme, "porta": pa, "porta_modo": modo, "porta_dist": dist_h, "porta_w": p0.porta_w,
