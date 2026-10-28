@@ -1,14 +1,14 @@
-"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.1, 2026-10-28).
+"""blenderzome.py - pannello "Zome" per Blender 5.2 (versione 2.0.2, 2026-10-28).
 
 Disegna l'INTERNO di una zome con la geometria di zome_core.py (stessa cartella).
 Uso: nel Text editor di Blender aprire carica_zome.py e premere "Esegui script",
 oppure (da codice) aggiungere la cartella a sys.path e chiamare blenderzome.register().
 Il pannello compare nella barra laterale della vista 3D (tasto N), scheda "Zome".
 """
-VERSIONE = "2.0.1"   # tag della release su github.com/nefaristo/blenderzome.
+VERSIONE = "2.0.2"   # tag della release su github.com/nefaristo/blenderzome.
 _REPO = "nefaristo/blenderzome"
 
-bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 1), "blender": (5, 2, 0),
+bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 2), "blender": (5, 2, 0),
            "location": "Vista 3D > barra laterale > Zome", "description": "Interno di una zome (N, M, theta, ZH)",
            "category": "Mesh"}
 
@@ -1412,8 +1412,8 @@ class ZOME_OT_aggiorna(bpy.types.Operator):
             self.report({"ERROR"}, "Aggiornamento non riuscito: %s" % (self._errore or "file vuoto"))
             return {"CANCELLED"}
         try:
-            n = _estrai_sistema(self._dati, os.path.join(_ROOT, "sistema"))
-            sandbox = _estrai_sandbox_se_manca(self._dati, _ROOT)
+            _estrai_sistema(self._dati, os.path.join(_ROOT, "sistema"))
+            _estrai_sandbox_se_manca(self._dati, _ROOT)
             _copia_loader()
         except Exception as exc:
             _aggiornamento["stato"] = "nuova"
@@ -1425,10 +1425,7 @@ class ZOME_OT_aggiorna(bpy.types.Operator):
             return None
 
         bpy.app.timers.register(_dopo, first_interval=0.2)
-        if sandbox:
-            self.report({"INFO"}, "Sistema aggiornato, %s file. Aggiunta la sandbox di partenza." % n)
-        else:
-            self.report({"INFO"}, "Sistema aggiornato, %s file. La sandbox che c'era è rimasta." % n)
+        self.report({"INFO"}, "Versione aggiornata.")
         return {"FINISHED"}
 
 

@@ -1,6 +1,6 @@
 """zome_loader.py - add-on minimo che carica il pannello Zome ad ogni avvio di Blender.
 
-Serve Blender 5.2. La prima volta lo copia installa.bat, senza un Python di Windows.
+Serve Blender 5.2. La prima volta: estrarre lo ZIP e fare doppio clic su installa.bat.
 Poi Preferenze > Add-on > "Zome (pannello)" acceso. Il codice resta nella cartella estratta:
 il loader la trova da solo, nell'ordine:
   1. il campo "Cartella BlenderZome" nelle preferenze di questo add-on (se compilato);
@@ -11,7 +11,7 @@ Cosi' non c'e' un percorso con il nome utente scritto nel codice: sul secondo co
 stesso posto sotto la cartella utente, parte da sola; altrimenti basta compilare il campo nelle preferenze.
 Il pannello sta in BlenderZome/sistema/blenderzome.py. Il campo delle preferenze indica la cartella BlenderZome, non sistema/.
 """
-bl_info = {"name": "Zome (pannello)", "author": "Stefano", "version": (2, 0, 1), "blender": (5, 2, 0),
+bl_info = {"name": "Zome (pannello)", "author": "Stefano", "version": (2, 0, 2), "blender": (5, 2, 0),
            "location": "Vista 3D > barra laterale (N) > Zome",
            "description": "Pannello Zome per Blender 5.2. Carica sistema/blenderzome.py", "category": "Mesh"}
 
