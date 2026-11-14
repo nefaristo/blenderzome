@@ -1,4 +1,4 @@
-# Zome 2.0.6
+# Zome 2.0.7
 
 Serve Blender 5.2.
 
@@ -7,6 +7,9 @@ La prima volta: estrai lo ZIP in una cartella nuova e fai doppio clic su `instal
 Poi apri Blender, Preferenze, Add-ons, e accendi «Zome (pannello)». Apri `Istanze\Sandbox\Sandbox.blend`.
 
 Da lì in poi il pannello Zome avvisa quando c'è una versione nuova. Il tasto Aggiorna la installa.
+
+Novità della 2.0.7:
+- Se Blender si chiude di colpo mentre EEVEE è acceso, alla volta dopo EEVEE si toglie da solo su quel computer e il pannello passa a Cycles CPU. Nel riquadro del motore c'è «Rimetti EEVEE».
 
 Novità della 2.0.6:
 - Il caricatore riprova per 20 secondi e, se il pannello non si carica, scrive l'errore nelle preferenze dell'add-on. Va rieseguito `installa.bat`.

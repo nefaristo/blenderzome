@@ -1456,9 +1456,14 @@ with _tf_.TemporaryDirectory() as _r_:
         assert _zpe.cartella_report(_blend_, "Tutto") == os.path.join(_d_, "Report", "Tutto")
         assert _zpe.cartella_render(_blend_) == os.path.join(_d_, "Render")
         assert _zpe.cartella_backup(_blend_) == os.path.join(_d_, "Backup")
+        _pk_ = _zpe.percorso_pacchetto(_blend_)
+        assert os.path.dirname(_pk_) == _d_ and _pk_.endswith(" - pacchetto con immagini.blend") and _pk_ != _blend_
+        _cmd_, _usc_ = _zpe.comando_pacchetto("blender", _blend_)
+        assert _usc_ == _pk_ and _cmd_[:4] == ["blender", "-b", "--factory-startup", _blend_] and repr(_pk_) in _cmd_[-1]
     assert _zpe.cartella_report(_st_, "zome_bagno") != _zpe.cartella_report(_itw_, "zome_bagno")
     assert "report" not in os.path.relpath(_zpe.cartella_report(_st_, "Tutto"), os.path.dirname(_st_)).split(os.sep)[1:]
     assert _zpe.cartella_report("", "zome stefano") is None and _zpe.cartella_render("") is None   # blend non salvato
+    assert _zpe.percorso_pacchetto("") is None
     # root: senza segnaposto il ripiego è Istanze del repo; col segnaposto la cartella che lo contiene
     _repo_ = os.path.join(_r_, "BlenderZome")
     assert _zpe.root_progetti("", "", _st_, _repo_) == (os.path.join(_repo_, "Istanze"), "ripiego")
@@ -1559,4 +1564,20 @@ vi_ = _zs._corpo_manufatti({"manufatti": [a_, b_], "zome_pannello": "zome stefan
 assert "Sezione verticale" in vi_ and "Sezione orizzontale" in vi_ and "a 1,20 m dal pavimento" in vi_
 n += 1
 
+# EEVEE che fa chiudere Blender: il segno «in prova» resta solo se Blender si è chiuso di colpo, e allora EEVEE si toglie.
+# Vale per il computer, non per la zome: coricata e dritta prendono lo stesso motore.
+import zome_eevee as _ze_
+with _tf_.TemporaryDirectory() as _c_:
+    assert not _ze_.tolto(_c_) and not _ze_.all_avvio(_c_)                    # niente segno: niente da fare
+    _ze_.in_prova(_c_, True); _ze_.in_prova(_c_, False)                       # EEVEE acceso e poi spento: nessun crash
+    assert not _ze_.all_avvio(_c_) and not _ze_.tolto(_c_)
+    _ze_.in_prova(_c_, True)                                                  # acceso, e Blender si chiude di colpo
+    assert _ze_.all_avvio(_c_) and _ze_.tolto(_c_) and "EEVEE acceso dal" in _ze_.quando_tolto(_c_)
+    assert not _ze_.all_avvio(_c_)                                            # la seconda volta non lo ridice
+    for _m_ in ("EEVEE", "SOLID", "CYCLES"):
+        assert _ze_.motore_permesso(_m_, _c_) == ("CYCLES" if _m_ == "EEVEE" else _m_)
+    _ze_.rimetti(_c_)
+    assert not _ze_.tolto(_c_) and _ze_.motore_permesso("EEVEE", _c_) == "EEVEE"
+    assert not _ze_.all_avvio("") and _ze_.motore_permesso("EEVEE", "") == "EEVEE"
+n += 1
 print("OK", n, "gruppi di prove")

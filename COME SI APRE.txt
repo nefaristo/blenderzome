@@ -1,8 +1,8 @@
-Zome 2.0.6
+Zome 2.0.7
 
 Serve Blender 5.2.
 
-La prima volta, e ogni volta che la versione nuova lo dice (la 2.0.6 lo dice):
+La prima volta:
 estrai lo ZIP in una cartella fissa e fai doppio clic su installa.bat.
 
 Poi apri Blender, Preferenze, Add-ons, e accendi «Zome (pannello)».

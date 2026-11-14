@@ -5,7 +5,7 @@ Uso: nel Text editor di Blender aprire carica_zome.py e premere "Esegui script",
 oppure (da codice) aggiungere la cartella a sys.path e chiamare blenderzome.register().
 Il pannello compare nella barra laterale della vista 3D (tasto N), scheda "Zome".
 """
-VERSIONE = "2.0.6"   # tag della release su github.com/nefaristo/blenderzome.
+VERSIONE = "2.0.7"   # tag della release su github.com/nefaristo/blenderzome.
 _REPO = "nefaristo/blenderzome"
 
 bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 4), "blender": (5, 2, 0),
@@ -46,6 +46,8 @@ import zome_pavimento
 importlib.reload(zome_pavimento)
 import zome_percorsi
 importlib.reload(zome_percorsi)
+import zome_eevee
+importlib.reload(zome_eevee)
 from zome_core import (Params, build, shell, beams, CATALOGO, APERTO, cutlist, beams_summary, BEAM_FACES,
                         isolante_guscio, _facce_annesse,
                        porta_dist_max, porta_posizioni, porta_posizione_auto, porta_telaio, porta_anta, porta_cerniera, chiave_taglio,
@@ -2020,7 +2022,7 @@ class ZomeProps(bpy.types.PropertyGroup):
         ('CYCLES', "Cycles CPU", "Luce e materiali veri, calcolati dal processore e non dalla scheda video: funziona anche con una scheda "
                                  "vecchia. Nella vista Rendered l'immagine compare sgranata e si pulisce in qualche secondo. "
                                  "Il render è lento: minuti per un'immagine, ore per un video")],
-        update=lambda self, context: _prepara_motore(context.scene, self.render_motore),
+        update=lambda self, context: _update_motore(self, context),
         description="Motore della scena, cambia subito: lo usano i tasti Render e la vista Rendered. Material Preview usa sempre "
                     "EEVEE. Vale per questo blend: non entra nella tipologia")
     errore: StringProperty(default="")
@@ -2283,7 +2285,7 @@ def _copia_loader():
 
 
 _MODULI_PANNELLO = ("blenderzome", "zome_core", "zome_pavimento", "zome_viste", "zome_statica",
-                    "zome_foglio", "zome_scena", "zome_planimetria", "zome_percorsi")
+                    "zome_foglio", "zome_scena", "zome_planimetria", "zome_percorsi", "zome_eevee")
 
 
 def _firma_codice():
@@ -2660,9 +2662,71 @@ def _colori_solid():
         mat.diffuse_color = tuple(bsdf.inputs["Base Color"].default_value)
 
 
+def _cartella_eevee():
+    """Dove si ricorda se EEVEE fa chiudere Blender: la configurazione di Blender di questo computer, non il progetto."""
+    try:
+        return bpy.utils.user_resource('CONFIG')
+    except Exception:
+        return ""
+
+
+def _segna_eevee(sc=None):
+    """Il segno «EEVEE in prova» c'è finché una scena usa EEVEE (zome_eevee.py)."""
+    try:
+        scene = [sc] if sc is not None else list(bpy.data.scenes)
+        acceso = any(s.render.engine.startswith("BLENDER_EEVEE") for s in scene)
+    except AttributeError:                                   # bpy.data non ancora leggibile
+        return
+    zome_eevee.in_prova(_cartella_eevee(), acceso)
+
+
+def _update_motore(z, context):
+    if z.render_motore == 'EEVEE' and zome_eevee.tolto(_cartella_eevee()):
+        z.render_motore = 'CYCLES'                           # rifà l'update con Cycles
+        return
+    _prepara_motore(context.scene, z.render_motore)
+
+
+def _togli_eevee_dalle_scene():
+    """EEVEE tolto su questo computer: ogni scena che lo usa passa a Cycles CPU, prima che la vista Rendered lo accenda."""
+    for sc in bpy.data.scenes:
+        if sc.render.engine.startswith("BLENDER_EEVEE") or sc.zome.render_motore == 'EEVEE':
+            sc.zome.render_motore = 'CYCLES'
+            _prepara_motore(sc, 'CYCLES')
+
+
+@bpy.app.handlers.persistent
+def _eevee_all_apertura(_file=None):
+    try:
+        if zome_eevee.tolto(_cartella_eevee()):
+            _togli_eevee_dalle_scene()
+        _segna_eevee()
+    except Exception as e:
+        print("zome eevee:", e)
+
+
+@bpy.app.handlers.persistent
+def _eevee_all_uscita(*_):
+    zome_eevee.in_prova(_cartella_eevee(), False)
+
+
+def _eevee_all_avvio():
+    """Una volta, appena Blender parte: se il segno è rimasto, l'ultima chiusura è stata un crash con EEVEE acceso."""
+    try:
+        bpy.data.scenes
+    except AttributeError:
+        return 0.5
+    if zome_eevee.all_avvio(_cartella_eevee()):
+        print("Zome: Blender si era chiuso di colpo con EEVEE acceso. EEVEE tolto su questo computer.")
+    _eevee_all_apertura()
+    return None
+
+
 def _prepara_motore(sc, motore):
     """Mette il motore scelto nella scena, appena lo si sceglie e prima di ogni render: lo usano anche la vista Rendered e F12."""
+    motore = zome_eevee.motore_permesso(motore, _cartella_eevee())
     sc.render.engine = _MOTORI[motore]
+    _segna_eevee()
     if motore == 'SOLID':
         sh = sc.display.shading
         sh.light, sh.color_type = 'STUDIO', 'TEXTURE'        # le texture del legno; senza texture il colore del materiale
@@ -2773,6 +2837,11 @@ class ZOME_PT_vista_modello(_SottoPannello):
         row = box.row(align=True)
         row.operator("zome.anteprima", icon='CAMERA_DATA')
         box.row().prop(z, "render_motore", expand=True)
+        if zome_eevee.tolto(_cartella_eevee()):
+            r_ = box.row()
+            r_.alert = True
+            r_.label(text="EEVEE tolto su questo computer", icon='ERROR')
+            r_.operator("zome.eevee_rimetti", text="", icon='LOOP_BACK')
         row = box.row(align=True)
         row.operator("zome.render", text="Render fotogramma", icon='RENDER_STILL').animazione = False
         row.operator("zome.render", text="Render animazione", icon='RENDER_ANIMATION').animazione = True
@@ -3330,6 +3399,7 @@ class ZOME_PT_dati(_SottoPannello):
         box.prop(z, "report_scelta", text="")
         titolo, scelti, _comp = _scelta_report(context, z)
         box.operator("zome.foglio", icon='FILE', text=f"Crea report: {titolo}" if scelti else "Crea report")
+        lay.operator("zome.pacchetto", icon='PACKAGE')
 
 
 class ZOME_PT_posa(_SottoPannello):
@@ -4442,7 +4512,67 @@ class ZOME_PT_scheletro(_SottoPannello):
                 box.label(text=riga)
 
 
-_classes = (ZomeProps, ZOME_OT_info, ZOME_OT_crea,ZOME_OT_reimposta, ZOME_OT_zh_altezza, ZOME_OT_preset_salva, ZOME_OT_preset_carica, ZOME_OT_preset_elimina, ZOME_OT_modello_nuovo, ZOME_OT_aggiorna, ZOME_PT_panel, ZOME_OT_uso, ZOME_OT_porta_max, ZOME_OT_porta_auto, ZOME_OT_porta_passo, ZOME_OT_statica, ZOME_OT_statica_copia, ZOME_OT_traversa, ZOME_OT_vista, ZOME_OT_anim_crea, ZOME_OT_anim_rimuovi, ZOME_OT_anteprima, ZOME_OT_render, ZOME_OT_foglio,
+class ZOME_OT_eevee_rimetti(bpy.types.Operator):
+    """EEVEE è stato tolto perché Blender si è chiuso di colpo mentre era acceso (succede con alcune schede video). Lo rimette nel menu del motore. Se Blender si richiude di colpo con EEVEE, si ritoglie da solo"""
+    bl_idname = "zome.eevee_rimetti"
+    bl_label = "Rimetti EEVEE"
+
+    def execute(self, context):
+        zome_eevee.rimetti(_cartella_eevee())
+        self.report({'INFO'}, "EEVEE di nuovo disponibile")
+        return {'FINISHED'}
+
+
+class ZOME_OT_pacchetto(bpy.types.Operator):
+    """Scrive accanto al blend «<Nome> - pacchetto con immagini.blend»: il file salvato con tutte le immagini dentro,
+    compresso, da scaricare e aprire da solo (un solo file, senza ZIP). Lo fa un Blender in background: il file aperto
+    non cambia. Prima salva il blend: il pacchetto è l'ultima versione salvata"""
+    bl_idname = "zome.pacchetto"
+    bl_label = "Pacchetto da condividere"
+
+    _processo = None
+    _timer = None
+    _log = None
+    _uscita = ""
+
+    def execute(self, context):
+        import subprocess
+        f = bpy.data.filepath
+        if not f:
+            self.report({'ERROR'}, "Salva prima il blend: il pacchetto si fa dal file salvato.")
+            return {'CANCELLED'}
+        if bpy.data.is_dirty:
+            self.report({'ERROR'}, "Ci sono modifiche non salvate: salva prima, il pacchetto si fa dal file salvato.")
+            return {'CANCELLED'}
+        cmd, self._uscita = zome_percorsi.comando_pacchetto(bpy.app.binary_path, f)
+        try:
+            import tempfile
+            self._log = tempfile.TemporaryFile()          # non una pipe: con molto testo il processo si fermerebbe
+            self._processo = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=self._log)
+        except OSError as e:
+            self.report({'ERROR'}, f"Pacchetto non riuscito: {e}")
+            return {'CANCELLED'}
+        self._timer = context.window_manager.event_timer_add(0.5, window=context.window)
+        context.window_manager.modal_handler_add(self)
+        self.report({'INFO'}, "Pacchetto in preparazione…")
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type != 'TIMER' or self._processo.poll() is None:
+            return {'PASS_THROUGH'}
+        context.window_manager.event_timer_remove(self._timer)
+        self._log.seek(0)
+        errore = self._log.read().decode("utf-8", "replace").strip()
+        self._log.close()
+        if self._processo.returncode != 0 or not os.path.isfile(self._uscita):
+            self.report({'ERROR'}, "Pacchetto non riuscito: " + (errore.splitlines()[-1] if errore else "nessun file"))
+            return {'CANCELLED'}
+        mb = os.path.getsize(self._uscita) / 1e6
+        self.report({'INFO'}, f"Pacchetto: {os.path.basename(self._uscita)} ({mb:.0f} MB)")
+        return {'FINISHED'}
+
+
+_classes = (ZomeProps, ZOME_OT_info, ZOME_OT_crea,ZOME_OT_reimposta, ZOME_OT_zh_altezza, ZOME_OT_preset_salva, ZOME_OT_preset_carica, ZOME_OT_preset_elimina, ZOME_OT_modello_nuovo, ZOME_OT_aggiorna, ZOME_PT_panel, ZOME_OT_uso, ZOME_OT_porta_max, ZOME_OT_porta_auto, ZOME_OT_porta_passo, ZOME_OT_statica, ZOME_OT_statica_copia, ZOME_OT_traversa, ZOME_OT_vista, ZOME_OT_anim_crea, ZOME_OT_anim_rimuovi, ZOME_OT_anteprima, ZOME_OT_render, ZOME_OT_foglio, ZOME_OT_pacchetto, ZOME_OT_eevee_rimetti,
             ZOME_PT_posa, ZOME_PT_scheletro, ZOME_PT_pavimento, ZOME_PT_esterno, ZOME_PT_porta, ZOME_PT_posizione, ZOME_PT_vista_modello, ZOME_PT_vista,
             ZOME_PT_dati)
 
@@ -4533,6 +4663,12 @@ def register():
     _assicura_materiali()
     if _posa_all_apertura not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_posa_all_apertura)
+    if _eevee_all_apertura not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_eevee_all_apertura)
+    if _eevee_all_uscita not in bpy.app.handlers.exit_pre:
+        bpy.app.handlers.exit_pre.append(_eevee_all_uscita)
+    if not bpy.app.timers.is_registered(_eevee_all_avvio):
+        bpy.app.timers.register(_eevee_all_avvio, first_interval=0.2)
     if not bpy.app.timers.is_registered(_posa_dopo_ricarica):
         bpy.app.timers.register(_posa_dopo_ricarica, first_interval=0.5)
     if not bpy.app.timers.is_registered(_avvia_controllo):
@@ -4543,8 +4679,10 @@ def register():
 
 
 def unregister():
-    for fn in [f for f in bpy.app.handlers.load_post if getattr(f, "__name__", "") == "_posa_all_apertura"]:
+    for fn in [f for f in bpy.app.handlers.load_post if getattr(f, "__name__", "") in ("_posa_all_apertura", "_eevee_all_apertura")]:
         bpy.app.handlers.load_post.remove(fn)
+    for fn in [f for f in bpy.app.handlers.exit_pre if getattr(f, "__name__", "") == "_eevee_all_uscita"]:
+        bpy.app.handlers.exit_pre.remove(fn)
     for nome in ("ZOME_PT_viste", "ZOME_PT_comandi"):
         vecchia = getattr(bpy.types, nome, None)
         if vecchia is not None:

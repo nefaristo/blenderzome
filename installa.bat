@@ -1,7 +1,7 @@
 @echo off
 setlocal
 echo.
-echo Zome 2.0.6
+echo Zome 2.0.7
 echo Serve Blender 5.2.
 echo.
 

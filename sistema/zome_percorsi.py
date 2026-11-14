@@ -78,3 +78,26 @@ def root_progetti(preferenza="", ambiente=None, blend="", repo=""):
     if trovata:
         return trovata, "segnaposto"
     return os.path.join(os.path.abspath(repo) if repo else os.getcwd(), "Istanze"), "ripiego"
+
+
+PACCHETTO = " - pacchetto con immagini"
+
+
+def percorso_pacchetto(blend):
+    """<cartella del blend>/<Nome> - pacchetto con immagini.blend: il blend con le immagini dentro, compresso, da
+    scaricare e aprire da solo.  None se il blend non è salvato."""
+    d = cartella_blend(blend)
+    if d is None:
+        return None
+    nome = os.path.splitext(os.path.basename(blend))[0]
+    return os.path.join(d, nome + PACCHETTO + ".blend")
+
+
+def comando_pacchetto(blender, blend):
+    """La riga di comando: un Blender in background apre il blend salvato, ci mette dentro le immagini e salva una copia
+    compressa.  Il file aperto da chi lavora non si tocca."""
+    uscita = percorso_pacchetto(blend)
+    codice = ("import bpy\n"
+              "bpy.ops.file.pack_all()\n"
+              f"bpy.ops.wm.save_as_mainfile(filepath={uscita!r}, compress=True, copy=True, relative_remap=False)\n")
+    return [blender, "-b", "--factory-startup", blend, "--python-expr", codice], uscita
