@@ -1,11 +1,20 @@
-Zome 2.0.5
+Zome 2.0.6
 
 Serve Blender 5.2.
 
-La prima volta: estrai lo ZIP in una cartella nuova e fai doppio clic su installa.bat.
+La prima volta, e ogni volta che la versione nuova lo dice (la 2.0.6 lo dice):
+estrai lo ZIP in una cartella fissa e fai doppio clic su installa.bat.
 
 Poi apri Blender, Preferenze, Add-ons, e accendi «Zome (pannello)».
-Apri Istanze\Sandbox\Sandbox.blend.
+Aprendo la freccia:
+- «Cartella BlenderZome» deve indicare questa cartella (vuoto = la cerca da solo);
+- «Cartella progetti» è la cartella con i tuoi progetti, uno per cartella col nome del blend (vuoto = la cerca da solo).
+Sotto deve esserci «In uso: …». Se c'è «Cartella non trovata» o un errore, scegli la cartella nel campo.
+
+Per provare apri Istanze\Sandbox\Sandbox.blend e nella vista 3D premi N: c'è la linguetta Zome.
+
+I report si scrivono accanto al blend aperto, nella cartella Report; i video nella cartella Render.
+Il blend va salvato prima di fare il report.
 
 Da lì in poi il pannello Zome avvisa quando c'è una versione nuova.
-Il tasto Aggiorna la installa.
+Il tasto Aggiorna la installa. Se la versione nuova cambia anche il caricatore, riesegui installa.bat.

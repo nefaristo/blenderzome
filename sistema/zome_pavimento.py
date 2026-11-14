@@ -1,25 +1,19 @@
-"""Pavimento della zome (geometria in Python puro): fondazione a secco, dormienti, travetti e tavolato.
+"""Pavimento della zome (geometria in Python puro): basamento, travi, travetti e tavolato.
 
-Il pavimento si basa sull'impronta della zome posata (poligono dei bordi liberi, qualunque sia l'inclinazione), quindi vale anche
-per le versioni coricate o inclinate.  L'impronta SEGUE LA PORTA:
-  - porta a parete: l'impronta e' tagliata dal piano della porta;
-  - corridoio con il piano della porta fuori dalla zome: all'impronta si aggiunge il rettangolo del corridoio (larghezza del vano
-    piu' il legno delle pareti) fino al piano della porta; il poligono non e' piu' convesso;
-  - corridoio con il piano della porta dentro la zome: l'impronta resta quella della zome.
+Il basamento e' sopra terra: pietre (e muretto estetico) piu' travi perimetro, una luce pietra-pietra.
+Lo scheletro della zome poggia sulla cima dei travi (z = zfloor + h_trave). Travetti e solaio stanno
+DENTRO lo zome, sopra i travi:
 
-Due fondazioni (scelta `tipo`):
-  "muretto"  : muro a secco di pietre irregolari a corsi sfalsati (spessore ~40 cm + una fila interna piu' bassa di 20 cm), continuo
-               lungo tutto il perimetro, VUOTO sotto il pavimento (ventilazione e ispezione), con un dormiente squadrato sopra; i travetti
-               stanno in un ribassamento sul lato interno, cosi' il pavimento finito e' quasi a filo con la cima del muretto.  Al piu'
-               nessun varco (il dormiente restava sospeso); la fila principale esce al piu' 10 cm dal bordo, quindi si vede solo di lato.
-  "pietroni" : un pietrone irregolare (~50 cm) per ogni vertice dell'impronta (corridoio compreso) e un palo squadrato di sopra,
-               tagliato irregolare dal bosco, che va da un pietrone al successivo.
-In entrambi i casi sopra poggiano i lati bassi dei triangoli (a quota zfloor) e i travetti del pavimento.
-Il pavimento finito sta a zfloor - 1 cm (a filo con la base dei triangoli): niente scalino interno.
-Il gradino e' una lastra di pietra irregolare davanti alla porta, sull'asse della porta, fuori dall'impronta, a meta' altezza.
+  pietre + travi (basamento)  ->  travetti appoggiati SOPRA i travi
+                              ->  tavolato. Isolante fra i travetti, tavolato sotto.
 
-Tutte le quote in metri; poliedri: {"v": [vertici], "f": [facce (indici)], "tinta": 0..1 (variazione di colore della pietra)}.
-Dimensionamento dei travetti: indicativo (flessione e freccia L/300 con legno C24), non sostituisce un ingegnere.
+Il muretto, se c'e', e' solo un rivestimento parziale non portante: non prende i travetti ne' i travi.
+
+Il pavimento finito sta a zfloor + h_trave + h_travetto + tavolato. I 3 m e le aree a 1,80 m
+si misurano da li'. Il vano della porta parte dal pavimento finito (porta_z0 dal piano delle pietre).
+
+L'impronta segue la porta (parete / corridoio). Dimensionamento indicativo C24, L/300:
+non sostituisce un ingegnere.
 """
 import math
 import random
@@ -28,23 +22,49 @@ import random
 SEZIONI = [(0.06, 0.10), (0.06, 0.12), (0.06, 0.14), (0.08, 0.12), (0.08, 0.14), (0.08, 0.16), (0.08, 0.18),
            (0.08, 0.20), (0.10, 0.20), (0.10, 0.22), (0.12, 0.24), (0.14, 0.28)]
 T_TAVOLATO = 0.025
-T_FONDO = 0.014          # tavolato sotto i travetti: ci appoggia l'isolante, e non resta a contatto col vuoto
+T_FONDO = 0.014          # tavolato sotto i travetti: ci appoggia l'isolante
 FMD = 13.2               # N/mm2: C24, kmod 0.8, gammaM 1.45
-E_MEDIO = 9000.0         # N/mm2, modulo medio del C24 (abete da costruzione), gia' ridotto per la deformazione nel tempo
-TRAVETTO_B, TRAVETTO_H = 0.08, 0.12     # sezione solita, m: lo spessore e la larghezza sono dati, l'interasse si calcola
+E_MEDIO = 9000.0         # N/mm2, modulo medio del C24 gia' ridotto per la deformazione nel tempo
+TRAVETTO_B, TRAVETTO_H = 0.08, 0.12
 INTERASSE_MAX = 0.60     # m: oltre, il tavolato da 25 mm resta senza appoggio
-H_DORMIENTE = 0.10       # dormiente squadrato sopra il muretto
-H_PALO = 0.16            # palo del pietroni
+CAMPATA_MAX = 1.80       # m: un lato piu' lungo ha pietre intermedie, cosi' nessuna trave copre piu' di questo
+INTERASSE_AUTO = 0.50    # m: con la sezione «auto» si sceglie la prima sezione che sta a questa distanza
+LUCE_MIN_TRAVETTI = 0.02 # m: spazio minimo fra due travetti; sotto, la sezione scelta non tiene il carico
+APP_TRAVETTO = 0.04      # m: appoggio del travetto sul trave
+G_N = 9.81
+DENS_C24 = 700.0
+DENS_TAVOLATO = 500.0
+DENS_ISO_DEFAULT = 25.0  # kg/m3, canapa o simile
+G_FINITURA = 0.15        # kN/m2, finitura sopra il tavolato
+G_GUSCIO = 0.30          # kN/m2 di guscio: perline 20 + 15 mm a 500, tegole 3 mm a 3130, isolante 5 cm a 25 (~28 kg/m2); vetro 35-45
 W_MURETTO = 0.40
-MURO_IN, MURO_OUT = -0.12, 0.10      # fila principale: da -12 a +10 cm dal bordo dell'impronta: fuori ne esce al piu' 10 cm
-SEDE_IN, SEDE_OUT = -0.34, -0.10     # fila interna ribassata (sede dei travetti)
-Z_FONDO = -0.05                      # le pietre scendono un po' sotto il terreno
+MURO_IN, MURO_OUT = -0.12, 0.10
+Z_FONDO = -0.05
+GAP_MURETTO = 0.10       # m: il muretto resta sotto i travi, non li tocca
+
+
+def parse_sezione(s):
+    """'8x12' o (0.08, 0.12) -> (b, h) in metri."""
+    if isinstance(s, (tuple, list)) and len(s) >= 2:
+        return float(s[0]), float(s[1])
+    t = str(s or "8x12").lower().replace("×", "x").replace(" ", "")
+    if "x" not in t:
+        return TRAVETTO_B, TRAVETTO_H
+    a, c = t.split("x", 1)
+    try:
+        return int(a) / 100.0, int(c) / 100.0
+    except ValueError:
+        return TRAVETTO_B, TRAVETTO_H
+
+
+def codice_sezione(b, h):
+    return f"{int(round(b * 100))}x{int(round(h * 100))}"
 
 
 def interasse_massimo(luce, b, h, carico):
     """Distanza massima fra i travetti, in metri.
 
-    La sezione (b, h) e il modulo E del C24 sono dati. Il carico e' di servizio, in kN/m².
+    La sezione (b, h) e il modulo E del C24 sono dati. Il carico e' totale (permanente + variabile), in kN/m².
     Comanda il piu' stretto fra la freccia L/300 e la flessione.
 
         i = 384 · E · I / (1500 · q · L³)          freccia: 5·q·i·L⁴ / (384·E·I) = L/300
@@ -64,6 +84,160 @@ def interasse_massimo(luce, b, h, carico):
                "I_mm4": I, "W_mm3": W, "i_freccia": i_freccia / 1000.0,
                "i_flessione": i_flessione / 1000.0,
                "comanda": "freccia" if i_freccia <= i_flessione else "flessione"}
+
+
+def q_permanente(b, h, interasse, dens_iso, t_iso):
+    """kN/m²: tavolato, fondo, isolante fra i travetti, peso proprio dei travetti, finitura."""
+    g_tav = T_TAVOLATO * DENS_TAVOLATO * G_N / 1000.0
+    g_fondo = T_FONDO * DENS_TAVOLATO * G_N / 1000.0
+    g_iso = max(t_iso, 0.0) * max(dens_iso, 0.0) * G_N / 1000.0
+    g_trav = (b * h * DENS_C24 * G_N / 1000.0) / max(interasse, b)
+    return g_tav + g_fondo + g_iso + g_trav + G_FINITURA
+
+
+def _verifica_trave(b, h, luce, q_lin):
+    """Trave appoggiata con carico uniforme q_lin (kN/m = N/mm): flessione e freccia L/300."""
+    L = max(luce, 0.3) * 1000.0
+    q = max(float(q_lin), 0.05)                                     # kN/m = N/mm
+    bm, hm = b * 1000.0, h * 1000.0
+    I = bm * hm ** 3 / 12.0
+    W = bm * hm ** 2 / 6.0
+    M = q * L * L / 8.0
+    delta = 5.0 * q * L ** 4 / (384.0 * E_MEDIO * I)
+    u_f, u_d = M / (FMD * W), delta * 300.0 / L
+    return {"E": E_MEDIO, "f": FMD, "q_lin": float(q_lin), "L": max(luce, 0.3),
+            "b": b, "h": h, "I_mm4": I, "W_mm3": W, "M_Nmm": M,
+            "delta_mm": delta, "limite_mm": L / 300.0,
+            "ok_flessione": u_f <= 1.0, "ok_freccia": u_d <= 1.0, "uso": max(u_f, u_d),
+            "comanda": "freccia" if u_d >= u_f else "flessione"}
+
+
+def sezione_trave(casi):
+    """Prima sezione del catalogo che tiene su tutti i lati. casi: [(luce m, q_lin kN/m, extra)]; il dettaglio e' quello del lato
+    che comanda (uso piu' alto), con i campi di extra."""
+    det = None
+    for b, h in SEZIONI:
+        dets = [dict(_verifica_trave(b, h, L, q), **(ex or {})) for L, q, ex in casi]
+        det = max(dets, key=lambda d: d["uso"])
+        if det["uso"] <= 1.0:
+            return (b, h), dict(det, insufficiente=False)
+    return SEZIONI[-1], dict(det or {}, insufficiente=True)
+
+
+def _interasse(luce, b, h, Q, dens_iso):
+    """Sezione data: l'interasse (quindi quanti travetti) e' quello che regge il carico, fra b + LUCE_MIN_TRAVETTI e
+    INTERASSE_MAX. Piu' travetti pesano di piu': si itera finche' l'interasse si ferma."""
+    i_min = b + LUCE_MIN_TRAVETTI
+    i = INTERASSE_MAX
+    formula_t, G = None, 0.0
+    for _ in range(12):
+        G = q_permanente(b, h, i, dens_iso, h)
+        i_calc, formula_t = interasse_massimo(luce, b, h, G + Q)
+        i_nuovo = min(INTERASSE_MAX, max(i_min, i_calc))
+        if abs(i_nuovo - i) < 1e-4:
+            i = i_nuovo
+            break
+        i = i_nuovo
+    return i, formula_t, G
+
+
+def dimensiona_solaio(luce_travetti, luce_trave, area, n_lati, sezione, carico, dens_iso=DENS_ISO_DEFAULT, q_bordo=0.4, lati=None, zome=None,
+                      travetto_fisso=None, trave_fissa=None):
+    """Sezione travetti (data) -> interasse; poi sezione travi dal catalogo.
+
+    travetto_fisso, trave_fissa: (b, h) gia' scelte sul caso peggiore (quote_pavimento): qui si verificano soltanto, sulla
+    geometria vera, e l'interasse si calcola con quella sezione.
+
+    carico: variabile di esercizio, kN/m². q_bordo: peso della zome e neve sul bordo, kN/m (da carico_zome, il cui
+    dettaglio e' `zome`).
+    lati: [(L, ell, cos)] per ogni lato: luce, lunghezza dei travetti che ci finiscono, |cos| fra lato e fila dei travetti.
+    Il lato riceve (G+Q)·ell/2·cos kN/m (meta' travetto per ogni travetto che ci appoggia; un lato parallelo ai travetti prende
+    almeno mezza striscia, (G+Q)·i/2). Senza lati: un solo lato lungo luce_trave con (G+Q)·luce_travetti/2.
+    """
+    Q = max(float(carico), 0.05)
+    dens_iso = float(dens_iso if dens_iso is not None else DENS_ISO_DEFAULT)
+    if travetto_fisso and str(sezione).lower() == "auto":
+        b, h = travetto_fisso
+        i = INTERASSE_AUTO
+        G = q_permanente(b, h, i, dens_iso, h)
+        _, formula_t = interasse_massimo(luce_travetti, b, h, G + Q)
+    elif travetto_fisso:
+        b, h = travetto_fisso
+        i, formula_t, G = _interasse(luce_travetti, b, h, Q, dens_iso)
+    elif str(sezione).lower() == "auto":
+        # la prima sezione del catalogo (la meno legno) che sta a INTERASSE_AUTO; i travetti si mettono a quella distanza
+        for b, h in SEZIONI:
+            G = q_permanente(b, h, INTERASSE_AUTO, dens_iso, h)
+            i_calc, formula_t = interasse_massimo(luce_travetti, b, h, G + Q)
+            if i_calc >= INTERASSE_AUTO - 1e-9:
+                i = INTERASSE_AUTO
+                break
+        else:
+            i, formula_t, G = _interasse(luce_travetti, b, h, Q, dens_iso)
+    else:
+        b, h = parse_sezione(sezione)
+        i, formula_t, G = _interasse(luce_travetti, b, h, Q, dens_iso)
+    i_min = b + LUCE_MIN_TRAVETTI
+    formula_t = dict(formula_t, b=b, h=h, interasse=i, tetto=INTERASSE_MAX, i_min=i_min,
+                     G=G, Q=Q, q=G + Q, dens_iso=dens_iso, auto=str(sezione).lower() == "auto")
+    travetti_ok = formula_t["i_freccia"] >= i - 1e-9 and formula_t["i_flessione"] >= i - 1e-9
+    formula_t["ok"] = travetti_ok
+    n = max(int(n_lati), 1)
+    if not lati:
+        lati = [(luce_trave, luce_travetti, 1.0)]
+    casi_s = []
+    for k, (L, ell, cs) in enumerate(lati):
+        larg = max(ell / 2.0 * cs, i / 2.0)                          # m di solaio che scaricano su 1 m di trave
+        casi_s.append((L, (G + Q) * larg, {"lato": k + 1, "ell": ell, "cos": cs, "larghezza": larg}))
+    q_pp = 0.0
+    if trave_fissa:
+        Bb, Hh = trave_fissa
+        q_pp = Bb * Hh * DENS_C24 * G_N / 1000.0
+        dets = [dict(_verifica_trave(Bb, Hh, L, qs + q_bordo + q_pp), **dict(ex, q_solaio=qs)) for L, qs, ex in casi_s]
+        formula_b = max(dets, key=lambda d: d["uso"])
+        formula_b = dict(formula_b, insufficiente=formula_b["uso"] > 1.0)
+    else:
+        for _ in range(2):                                            # il peso proprio dipende dalla sezione scelta
+            casi = [(L, qs + q_bordo + q_pp, dict(ex, q_solaio=qs)) for L, qs, ex in casi_s]
+            (Bb, Hh), formula_b = sezione_trave(casi)
+            q_pp = Bb * Hh * DENS_C24 * G_N / 1000.0
+        casi = [(L, qs + q_bordo + q_pp, dict(ex, q_solaio=qs)) for L, qs, ex in casi_s]
+        (Bb, Hh), formula_b = sezione_trave(casi)
+    formula_b = dict(formula_b, q_bordo=float(q_bordo), q_pp=q_pp, G=G, Q=Q, area=area, n_lati=n, zome=zome or {})
+    spessore = Hh + h + T_TAVOLATO
+    return {"travetto": (b, h), "interasse": i, "formula_travetti": formula_t, "travetti_ok": travetti_ok,
+            "trave": (Bb, Hh), "formula_travi": formula_b, "travi_ok": not formula_b.get("insufficiente"),
+            "luce_travetti": max(luce_travetti, 0.5), "luce_trave": max(luce_trave, 0.3),
+            "G": G, "Q": Q, "spessore": spessore, "z_sopra_base": spessore}
+
+
+def quote_pavimento(facce, p_info):
+    """Quote del basamento e del solaio: h_trave, spessore totale sopra le pietre, sezione travi.
+
+    Caso peggiore, senza la porta e senza la direzione dei travetti: i travetti coprono la distanza massima fra due vertici
+    dell'impronta, e ogni lato riceve travetti perpendicolari lunghi quanto quella distanza. Cosi' trave e travetto (e la
+    quota a cui poggia la zome) non dipendono dalla porta; pavimento() disegna con queste sezioni."""
+    geo = _geometria_impronta(facce, p_info) if facce else None
+    if geo is None:
+        b, h = parse_sezione(p_info.get("sezione", "8x12"))
+        Hh = 0.10
+        sp = Hh + h + T_TAVOLATO
+        return {"h_trave": Hh, "trave": (0.06, Hh), "travetto": (b, h), "spessore": sp, "sopra_travi": h + T_TAVOLATO}
+    B = geo["B"]
+    diam = max(math.dist(p, q) for p in B for q in B)
+    dim = dimensiona_solaio(diam, geo["luce_trave"], geo["area"], geo["n"],
+                            p_info.get("sezione", "8x12"), p_info.get("carico", 0.5),
+                            p_info.get("dens_iso", DENS_ISO_DEFAULT), p_info.get("q_bordo", 0.4),
+                            [(L / campate(L), diam, 1.0) for L in geo["L_i"]], p_info.get("zome"))
+    Hh = dim["trave"][1]
+    h = dim["travetto"][1]
+    return {"h_trave": Hh, "trave": dim["trave"], "travetto": dim["travetto"], "spessore": dim["spessore"],
+            "sopra_travi": h + T_TAVOLATO, "dim": dim}
+
+
+def altezza_pacchetto(facce, p_info):
+    """Spessore del solaio sopra la cima delle pietre: h_trave + h_travetto + tavolato."""
+    return quote_pavimento(facce, p_info)["spessore"]
 
 
 # --- geometria piana -------------------------------------------------------------------------------------------------
@@ -186,7 +360,7 @@ def _clip_semipiano(P, nx, ny, d):
     return out
 
 
-def _con_corridoio(B, c, dwd, hw, T, zf):
+def _con_corridoio(B, c, dwd, hw, T, zf, minimo=0.25):
     """Aggiunge all'impronta B (antioraria, (x, y, z)) il rettangolo del corridoio: larghezza 2*hw attorno all'asse, dal bordo di B
     fino a T (distanza dal centro c lungo dwd).  Ritorna (U, tipi, ok); tipi[i] e' "dome" o "corr" per il lato U[i] -> U[i+1]."""
     n = len(B)
@@ -206,7 +380,7 @@ def _con_corridoio(B, c, dwd, hw, T, zf):
                 best = (t, i, f)
         return best
     eL, eR = uscita(hw), uscita(-hw)
-    if eL is None or eR is None or T - max(eL[0], eR[0]) < 0.25:
+    if eL is None or eR is None or T - max(eL[0], eR[0]) < minimo:
         return list(B), ["dome"] * n, False
     def pt(e):
         _, i, f = e
@@ -417,9 +591,14 @@ def _muro_secco(U, Zv, off0, off1, ztop_f, hc, lmin, lmax, rng, varchi, cima_pia
     return pietre
 
 
-def impronta(facce, zf=None):
+def impronta(facce, zf=None, solo_piano=False):
     """Impronta della zome posata: inviluppo convesso (x, y, z) dei vertici dei bordi liberi (spigoli di una sola faccia).
-    Per la zome dritta e' il poligono di base; per quella coricata o inclinata comprende anche il taglio sul piano del pavimento."""
+    Per la zome dritta e' il poligono di base. La zome arriva intera (non tagliata): con zf si prende la sezione sul piano del pavimento
+    piu' i bordi liberi sopra il piano (la bocca sollevata della zome inclinata, dove sale il muretto); con solo_piano (zome coricata,
+    taglio a triangoli) solo la sezione."""
+    if zf is not None and solo_piano:
+        S = sezione(facce, zf)
+        return _semplifica([(x, y, zf) for x, y in S]) if len(S) >= 3 else []
     cont = {}
     for f in facce:
         k = len(f)
@@ -434,8 +613,10 @@ def impronta(facce, zf=None):
             for kk in (ka, kb):
                 xy = (kk[0], kk[1])
                 pts[xy] = min(pts.get(xy, 1e9), kk[2])
-    if zf is not None:                          # zome coricata: solo i punti sul piano del pavimento (la bocca aperta non fa salire il muretto)
-        pts = {xy: z for xy, z in pts.items() if z <= zf + 0.02}
+    if zf is not None:
+        pts = {xy: z for xy, z in pts.items() if z >= zf - 1e-6}
+        for xy in sezione(facce, zf):
+            pts[xy] = zf
     if len(pts) < 3:
         return []
     H = _hull(list(pts))
@@ -475,15 +656,15 @@ def _semplifica(P, lmin=0.35, tol=0.03):
     return P
 
 
-def pavimento(facce, p_info):
-    """Calcola il pavimento.  facce: facce della zome posata (senza il vano della porta);
-    p_info: zf (quota del piano di posa), tipo, interasse, carico, seme, porta (angolo orizzontale mondo in gradi o None),
-    porta_modo ("parete" | "fuori" | "dentro" | None), porta_dist (distanza orizzontale del piano della porta dal centro),
-    porta_w (larghezza del vano), centro (x, y dell'asse), densita (kg/m3).  Ritorna None se manca l'impronta."""
+def campate(L):
+    """In quante campate si divide un lato lungo L: pietre intermedie ogni CAMPATA_MAX al massimo."""
+    return max(1, math.ceil(L / CAMPATA_MAX - 1e-9))
+
+
+def _geometria_impronta(facce, p_info):
+    """Impronta, luci e lati. None se manca il poligono."""
     zf = p_info["zf"]
-    tipo = p_info.get("tipo", "muretto")
-    rng = random.Random(p_info.get("seme", 1) * 7919 + 13)
-    Bz = impronta(facce, zf if p_info.get("solo_piano") else None)
+    Bz = impronta(facce, zf, p_info.get("solo_piano", False))
     if len(Bz) < 3:
         return None
     c = p_info.get("centro") or _centro([(q[0], q[1]) for q in Bz])
@@ -492,12 +673,11 @@ def pavimento(facce, p_info):
         dwd = (math.cos(a), math.sin(a))
     else:
         dwd = (0.0, -1.0)
-    dj = (-dwd[1], dwd[0])                              # i travetti corrono di lato, il tavolato lungo l'asse della porta
+    dj = (-dwd[1], dwd[0])
     pj = (-dj[1], dj[0])
     modo = p_info.get("porta_modo") if p_info.get("porta") is not None else None
     dist = p_info.get("porta_dist")
-    tipi = None
-    corridoio = False
+    tipi, corridoio, corr_args = None, False, None
     if modo == "parete" and dist is not None:
         Q = _clip_semipiano(Bz, dwd[0], dwd[1], dwd[0] * c[0] + dwd[1] * c[1] + dist)
         if len(Q) >= 3 and area([(q[0], q[1]) for q in Q]) > 0.3:
@@ -510,100 +690,247 @@ def pavimento(facce, p_info):
                 sb = (b_[0] - c[0]) * dwd[0] + (b_[1] - c[1]) * dwd[1]
                 tipi.append("corr" if abs(sa - dist) < 1e-6 and abs(sb - dist) < 1e-6 else "dome")
     elif modo == "fuori" and dist is not None:
-        hw = p_info.get("porta_w", 0.8) / 2 + 0.04               # asse del legno delle pareti del corridoio
+        hw = p_info.get("porta_w", 0.8) / 2 + 0.04
         Bz, tipi, corridoio = _con_corridoio(Bz, c, dwd, hw, dist + 0.03, zf)
+        corr_args = (c, dwd, hw, dist + 0.03)      # il tavolato sta piu' in alto, dove la zome e' piu' stretta: puo' servirgli anche se qui no
     if tipi is None:
         tipi = ["dome"] * len(Bz)
     B = [(x, y) for x, y, _ in Bz]
-    Zv = [max(z, zf) for _, _, z in Bz]                 # quota a cui poggia la zome sul vertice (>= zf)
     n = len(B)
-    inset = 0.22 if tipo == "muretto" else 0.10          # distanza degli appoggi dal bordo, per la luce libera
-    # --- la luce e' la corda piu' lunga dell'impronta; da quella, con la sezione data, esce l'interasse
+    L_i, nrm_i = [], []
+    for i in range(n):
+        x0, y0 = B[i]
+        x1, y1 = B[(i + 1) % n]
+        L = math.hypot(x1 - x0, y1 - y0) or 1e-9
+        L_i.append(L)
+        nrm_i.append(((y1 - y0) / L, -(x1 - x0) / L))
     xs_ = [(q[0] - c[0]) * pj[0] + (q[1] - c[1]) * pj[1] for q in B]
     xmin, xmax = min(xs_), max(xs_)
     luce, xprobe = 0.5, xmin
     while xprobe <= xmax + 1e-9:
         cd = _corda(B, xprobe, c, dj, pj)
         if cd:
-            luce = max(luce, cd[1] - cd[0] - 2 * inset)
+            luce = max(luce, cd[1] - cd[0])
         xprobe += 0.05
-    luce = max(luce, 0.5)
-    carico = p_info.get("carico", 0.5)
-    b, h = TRAVETTO_B, TRAVETTO_H
-    i_calc, formula = interasse_massimo(luce, b, h, carico)
-    while i_calc < 0.30 and (b, h) != SEZIONI[-1]:
-        successivi = [s for s in SEZIONI if s[0] * s[1] > b * h + 1e-9]
-        if not successivi:
-            break
-        b, h = successivi[0]
-        i_calc, formula = interasse_massimo(luce, b, h, carico)
-    interasse = min(INTERASSE_MAX, max(0.20, i_calc))
-    formula = dict(formula, b=b, h=h, interasse=interasse, tetto=INTERASSE_MAX)
+    lati = []                                   # per i travi: luce, travetti che ci finiscono (corda a meta' lato), |cos| con la fila
+    for i in range(n):
+        x0, y0 = B[i]
+        x1, y1 = B[(i + 1) % n]
+        cs = abs((x1 - x0) * pj[0] + (y1 - y0) * pj[1]) / L_i[i]
+        xm = ((x0 + x1) / 2 - c[0]) * pj[0] + ((y0 + y1) / 2 - c[1]) * pj[1]
+        cd = _corda(B, xm, c, dj, pj)
+        lati.append((L_i[i] / campate(L_i[i]), (cd[1] - cd[0]) if cd else 0.0, cs))
+    return {"Bz": Bz, "B": B, "c": c, "dwd": dwd, "dj": dj, "pj": pj, "tipi": tipi, "corr_args": corr_args,
+            "corridoio": corridoio, "n": n, "L_i": L_i, "nrm_i": nrm_i,
+            "xmin": xmin, "xmax": xmax, "luce": max(luce, 0.5),
+            "luce_trave": max(L / campate(L) for L in L_i) if L_i else 0.5, "area": area(B), "lati": lati,
+            "Zv": [max(z, zf) for _, _, z in Bz]}
+
+
+def _sopra(f, zf):
+    """La parte della faccia con z >= zf (Sutherland-Hodgman su un piano)."""
+    out = []
+    for p, q in zip(f, f[1:] + f[:1]):
+        pin, qin = p[2] >= zf, q[2] >= zf
+        if pin:
+            out.append(p)
+        if pin != qin:
+            t = (zf - p[2]) / (q[2] - p[2])
+            out.append((p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]), zf))
+    return out
+
+
+def carico_zome(facce, zf, perim, g_guscio=G_GUSCIO, g_scheletro=None, neve=1.0):
+    """Peso della zome intera e neve, in kN, spalmati sul perimetro dell'impronta: q_bordo in kN/m.
+
+    facce: la zome posata senza porta; conta la parte sopra zf. g_guscio: kN/m² di superficie (rivestimenti, copertura,
+    isolante dei rombi). g_scheletro: kN per metro di trave dello scheletro (meta' del perimetro di ogni faccia: ogni lato
+    e' di due facce). neve: kN/m² sulla pianta della zome. Spalmare sul perimetro e' a favore di sicurezza: il peso scende
+    soprattutto ai vertici, cioe' sulle pietre, dove la trave non si piega.
+    """
+    if g_scheletro is None:
+        g_scheletro = 0.02 * 0.05 * DENS_C24 * G_N / 1000.0
+    a_sup, l_sch, pts = 0.0, 0.0, []
+    for f in facce or []:
+        s = _sopra(list(f), zf)
+        if len(s) < 3:
+            continue
+        nx = ny = nz = 0.0
+        for p, q in zip(s, s[1:] + s[:1]):
+            nx += (p[1] - q[1]) * (p[2] + q[2])
+            ny += (p[2] - q[2]) * (p[0] + q[0])
+            nz += (p[0] - q[0]) * (p[1] + q[1])
+            l_sch += 0.5 * math.dist(p, q)
+        a_sup += 0.5 * math.sqrt(nx * nx + ny * ny + nz * nz)
+        pts += [(q[0], q[1]) for q in s]
+    a_pianta = area(_hull(pts)) if len(pts) >= 3 else 0.0
+    peso = a_sup * g_guscio + l_sch * g_scheletro
+    w_neve = a_pianta * max(neve, 0.0)
+    q = (peso + w_neve) / perim if perim >= 0.1 else 0.4
+    return {"q_bordo": q, "peso_kN": peso, "neve_kN": w_neve, "perimetro": perim, "area_guscio": a_sup,
+            "metri_scheletro": l_sch, "area_pianta": a_pianta, "g_guscio": g_guscio, "g_scheletro": g_scheletro,
+            "neve": neve}
+
+
+def _testo_q_bordo(fb):
+    cz = fb.get("zome") or {}
+    if not cz:
+        return f"q_bordo = {fb.get('q_bordo', 0):.2f} kN/m (peso della zome sul bordo). "
+    return (f"q_bordo = (peso della zome + neve) / perimetro = ({cz['peso_kN']:.1f} + {cz['neve_kN']:.1f}) / "
+            f"{cz['perimetro']:.2f} = {fb.get('q_bordo', 0):.2f} kN/m. Peso: {cz['area_guscio']:.1f} m² di guscio a "
+            f"{cz['g_guscio']:.2f} kN/m² (rivestimenti, copertura, isolante) e {cz['metri_scheletro']:.1f} m di scheletro a "
+            f"{cz['g_scheletro'] * 1000:.0f} N/m; neve {cz['neve']:.2f} kN/m² su {cz['area_pianta']:.1f} m² di pianta. "
+            f"Spalmato su tutto il perimetro, a favore di sicurezza: il peso scende soprattutto ai vertici, sulle pietre. ")
+
+
+def rapporto_solaio(summary):
+    """Testi per il report statica: sommario e procedimento di travetti e travi."""
+    if not summary:
+        return None
+    ft = summary.get("formula") or summary.get("formula_travetti") or {}
+    fb = summary.get("formula_travi") or {}
+    b, h = summary.get("travetto_b", 0), summary.get("travetto_h", 0)
+    Bb, Hh = summary.get("trave_b", 0), summary.get("trave_h", 0)
+
+    def cm(x):
+        return f"{x * 100:.0f}"
+
+    q = ft.get("q", summary.get("carico", 0) + summary.get("G", 0))
+    G, Q = ft.get("G", summary.get("G", 0)), ft.get("Q", summary.get("carico", 0))
+    trav_ok = summary.get("travetti_ok", True)
+    trave_ok = summary.get("travi_ok", True)
+    travetti = {
+        "sommario": (f"{summary.get('travetti', 0)} travetti {cm(b)}×{cm(h)} cm, "
+                     f"luce {ft.get('L', summary.get('luce', 0)):.2f} m, "
+                     f"interasse {summary.get('interasse', 0)*100:.0f} cm"
+                     + ("" if trav_ok else " — la sezione non tiene nemmeno con i travetti accostati, aumentala o riduci il carico")),
+        "dettaglio": (
+            (f"Legno C24. Sezione automatica {cm(b)}×{cm(h)} cm: la prima del catalogo che regge il carico a "
+             f"{INTERASSE_AUTO*100:.0f} cm di interasse. " if ft.get("auto") else
+             f"Legno C24. Sezione scelta {cm(b)}×{cm(h)} cm; il numero dei travetti viene dall'interasse che regge il carico. ") +
+            f"Permanente G = {G:.2f} kN/m² (tavolato {T_TAVOLATO*1000:.0f} mm, fondo {T_FONDO*1000:.0f} mm, "
+            f"isolante {cm(h)} cm a {ft.get('dens_iso', DENS_ISO_DEFAULT):.0f} kg/m³, peso proprio dei travetti, finitura). "
+            f"Variabile Q = {Q:.2f} kN/m². q = G + Q = {q:.2f} kN/m².\n"
+            f"Freccia L/300: i = 384 · E · I / (1500 · q · L³) = {ft.get('i_freccia', 0)*100:.0f} cm, "
+            f"con E = {ft.get('E', E_MEDIO):.0f} N/mm², I = b·h³/12.\n"
+            f"Flessione: i = 8 · f · W / (q · L²) = {ft.get('i_flessione', 0)*100:.0f} cm, "
+            f"f = {ft.get('f', FMD):.1f} N/mm², W = b·h²/6. "
+            f"Comanda la {ft.get('comanda', 'freccia')}. Interasse adottato {summary.get('interasse', 0)*100:.0f} cm "
+            f"(il minore dei due, al massimo {INTERASSE_MAX*100:.0f} cm per il tavolato; "
+            f"almeno {ft.get('i_min', b + LUCE_MIN_TRAVETTI)*100:.0f} cm, cioe' {LUCE_MIN_TRAVETTI*100:.0f} cm fra un travetto e l'altro). "
+            f"Il peso dei travetti entra in G, quindi l'interasse si ricalcola finche' non cambia piu'."
+        ),
+    }
+    qlin = fb.get("q_lin", fb.get("q_solaio", 0) + fb.get("q_bordo", 0) + fb.get("q_pp", 0))
+    W, M = fb.get("W_mm3", 0), fb.get("M_Nmm", 0)
+    travi = {
+        "sommario": (f"{summary.get('travi', summary.get('vertici', 0))} travi {cm(Bb)}×{cm(Hh)} cm su "
+                     f"{summary.get('appoggi', summary.get('vertici', 0))} pietre; comanda il lato {fb.get('lato', '?')}, "
+                     f"luce {fb.get('L', summary.get('luce_trave', 0)):.2f} m, q = {qlin:.2f} kN/m"
+                     + ("" if trave_ok else " — la sezione massima del catalogo non tiene")),
+        "dettaglio": (
+            f"Trave semplicemente appoggiata, un pezzo per campata, luce = pietra–pietra: un lato piu' lungo di "
+            f"{CAMPATA_MAX:.2f} m ha pietre intermedie a passo uguale. Una sola sezione per tutti i lati, "
+            f"scelta sul lato piu' sollecitato. "
+            f"I travetti scaricano sui lati dove finiscono: q_solaio = (G+Q) · ℓ/2 · |cos α|, con ℓ la lunghezza dei travetti "
+            f"che ci appoggiano e α l'angolo fra il lato e la fila dei travetti (un lato parallelo ai travetti prende mezza "
+            f"striscia, (G+Q) · i/2). Sul lato {fb.get('lato', '?')}: ℓ = {fb.get('ell', 0):.2f} m, |cos α| = {fb.get('cos', 0):.2f}, "
+            f"q_solaio = {fb.get('G', 0) + fb.get('Q', 0):.2f} × {fb.get('larghezza', 0):.2f} = {fb.get('q_solaio', 0):.2f} kN/m. "
+            + _testo_q_bordo(fb) +
+            f"Peso proprio {fb.get('q_pp', 0):.2f} kN/m. q = {qlin:.2f} kN/m (1 kN/m = 1 N/mm).\n"
+            f"M = q L² / 8 = {M / 1e6:.2f} kN·m; σ = M / W = {(M / W if W else 0):.1f} N/mm², limite f = {fb.get('f', FMD):.1f} N/mm². "
+            f"Freccia 5 q L⁴ / (384 E I) = {fb.get('delta_mm', 0):.1f} mm, limite L/300 = {fb.get('limite_mm', 0):.1f} mm, "
+            f"E = {fb.get('E', E_MEDIO):.0f} N/mm². "
+            f"Comanda la {fb.get('comanda', 'freccia')}. Sezione {cm(Bb)}×{cm(Hh)} cm dal catalogo commerciale.\n"
+            f"Non e' calcolata la spinta verso l'esterno della zome alla base: l'anello dei travi lavora anche a trazione, "
+            f"e i giunti sulle pietre devono trasmetterla."
+        ),
+    }
+    return {"travetti": travetti, "travi": travi}
+
+
+def pavimento(facce, p_info):
+    """Calcola il pavimento. facce: facce della zome posata (senza il vano della porta).
+
+    p_info: zf (cima delle pietre), tipo (pietroni|muretto), sezione dei travetti ('8x12'), carico variabile kN/m²,
+    seme, porta, dens_iso, q_bordo, densita. I travi si dimensionano da soli (larghezza e altezza dal catalogo).
+    """
+    geo = _geometria_impronta(facce, p_info)
+    if geo is None:
+        return None
+    zf = p_info["zf"]
+    tipo = p_info.get("tipo", "muretto")
+    rng = random.Random(p_info.get("seme", 1) * 7919 + 13)
+    Bz, B, c = geo["Bz"], geo["B"], geo["c"]
+    dwd, dj, pj = geo["dwd"], geo["dj"], geo["pj"]
+    n, L_i, nrm_i = geo["n"], geo["L_i"], geo["nrm_i"]
+    xmin, xmax = geo["xmin"], geo["xmax"]
+    Zv = geo["Zv"]
+    dim = dimensiona_solaio(geo["luce"], geo["luce_trave"], geo["area"], n,
+                            p_info.get("sezione", "8x12"), p_info.get("carico", 0.5),
+                            p_info.get("dens_iso", DENS_ISO_DEFAULT),
+                            p_info.get("q_bordo", 0.4), geo["lati"], p_info.get("zome"),
+                            p_info.get("travetto_fisso"), p_info.get("trave_fissa"))
+    b, h = dim["travetto"]
+    Bb, Hh = dim["trave"]
+    interasse = dim["interasse"]
+    luce = dim["luce_travetti"]
+    zj = zf + Hh                                          # i travetti poggiano sulla cima dei travi
+    zt_top = zj + h
+    zd = zt_top + T_TAVOLATO
     xs = [0.0]
     k = 0
     while (k + 1) * interasse < max(abs(xmin), abs(xmax)) + 1e-9 and len(xs) < 120:
         k += 1
         xs += [k * interasse, -k * interasse]
     xs = [x for x in xs if xmin + 0.06 < x < xmax - 0.06]
-    for xe in (xmin + 0.10, xmax - 0.10):                    # un travetto vicino a ciascun bordo
+    for xe in (xmin + 0.10, xmax - 0.10):
         if all(abs(xe - x) > 0.18 for x in xs):
             xs.append(xe)
     chord = {x: _corda(B, x, c, dj, pj) for x in xs}
-    zd = zf - 0.01                                       # pavimento finito: quasi a filo con la base dei triangoli
-    zt_top = zd - T_TAVOLATO                              # cima dei travetti
-    zj = zt_top - h                                       # sede dei travetti
-    res = {"tipo": tipo, "base": Bz, "zf": zf, "z_finito": zd, "travetto": (b, h), "luce": luce, "dir_porta": dwd,
-           "corridoio": corridoio, "tipi": tipi}
-    nrm_i, L_i = [], []
-    for i in range(n):
-        x0, y0 = B[i]; x1, y1 = B[(i + 1) % n]
-        L = math.hypot(x1 - x0, y1 - y0) or 1e-9
-        L_i.append(L)
-        nrm_i.append(((y1 - y0) / L, -(x1 - x0) / L))
+    res = {"tipo": tipo, "base": Bz, "zf": zf, "z_finito": zd, "travetto": (b, h), "trave": (Bb, Hh),
+           "luce": luce, "dir_porta": dwd, "corridoio": geo["corridoio"], "tipi": geo["tipi"], "corr_args": geo["corr_args"]}
+
     def zlin(i, t):
         return Zv[i] + max(0.0, min(1.0, t)) * (Zv[(i + 1) % n] - Zv[i])
-    pietre, dorm, varchi = [], [], []
+
+    pietre, travi, varchi = [], [], []
+    appoggi = []                                          # pietre: i vertici e, sui lati lunghi, le intermedie
+    for i in range(n):
+        k = campate(L_i[i])
+        P0, P1 = B[i], B[(i + 1) % n]
+        appoggi += [(P0[0] + (P1[0] - P0[0]) * m / k, P0[1] + (P1[1] - P0[1]) * m / k) for m in range(k)]
+    for x, y in appoggi:
+        pietre.append(_sasso(x, y, rng.uniform(0.22, 0.28), rng.uniform(0.22, 0.28),
+                             zf, Z_FONDO, rng, rot=rng.uniform(0, 6)))
     if tipo == "muretto":
-        vd = {}                                           # niente varchi: il muro e' continuo sotto il dormiente
-        # fila principale (cima sotto il dormiente) e fila interna ribassata (sede dei travetti)
-        pietre += _muro_secco(B, Zv, MURO_IN, MURO_OUT, lambda i, f: zlin(i, f) - H_DORMIENTE, 0.17, 0.26, 0.48, rng, vd)
-        pietre += _muro_secco(B, Zv, SEDE_IN, SEDE_OUT, lambda i, f: zj, 0.15, 0.20, 0.38, rng, vd)
-        Bi, Bo = _offset(B, -0.06), _offset(B, 0.06)         # dormiente squadrato 12 cm
-        for i in range(n):
-            j = (i + 1) % n
-            top = [(Bi[i][0], Bi[i][1], Zv[i]), (Bi[j][0], Bi[j][1], Zv[j]), (Bo[j][0], Bo[j][1], Zv[j]), (Bo[i][0], Bo[i][1], Zv[i])]
-            bot = [(q[0], q[1], q[2] - H_DORMIENTE) for q in top]
-            dorm.append(_prisma(bot, top))
-        ext = MURO_OUT - 0.02
-        libera = zj
-    else:
-        for i in range(n):
-            pietre.append(_sasso(B[i][0], B[i][1], rng.uniform(0.22, 0.28), rng.uniform(0.22, 0.28), min(Zv[i] - H_PALO - 0.01, zj - 0.02), -0.03, rng,
-                                 rot=rng.uniform(0, 6)))
-        for i in range(n):
-            j = (i + 1) % n
-            P0, P1 = B[i], B[j]
-            L = L_i[i]
-            tang = ((P1[0] - P0[0]) / L, (P1[1] - P0[1]) / L)
-            nrm = nrm_i[i]
-            w = rng.uniform(0.17, 0.21)
-            hh = rng.uniform(0.14, 0.18)
-            hh = max(hh, max(Zv[i], Zv[j]) - (zj - 0.04))        # il palo scende fino sotto i travetti: sono incastrati
-            ext_ = 0.10
-            a0 = (P0[0] - tang[0] * ext_, P0[1] - tang[1] * ext_)
-            a1 = (P1[0] + tang[0] * ext_, P1[1] + tang[1] * ext_)
-            def q(pt_, side, z, k):
-                return (pt_[0] + nrm[0] * side * k, pt_[1] + nrm[1] * side * k, z)
-            top = [q(a0, -1, Zv[i], w / 2), q(a1, -1, Zv[j], w / 2), q(a1, 1, Zv[j], w / 2), q(a0, 1, Zv[i], w / 2)]
-            sh = rng.uniform(-0.015, 0.015)
-            bot = [q(a0, -1, Zv[i] - hh, w / 2 * 0.65 + sh), q(a1, -1, Zv[j] - hh * rng.uniform(0.9, 1.1), w / 2 * 0.65 + sh),
-                   q(a1, 1, Zv[j] - hh * rng.uniform(0.9, 1.1), w / 2 * 0.65 - sh), q(a0, 1, Zv[i] - hh, w / 2 * 0.65 - sh)]
-            dorm.append(_prisma(bot, top))
-        ext = 0.22
-        libera = zt_top - h
-    res["pietre"], res["dormienti"], res["varchi"] = pietre, dorm, varchi
-    # --- travetti: sulla sede (muretto) o tra i pali; gli estremi stanno a `m` dal bordo
-    m_end = 0.12 if tipo == "muretto" else -0.05     # pietroni: i travetti entrano di 5 cm nel palo (incastro)
+        z_muro = [max(Z_FONDO + 0.12, z - GAP_MURETTO) for z in Zv]
+        pietre += _muro_secco(B, z_muro, MURO_IN, MURO_OUT,
+                              lambda i, f: zlin(i, f) - GAP_MURETTO, 0.16, 0.22, 0.42, rng, {})
+    for i in range(n):
+        j = (i + 1) % n
+        P0, P1 = B[i], B[j]
+        L = L_i[i]
+        tang = ((P1[0] - P0[0]) / L, (P1[1] - P0[1]) / L)
+        nrm = nrm_i[i]
+        ext_ = 0.10
+        half = Bb / 2.0
+        k = campate(L)
+
+        def q(pt_, side, z):
+            return (pt_[0] + nrm[0] * side, pt_[1] + nrm[1] * side, z)
+
+        for m in range(k):                                # un pezzo per campata, da pietra a pietra; agli angoli sporge
+            t0 = L * m / k - (ext_ if m == 0 else 0.0)
+            t1 = L * (m + 1) / k + (ext_ if m == k - 1 else 0.0)
+            a0 = (P0[0] + tang[0] * t0, P0[1] + tang[1] * t0)
+            a1 = (P0[0] + tang[0] * t1, P0[1] + tang[1] * t1)
+            top = [q(a0, -half, zf + Hh), q(a1, -half, zf + Hh), q(a1, half, zf + Hh), q(a0, half, zf + Hh)]
+            bot = [q(a0, -half, zf), q(a1, -half, zf), q(a1, half, zf), q(a0, half, zf)]
+            travi.append(_prisma(bot, top))
+    ext = MURO_OUT + 0.04 if tipo == "muretto" else 0.22
+    res["pietre"], res["travi"], res["dormienti"], res["varchi"] = pietre, travi, travi, varchi
+    m_end = max(0.0, Bb / 2.0 - APP_TRAVETTO)
     trav, lung_tot = [], 0.0
     for x in sorted(xs):
         cd = chord[x]
@@ -612,15 +939,17 @@ def pavimento(facce, p_info):
         t0, t1, base = cd[0] + m_end, cd[1] - m_end, cd[2]
         if t1 - t0 < 0.4:
             continue
+
         def pt(t, lat, z):
             return (base[0] + dj[0] * t + pj[0] * lat, base[1] + dj[1] * t + pj[1] * lat, z)
+
         bot = [pt(t0, -b / 2, zj), pt(t1, -b / 2, zj), pt(t1, b / 2, zj), pt(t0, b / 2, zj)]
         top = [(q_[0], q_[1], zt_top) for q_ in bot]
         trav.append(_prisma(bot, top))
         lung_tot += t1 - t0
     res["travetti"] = trav
-    # fra un travetto e l'altro: isolante per tutta l'altezza, e un tavolato da 14 mm sotto, a filo del travetto
-    fondi, isol_p = [], []
+    fondi = [_prisma([(x, y, zj - T_FONDO) for x, y in B], [(x, y, zj) for x, y in B])]
+    isol_p = []
     ordine = sorted(xs)
     varchi_x = [(xmin, ordine[0] - b / 2)] if ordine else [(xmin, xmax)]
     for xa, xb in zip(ordine, ordine[1:]):
@@ -633,21 +962,15 @@ def pavimento(facce, p_info):
         poly = _striscia(B, x0, x1, c, pj)
         if not poly:
             continue
-        basso = [(x, y, zj - T_FONDO) for x, y in poly]
-        mezzo = [(x, y, zj) for x, y in poly]
-        alto = [(x, y, zt_top) for x, y in poly]
-        fondi.append(_prisma(basso, mezzo))
-        isol_p.append(_prisma(mezzo, alto))
-    res["fondo"] = fondi
-    res["isolante"] = isol_p
-    # --- tavolato: sull'impronta (anche non convessa: il corridoio)
+        isol_p.append(_prisma([(x, y, zj) for x, y in poly], [(x, y, zt_top) for x, y in poly]))
+    res["fondo"], res["isolante"] = fondi, isol_p
     res["tavolato"] = _prisma([(x, y, zd - T_TAVOLATO) for x, y in B], [(x, y, zd) for x, y in B])
-    # --- gradino: lastra irregolare sull'asse della porta, davanti, fuori dall'impronta (e dal muretto)
     res["gradino"] = None
     if p_info.get("porta") is not None:
         smax = None
         for i in range(n):
-            x0, y0 = B[i]; x1, y1 = B[(i + 1) % n]
+            x0, y0 = B[i]
+            x1, y1 = B[(i + 1) % n]
             ex, ey = x1 - x0, y1 - y0
             den = dwd[0] * ey - dwd[1] * ex
             if abs(den) < 1e-12:
@@ -657,23 +980,36 @@ def pavimento(facce, p_info):
             if tt > 0 and -1e-9 <= uu <= 1 + 1e-9:
                 smax = tt if smax is None else max(smax, tt)
         if smax is not None:
-            hd = 0.24
-            hw = max(0.55, p_info.get("porta_w", 0.8) / 2 + 0.2)
+            hd, hw = 0.24, max(0.55, p_info.get("porta_w", 0.8) / 2 + 0.2)
             sc = smax + ext + hd
-            res["gradino"] = _lastra(c[0] + dwd[0] * sc, c[1] + dwd[1] * sc, dwd[0], dwd[1], hw, hd, zd / 2, Z_FONDO, rng)
-    # --- riepilogo
-    dens = p_info.get("densita", 700.0)
+            res["gradino"] = _lastra(c[0] + dwd[0] * sc, c[1] + dwd[1] * sc, dwd[0], dwd[1],
+                                     hw, hd, zd / 2, Z_FONDO, rng)
+    dens = p_info.get("densita", DENS_C24)
     vol_trav = b * h * lung_tot
+    vol_trave = sum(Bb * Hh * (L_i[i] + 0.2) for i in range(n))
     perim = sum(L_i)
-    if tipo == "muretto":
-        vol_dorm = 0.12 * H_DORMIENTE * perim
-    else:
-        vol_dorm = sum(0.19 * 0.16 * (L_i[i] + 0.2) for i in range(n))
-    A = area(B)
-    res["summary"] = {"tipo": tipo, "travetti": len(trav), "travetto_b": b, "travetto_h": h, "luce": luce, "interasse": interasse,
-                      "carico": carico, "formula": formula, "lunghezza_travetti": lung_tot, "volume_travetti": vol_trav,
-                      "massa_travetti": vol_trav * dens, "perimetro": perim, "volume_dormienti": vol_dorm,
-                      "massa_dormienti": vol_dorm * dens, "pietre": len(pietre), "varchi": len(varchi),
-                      "z_finito": zd, "altezza_libera": libera, "area_tavolato": A, "volume_tavolato": A * T_TAVOLATO,
-                      "vertici": n, "corridoio": corridoio}
+    A = geo["area"]
+    ft, fb = dim["formula_travetti"], dim["formula_travi"]
+    res["summary"] = {
+        "tipo": tipo, "travetti": len(trav), "travetto_b": b, "travetto_h": h,
+        "trave_b": Bb, "trave_h": Hh, "travi": len(travi),
+        "luce": luce, "luce_trave": dim["luce_trave"], "interasse": interasse,
+        "carico": dim["Q"], "G": dim["G"], "formula": ft, "formula_travetti": ft, "formula_travi": fb,
+        "lunghezza_travetti": lung_tot, "volume_travetti": vol_trav, "massa_travetti": vol_trav * dens,
+        "perimetro": perim, "volume_travi": vol_trave, "massa_travi": vol_trave * dens,
+        "volume_dormienti": vol_trave, "massa_dormienti": vol_trave * dens,
+        "pietre": len(pietre), "varchi": len(varchi),
+        "z_finito": zd, "z_appoggio": zf + Hh, "altezza_libera": zf, "spessore_pacchetto": dim["spessore"],
+        "area_tavolato": A, "volume_tavolato": A * T_TAVOLATO,
+        "vertici": n, "appoggi": len(appoggi), "corridoio": geo["corridoio"],
+        "travetti_ok": dim["travetti_ok"], "travi_ok": dim["travi_ok"],
+        "rapporto": rapporto_solaio({
+            "travetti": len(trav), "travetto_b": b, "travetto_h": h, "trave_b": Bb, "trave_h": Hh,
+            "interasse": interasse, "carico": dim["Q"], "G": dim["G"], "formula": ft,
+            "formula_travetti": ft, "formula_travi": fb, "luce": luce, "luce_trave": dim["luce_trave"],
+            "vertici": n, "travi": len(travi), "appoggi": len(appoggi),
+            "travetti_ok": dim["travetti_ok"], "travi_ok": dim["travi_ok"],
+        }),
+    }
     return res
+

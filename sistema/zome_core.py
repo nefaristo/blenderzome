@@ -48,8 +48,9 @@ class Params:
     py: float = 0.0
     pz: float = 0.0
     radial: float = 0.0       # apertura (gradi, 0..270) di un cuneo tagliato attorno all'asse, centrato su +X
-    floor: bool = False       # taglia con il piano z = zfloor, tenendo z >= zfloor (pavimento)
-    zfloor: float = 0.0
+    floor: bool = False       # taglia lo zome al piano z_appoggio (cima travi), tenendo z >= di li'
+    zfloor: float = 0.0       # cima delle pietre del basamento (sotto i travi)
+    z_appoggio: float = 0.0   # DERIVATO: cima del basamento (pietre + travi); i triangoli poggiano qui
     ztop: float = 0.0         # se > 0 taglia con il piano z = ztop, tenendo z <= ztop (parete chiusa in alto)
     pav_soglia: float = 0.0   # DERIVATO da build() con pav_taglio: soglia dei baricentri meno la quota del pavimento
     pav_taglio: float = -1.0  # con floor: se >= 0 (0..100) il pavimento taglia la zome coricata a triangoli interi invece che con il piano:
@@ -68,14 +69,20 @@ class Params:
     porta_z0: float = 0.0     # DERIVATO: quota del pavimento finito sopra la base (con il pavimento acceso il vano parte da li')
     porta_fuori: bool = False  # DERIVATO da build(): il vano non entra nella sezione, il piano della porta e' fuori dalla zome
     porta_falda: float = 0.15 # corridoio: il soffitto e' a due falde, i lati sono piu' bassi del colmo di questa quota (0 = piano)
-    # --- pavimento (con floor acceso: zome posata sul piano z = zfloor, fondazione, dormienti, travetti, tavolato) ---
-    pav_tipo: str = "muretto"    # "muretto" (a secco, con due varchi) o "pietroni" (uno per vertice, con pali)
-    pav_carico: float = 0.5      # kN/m2 di riferimento del solaio (circa 50 kg/m2): l'interasse dei travetti si calcola da qui
-    pav_interasse: float = 0.40  # interasse dei travetti (m)
+    # --- pavimento (basamento = pietre + travi; zome e travetti sopra la cima dei travi) ---
+    pav_tipo: str = "muretto"    # "muretto" (rivestimento parziale, non portante) o "pietroni" (un sasso per vertice)
+    pav_carico: float = 2.0      # kN/m2 variabile del solaio (2,0 = norma per le case): con la sezione si calcola l'interasse
+    pav_sezione: str = "auto"    # sezione dei travetti, b×h in cm; "auto" = la prima del catalogo che sta a 50 cm
+    pav_interasse: float = 0.40  # tenuto per i preset vecchi; l'interasse si calcola
     pav_seme: int = 1            # seme delle irregolarita' delle pietre
+    pav_dens_iso: float = 25.0   # kg/m3 dell'isolante fra i travetti (e stima delle pareti)
+    pav_neve: float = 1.0        # kN/m2 di neve sulla pianta della zome, che scende sulle travi (la stessa della statica)
+    pav_g_guscio: float = 0.30   # kN/m2 di guscio (rivestimenti, copertura, isolante dei rombi) che scende sulle travi
+    pav_g_scheletro: float = 0.0 # kN per metro di scheletro (TT·TW·densita'·g); 0 = 2 × 5 cm di C24
     # --- esterno e rivestimenti (unita' come ZH, di solito metri) ---
     TW: float = 0.05          # altezza dei pezzi dello scheletro = distanza tra superficie strutturale interna ed esterna
-    traverse: str = ""        # per strato, es. "1:ta,4:t": t = tra anelli, a = sull'anello. Vuoto = nessuna
+    TT: float = 0.03          # spessore delle tavole: qui serve al telaio della porta nel corridoio
+    traverse: str = ""        # "2:ta" = tutto lo strato; "2.3:t" = solo la faccia 3. t = tra anelli, a = sull'anello
     pendenza_tetto: float = 65.0   # faccia = tetto se guarda in su e la sua inclinazione sull'orizzontale e' <= di questo (gradi)
     stella_vetri: bool = True      # strato 1 (apice) tutto a vetro: la stella di vetri in cima
     finestre: int = 3              # numero di finestre (vetri) distribuite sullo strato `strato_finestre`
@@ -83,6 +90,103 @@ class Params:
     sporgenza_tetto: float = 0.10  # gronda: il tetto sporge oltre il bordo basso (m); 0 = nessuna
     usi_manuali: str = ""     # scelte a mano: JSON {"strato.faccia": chiave del catalogo | "aperto"}
     catalogo: dict = field(default_factory=lambda: {k: dict(v) for k, v in CATALOGO.items()})
+
+
+def spostamento_pezzi(posizioni):
+    """Di quanto è stata spostata a mano una zome. Ogni pezzo nasce con l'origine in (0, 0, 0), quindi la sua posizione è lo
+    spostamento, dritta o coricata che sia. Vale quello della maggioranza: un pezzo spostato da solo non trascina la zome."""
+    conti = {}
+    for q in posizioni:
+        voce = conti.setdefault(tuple(round(c, 4) for c in q), [0, q])
+        voce[0] += 1
+    if not conti:
+        return (0.0, 0.0, 0.0)
+    return tuple(max(conti.items(), key=lambda kv: (kv[1][0], any(kv[0])))[1][1])
+
+
+def centro_locale(p):
+    """Centro in pianta del modello nel suo sistema, prima della posizione: il perno della rotazione.  Sulla dritta e' l'asse, sulla
+    coricata il mezzo dell'asse.  Dipende solo dalla forma: non dalla porta, che accorcia o allunga l'impronta."""
+    from dataclasses import replace
+    if abs(p.tilt) < 45.0:
+        return (0.0, 0.0)
+    q = replace(p, porta=False, orient=0.0, px=0.0, py=0.0, pz=0.0, radial=0.0, floor=False, ztop=0.0, pav_taglio=-1.0, caps=False)
+    xs = [v[0] for s in build(q, _pav=False)["strata"] for _, f in s["facce"] for v in f]
+    return ((min(xs) + max(xs)) / 2.0, 0.0)
+
+
+def posa_con_spostamento(po, spostamento):
+    """La posa dopo uno spostamento a mano con G: i pezzi nascono con Location a zero, quindi quella che hanno è di quanto la zome si è mossa."""
+    return {**po, "x": po["x"] + spostamento[0], "y": po["y"] + spostamento[1], "z": po["z"] + spostamento[2]}
+
+
+def posa_iniziale(spostamento, orient, centro):
+    """Modelli di prima: dallo spostamento dei pezzi e dall'orientamento salvato ai valori di Posizione (dove sta il centro)."""
+    a = math.radians(orient)
+    return {"x": spostamento[0] + centro[0] * math.cos(a) - centro[1] * math.sin(a),
+            "y": spostamento[1] + centro[0] * math.sin(a) + centro[1] * math.cos(a),
+            "z": spostamento[2], "angolo": orient, "cx": centro[0], "cy": centro[1]}
+
+
+def posa_punto(q, posa):
+    """Dal sistema del modello al mondo: si porta il centro nell'origine, si gira attorno a Z, si porta il centro a x, y, z."""
+    a = math.radians(posa["angolo"])
+    x, y = q[0] - posa["cx"], q[1] - posa["cy"]
+    return (posa["x"] + x * math.cos(a) - y * math.sin(a), posa["y"] + x * math.sin(a) + y * math.cos(a), posa["z"] + q[2])
+
+
+def posa_ricentrata(posa, centro, px=0.0, py=0.0):
+    """La stessa posizione nel mondo, detta col centro giusto: serve quando zome_posa e' stato scritto con la forma di un altro modello.
+    px e py sono lo spostamento dentro la mesh dei modelli fatti da script: entra nella posa e il modello torna a nascere in origine."""
+    w = posa_punto((centro[0] + px, centro[1] + py, 0.0), posa)
+    return {**posa, "x": w[0], "y": w[1], "cx": centro[0], "cy": centro[1]}
+
+
+_DIRETTI_COSTRUZIONE = ("N", "M", "theta", "ZH", "M2", "theta2", "floor", "zfloor", "pav_tipo", "pav_carico", "pav_sezione", "pav_seme",
+                        "pz", "caps", "porta", "porta_dir", "porta_modo", "porta_dist", "pendenza_tetto", "usi_manuali", "stella_vetri",
+                        "finestre", "strato_finestre", "traverse")
+_CM_COSTRUZIONE = {"porta_w": "porta_w", "porta_h": "porta_h", "porta_falda": "porta_falda", "TW": "TW", "sporgenza_tetto": "sporgenza"}
+_SPESSORI_COSTRUZIONE = {"roof_external": "t_tetto", "wood_external": "t_legno", "glass_external": "t_vetro", "wood_internal": "t_int_legno"}
+
+
+def pannello_da_costruzione(q):
+    """Dai Params dell'ultima costruzione (salvati sulla mesh <nome>_interno) ai campi del pannello, che ha altre unita' e altri nomi.
+    Quel che i Params non dicono (TT, giunto, densita'...) non c'e': lo decide chi chiama."""
+    d = {k: q[k] for k in _DIRETTI_COSTRUZIONE if k in q}
+    for k, campo in _CM_COSTRUZIONE.items():
+        if k in q:
+            d[campo] = q[k] * 100.0
+    for k, campo in _SPESSORI_COSTRUZIONE.items():
+        voce = (q.get("catalogo") or {}).get(k)
+        if voce:
+            d[campo] = voce["spessore"] * 100.0
+    d["secondario"] = q.get("cut", 0) > 0
+    if d["secondario"]:
+        d["cut"] = q["cut"]
+    d["posa"] = "CORICATA" if abs(q.get("tilt", 0.0)) > 45.0 else "DRITTA"
+    if d["posa"] == "CORICATA" and q.get("pav_taglio", -1.0) >= 0.0:
+        d["pav_taglio"] = q["pav_taglio"]
+    if "pav_neve" in q:
+        d["statica_neve"] = q["pav_neve"]
+    return d
+
+
+def stessa_forma(a, b):
+    """True se due gruppi di parametri (del pannello) descrivono la stessa zome."""
+    return (a.get("N") == b.get("N") and a.get("M") == b.get("M") and a.get("posa", "DRITTA") == b.get("posa", "DRITTA")
+            and abs(a.get("theta", 0.0) - b.get("theta", 0.0)) < 1e-4 and abs(a.get("ZH", 0.0) - b.get("ZH", 0.0)) < 1e-4)
+
+
+def confronto_terreno(quote, quota_base, soglia):
+    """Terreno lungo il bordo dell'impronta contro la base della zome.  quote: quota del terreno per punto, None = fuori dal terreno."""
+    dentro = [q - quota_base for q in quote if q is not None]
+    if not dentro:
+        return {"ok": False, "testo": "Il terreno non è sotto la zome"}
+    lo, hi = min(dentro), max(dentro)
+    fuori = len(quote) - len(dentro)
+    ok = not fuori and max(abs(lo), abs(hi)) <= soglia
+    testo = f"Terreno da {lo:+.2f} a {hi:+.2f} m dalla base"
+    return {"ok": ok, "testo": testo + (f", {fuori} punti fuori dal terreno" if fuori else "")}
 
 
 def _sub(a, b): return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -98,11 +202,22 @@ def porta_angolo(p: Params):
     return p.porta_dir - 90.0
 
 
+# altezze (m dal pavimento finito) a cui si misura l'area in piedi: 1,80 e' la «superficie utile» del pannello
+AREE_ALTEZZE = (0.0, 1.5, 1.8, 2.0, 2.2, 2.4)
+
+
+def _z_piano_zome(p: Params) -> float:
+    """Quota del taglio orizzontale dello scheletro con il pavimento acceso."""
+    if p.floor and p.z_appoggio > 1e-9:
+        return p.z_appoggio
+    return p.zfloor
+
+
 def validate(p: Params):
     if p.N < 3:
         raise ValueError("N deve essere almeno 3")
-    if not (2 <= p.M <= p.N):
-        raise ValueError("M deve essere tra 2 e N (M-1 strati, meno di N)")
+    if not (2 <= p.M <= p.N + 1):
+        raise ValueError("M deve essere tra 2 e N+1 (M = N+1 chiude l'altro polo a un punto)")
     if not (0 < p.theta < 90):
         raise ValueError("theta deve stare tra 0 e 90 gradi")
     if p.ZH <= 0:
@@ -119,8 +234,9 @@ def validate(p: Params):
         raise ValueError("porta: distanza, larghezza e altezza devono essere positive")
     if p.porta and not (0 <= p.porta_falda < p.porta_h):
         raise ValueError("porta: la falda deve stare tra 0 e l'altezza")
-    if p.ztop and p.floor and p.ztop <= p.zfloor:
-        raise ValueError("ztop deve essere sopra zfloor")
+    zmin = _z_piano_zome(p) if p.floor else p.zfloor
+    if p.ztop and p.floor and p.ztop <= zmin:
+        raise ValueError("ztop deve essere sopra il piano di posa dello zome")
     if p.cut:
         if not (1 <= p.cut <= p.M - 2):
             raise ValueError("cut deve stare tra 1 e M-2 (anello contato dall'apice)")
@@ -145,6 +261,8 @@ def rings(N, M, theta_deg, ZH):
             B, C = L[i-1][k], L[i-1][(k+1) % N]
             ring.append(tuple(b + c - a for a, b, c in zip(A, B, C)))
         L.append(ring)
+    if M == N + 1 and L:
+        L[-1] = [(0.0, 0.0, 0.0) for _ in range(N)]
     return L
 
 
@@ -163,7 +281,9 @@ def _faces_of(Lr, base_z_extra=0, first=1, last=None, cut_stratum=None):
     N = len(Lr[1]) if len(Lr) > 1 else 0
     M = len(Lr)
     out = {}
-    for j in range(1, M):
+    last_r = math.hypot(Lr[-1][0][0], Lr[-1][0][1]) if M >= 2 and Lr[-1] else 1.0
+    j_max = M - 1 if last_r > 1e-6 else M - 2
+    for j in range(1, j_max + 1):
         faces = []
         for k in range(N):
             B, C = Lr[j][k], Lr[j][(k+1) % N]
@@ -304,11 +424,13 @@ def pose_planes(p: Params):
             nw = _rot(nl, p.tilt, p.orient)
             planes.append((nm, nw, _dot(nw, off)))
     if p.porta and p.porta_modo == "parete":
-        a = math.radians(porta_angolo(p))
-        nw = _rot((-math.cos(a), -math.sin(a), 0.0), p.tilt, p.orient)     # si tiene il lato verso l'asse
-        planes.append(("porta", nw, -p.porta_dist + _dot(nw, off)))
+        poly = _parete_polo(p)
+        if not _porta_su_parete_polo(p, poly):
+            a = math.radians(porta_angolo(p))
+            nw = _rot((-math.cos(a), -math.sin(a), 0.0), p.tilt, p.orient)     # si tiene il lato verso l'asse
+            planes.append(("porta", nw, -p.porta_dist + _dot(nw, off)))
     if p.floor and p.pav_taglio < 0:
-        planes.append(("pavimento", (0.0, 0.0, 1.0), p.zfloor))
+        planes.append(("pavimento", (0.0, 0.0, 1.0), _z_piano_zome(p)))
     if p.ztop:
         planes.append(("parete alta", (0.0, 0.0, -1.0), -p.ztop))
     return planes
@@ -364,21 +486,108 @@ def _chiusure_pavimento(kind, pts, p: Params, off, soglia):
         if chiave(tri) in gia:
             continue
         zt = [_add(_rot(q, p.tilt, p.orient), off)[2] for q in tri]
-        if max(zt) > p.zfloor + _EPS_Z:
+        if max(zt) > _z_piano_zome(p) + _EPS_Z:
             out.append((nome, tri))
     return out
 
 
+def _chiave_vert(q):
+    return tuple(round(c, 6) for c in q)
+
+
+def _coplanari(pts_a, pts_b, tol=0.02):
+    n0 = _face_normal(pts_a)
+    n1 = _face_normal(pts_b)
+    if _norm(n0) < 1e-12 or _norm(n1) < 1e-12:
+        return False
+    return abs(abs(_dot(n0, n1)) - 1.0) <= tol
+
+
+def _condividono_spigolo(pts_a, pts_b):
+    edges_a = {_edge_key(pts_a[i], pts_a[(i + 1) % len(pts_a)]) for i in range(len(pts_a))}
+    for i in range(len(pts_b)):
+        if _edge_key(pts_b[i], pts_b[(i + 1) % len(pts_b)]) in edges_a:
+            return True
+    return False
+
+
+def _ordinamento_ccw(pts):
+    """Vertici convessi coplanari in ordine antiorario (visto da fuori)."""
+    c = tuple(sum(q[j] for q in pts) / len(pts) for j in range(3))
+    n = _unit(_face_normal(pts))
+    u = _unit(_sub(pts[0], c))
+    v = _unit(_cross(n, u))
+
+    def ang(q):
+        w = _sub(q, c)
+        return math.atan2(_dot(w, v), _dot(w, u))
+
+    return sorted(pts, key=ang)
+
+
+def _unione_coplanare(pts_a, pts_b):
+    """Due facce coplanari che condividono uno spigolo -> un solo contorno (es. i due triangoli di un rombo)."""
+    if not _coplanari(pts_a, pts_b) or not _condividono_spigolo(pts_a, pts_b):
+        return None
+    visti, uniq = set(), []
+    for q in pts_a + pts_b:
+        k = _chiave_vert(q)
+        if k in visti:
+            continue
+        visti.add(k)
+        uniq.append(q)
+    if len(uniq) < 3:
+        return None
+    ordered = _ordinamento_ccw(uniq)
+    if _area(ordered) < 1e-12:
+        return None
+    return ordered
+
+
+def _tipo_faccia_unita(kind_orig, nomi, n_vert):
+    if n_vert == 4 and kind_orig == "rombo":
+        return "rombo"
+    if n_vert == 3:
+        for n in nomi:
+            if n in ("triangolo", "triangolo_giu"):
+                return n
+        return "triangolo"
+    return kind_orig
+
+
+def _fondi_facce_stesso_rombo(branche, kind_orig):
+    """Dopo selezione/chiusure sul pavimento: non lasciare due triangoli coplanari dello stesso rombo."""
+    if len(branche) < 2:
+        return branche
+    out = list(branche)
+    changed = True
+    while changed and len(out) >= 2:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                ni, ai = out[i]
+                nj, aj = out[j]
+                uni = _unione_coplanare(ai, aj)
+                if uni is None:
+                    continue
+                tipo = _tipo_faccia_unita(kind_orig, (ni, nj), len(uni))
+                out = out[:i] + [(tipo, tuple(uni))] + out[i + 1:j] + out[j + 1:]
+                changed = True
+                break
+            if changed:
+                break
+    return out
+
+
 def _pezzi_sul_pavimento(poly, zfloor):
-    """Parte del poligono a quota >= pavimento, spezzata in triangoli. Il poligono gia' sopra torna intero."""
+    """Parte del poligono a quota >= pavimento (taglio col piano z = zfloor).  Restituisce un solo contorno convesso,
+    senza scomporlo a ventaglio: altrimenti un rombo tagliato diventerebbe 3+ facce coplanari (telaio e pannelli spurii)."""
     if min(q[2] for q in poly) >= zfloor - 1e-8:
         return [poly]
     sopra, _ = _clip_poly(poly, (0.0, 0.0, 1.0), zfloor)
-    if sopra is None:
+    if sopra is None or len(sopra) < 3:
         return []
-    if len(sopra) <= 3:
-        return [sopra]
-    return [[sopra[0], sopra[i], sopra[i + 1]] for i in range(1, len(sopra) - 1)]
+    return [sopra]
 
 
 def _livello_taglio(p0: Params):
@@ -419,6 +628,10 @@ def apply_pose_and_cuts(strata, p: Params):
     planes = pose_planes(p)
     segs = {}
     corr = _corridoio_piani(p) if (p.porta and p.porta_modo == "corridoio") else None
+    parete = _parete_polo(p)
+    su_parete = bool(parete and p.porta and _porta_su_parete_polo(p, parete))
+    corr_scatola = corr["scatola"] if corr else None
+    coricata = p.floor and abs(p.tilt) >= 45.0
     originali = []
     door = None
     if 0 < p.radial < 180:
@@ -432,8 +645,11 @@ def apply_pose_and_cuts(strata, p: Params):
         lista = []
         for kind, pts in st["facce"]:
             if sel:
-                lista.extend(_selez_triangoli(kind, pts, p, off, p.zfloor + p.pav_soglia))
-                lista.extend(_chiusure_pavimento(kind, pts, p, off, p.zfloor + p.pav_soglia))
+                zp = _z_piano_zome(p)
+                pezzi = _selez_triangoli(kind, pts, p, off, zp + p.pav_soglia)
+                pezzi.extend(_chiusure_pavimento(kind, pts, p, off, zp + p.pav_soglia))
+                pezzi = _fondi_facce_stesso_rombo(pezzi, kind)
+                lista.extend(pezzi)
             else:
                 lista.append((kind, pts))
         for kind, pts in lista:
@@ -443,7 +659,12 @@ def apply_pose_and_cuts(strata, p: Params):
                 if abs(math.atan2(cy, cx)) < door:
                     continue
             poly = [_add(_rot(q, p.tilt, p.orient), off) for q in pts]
-            pezzi = _pezzi_sul_pavimento(poly, p.zfloor) if sel else [poly]
+            if sel:
+                pezzi = _pezzi_sul_pavimento(poly, _z_piano_zome(p))
+            elif p.floor:
+                pezzi = [poly]
+            else:
+                pezzi = [poly]
             for poly in pezzi:
                 tipo = kind if len(poly) == len(pts) else "triangolo"
                 ok = True
@@ -455,13 +676,19 @@ def apply_pose_and_cuts(strata, p: Params):
                     if seg:
                         segs.setdefault(nm, []).append(seg)
                     poly = poly2
-                if ok and corr:
+                if ok and corr_scatola is not None:
                     originali.append(poly)
                     for nm, n, d in corr["muri"]:   # segmenti per le pareti del corridoio (sezione della zome)
                         _, seg = _clip_poly(poly, n, d)
                         if seg:
                             segs.setdefault(nm, []).append(seg)
-                    for pezzo in _sottrai_scatola(poly, corr["scatola"]):
+                    if coricata and not su_parete and not _corridoio_tocca_poly(poly, corr_scatola):
+                        faces.append((tipo, tuple(poly)))     # con l'asse orizzontale la scatola arriva lontano: non tagliare l'apice
+                        continue
+                    pezzi = _sottrai_scatola(poly, corr_scatola)
+                    if not pezzi:
+                        continue
+                    for pezzo in pezzi:
                         faces.append((tipo, tuple(pezzo)))
                 elif ok:
                     faces.append((tipo, tuple(poly)))
@@ -479,25 +706,149 @@ def apply_pose_and_cuts(strata, p: Params):
                 elif poly:
                     caps[nm] = poly
     if corr:
-        tim = porta_timpano(p)
-        if tim:
-            caps["corridoio: timpano"] = tim
+        caps["corridoio: fondo"] = porta_fondo(p)
     # pareti del corridoio: sono parti della porta, non tappi dei tagli, quindi ci sono anche con "Chiudi i tagli" spento
-    if corr and corr["fuori"]:
-        caps.update(_pareti_fuori(p, originali))
-    if corr:
+    if corr and not su_parete:
+        if corr["fuori"]:
+            caps.update(_pareti_fuori(p, originali))
         # parte del corridoio oltre il piano della porta (s >= dist): pareti = sezione della zome.  Se il piano della porta sta
         # fuori dalla zome questa parte e' vuota; se il piano taglia la zome (dentro in basso, fuori in alto) servono entrambe
         for nm, n, d in corr["muri"]:
             if nm in segs:
                 poly = _cap_polygon(segs[nm], n)
-                for n2, d2 in corr["limiti"][nm]:          # solo la parte dentro il corridoio
+                for n2, d2 in corr["limiti"][nm]:
                     if poly:
                         poly, _ = _clip_poly(poly, n2, d2)
                 if poly and _area(poly) > 1e-9:
                     caps[f"{nm} (sezione)" if corr["fuori"] else nm] = poly
+    if parete is not None:
+        caps.update(_pezzi_tappo(parete, p, corr, originali))
+    if p.porta and p.porta_modo == "parete" and _porta_su_parete_polo(p):
+        _togli_facce_nel_vano_parete(strata, p)
     return caps
 
+
+def _pezzi_tappo(parete, p: Params, corr, facce=()):
+    """Il tappo del polo diviso attorno al vano: intero se la porta non ci sta, bucato per il corridoio."""
+    su_parete = _porta_su_parete_polo(p, parete)
+    if su_parete and p.porta_modo == "parete":
+        return _porta_pezzi(parete, p)
+    if su_parete and corr:
+        return _apri_parete_corridoio(parete, p, corr, facce)
+    return {"parete": parete}
+
+
+def _togli_facce_nel_vano_parete(strata, p: Params):
+    """Con esterno acceso, toglie dal guscio le facce coplanari al tappo che cadono nel vano (evita tegole sul buco)."""
+    poly = _parete_polo(p)
+    if not poly:
+        return
+    foot, tw, up, out = _porta_frame(p)
+    n = _face_normal(poly)
+    W2 = p.porta_w / 2
+    z0 = p.porta_z0
+    H = p.porta_h
+    for st in strata:
+        nuove = []
+        for kind, pts in st["facce"]:
+            fn = _face_normal(pts)
+            if abs(abs(_dot(fn, n)) - 1.0) > 0.1:
+                nuove.append((kind, pts))
+                continue
+            c = tuple(sum(v[i] for v in pts) / len(pts) for i in range(3))
+            u = _dot(tw, _sub(c, foot))
+            z = _dot(up, _sub(c, foot))
+            s = _dot(out, _sub(c, foot))
+            if s > 0.12 and -W2 - 0.1 <= u <= W2 + 0.1 and z0 - 0.1 <= z <= z0 + H + 0.1:
+                continue
+            nuove.append((kind, pts))
+        st["facce"] = nuove
+
+
+def _parete_polo(p: Params, scala=1.0):
+    """Tappo del polo aperto (anello a terra) se è verticale: la parete da porta della zome coricata.
+
+    Con M = N+1 il polo è un punto e non c'è nulla da chiudere. Con la zome dritta l'anello a terra
+    è il pavimento, già tappato dal piano z = zfloor. Qui resta solo il poligono perpendicolare
+    all'asse, tagliato dal pavimento se la zome è posata.  Con scala l'anello si allarga attorno all'asse: serve al legno esterno,
+    che arriva al bordo del rivestimento dei fianchi.
+    """
+    if not p.caps or p.M >= p.N + 1:
+        return None
+    if ground_radius(p.N, p.M, p.theta, p.ZH) < 1e-3:
+        return None
+    last = rings(p.N, p.M, p.theta, p.ZH)[-1]
+    off = (p.px, p.py, p.pz)
+    poly = [_add(_rot((q[0] * scala, q[1] * scala, q[2]), p.tilt, p.orient), off) for q in last]
+    if len(poly) < 3:
+        return None
+    n = _face_normal(poly)
+    if abs(n[2]) > 0.85:
+        return None
+    if p.floor:
+        poly, _ = _clip_poly(poly, (0.0, 0.0, 1.0), p.zfloor)
+    if not poly or _area(poly) < 1e-4:
+        return None
+    return poly
+
+
+def _porta_su_parete_polo(p: Params, poly=None):
+    """Porta sulla parete del polo aperto (zome coricata): il vano sta nel tappo, non in una sezione radiale."""
+    if not p.porta or abs(p.tilt) < 45.0 or p.M >= p.N + 1 or not p.caps:
+        return False
+    if ground_radius(p.N, p.M, p.theta, p.ZH) < 1e-3:
+        return False
+    poly = poly if poly is not None else _parete_polo(p)
+    return bool(poly)
+
+
+def _in_poligono_piano(poly, pt, eps=1e-6):
+    n = _face_normal(poly)
+    for i in range(len(poly)):
+        a, b = poly[i], poly[(i + 1) % len(poly)]
+        if _dot(_cross(_sub(b, a), _sub(pt, a)), n) < -eps:
+            return False
+    return True
+
+
+def _porta_entra_in_parete_polo(p: Params, poly):
+    """Il rettangolo del vano (e il colmo in corridoio) sta dentro il poligono del tappo."""
+    foot, tw, up, _out = _porta_frame(p)
+    W2, z0 = p.porta_w / 2, p.porta_z0
+    he = porta_h_utile(p)
+    for u in (-W2, W2):
+        for z in (z0, z0 + he):
+            pt = _add(_add(foot, _scale(tw, u)), _scale(up, z))
+            if not _in_poligono_piano(poly, pt):
+                return False
+    if p.porta_modo != "parete":
+        pt = _add(foot, _scale(up, z0 + p.porta_h))
+        if not _in_poligono_piano(poly, pt):
+            return False
+    return True
+
+
+def _apri_parete_corridoio(parete, p, corr, facce=()):
+    """Buco nel tappo e passaggio dal tappo alla porta, che sta porta_dist fuori (zome coricata).  Il tappo puo' essere piu' piccolo
+    del corridoio: la scatola entra allora anche nel guscio attorno al tappo, e le pareti arrivano fino a lui, non solo al piano
+    del tappo.  Oltre il polo la zome non c'e': il piano del tappo chiude il solido."""
+    caps = {}
+    buchi = _sottrai_scatola(list(parete), corr["scatola"][1:])
+    if not buchi:
+        caps.update(_porta_pezzi(parete, p))
+    else:
+        for k, pezzo in enumerate(buchi):
+            if _area(pezzo) > 1e-4:
+                key = "parete" if k == 0 and len(buchi) == 1 else f"parete:{k + 1}"
+                caps[key] = pezzo
+    # sotto il guscio (il pavimento toglie la parte bassa del polo) la zome finisce comunque sul piano del tappo
+    foot, tw, up, out = _porta_frame(p)
+    d = _dot(out, _sub(parete[0], foot))
+    zb = min([q[2] for f in facce for q in f] or [foot[2]]) - foot[2]
+    sotto = [_add(_add(foot, _scale(out, d)), _add(_scale(tw, u), _scale(up, z))) for u, z in
+             ((-p.porta_w, zb - 1.0), (p.porta_w, zb - 1.0), (p.porta_w, zb), (-p.porta_w, zb))]
+    caps.update(_pareti_fuori(p, facce, [list(parete), sotto]))
+    return caps
 
 # ---------------------------------------------------------------------------
 # Porta: sezione verticale a distanza `porta_dist` dall'asse, nella direzione `porta_dir`.  Si tiene la parte verso l'asse;
@@ -507,6 +858,32 @@ def apply_pose_and_cuts(strata, p: Params):
 def _unit_plane(n, d):
     L = math.sqrt(_dot(n, n))
     return (_scale(n, 1.0 / L), d / L)
+
+
+def _dentro_scatola(q, piani, eps=1e-6):
+    return all(_dot(n, q) - d > eps for n, d in piani)
+
+
+def _corridoio_tocca_poly(poly, piani):
+    """True se il poligono interseca il prisma del corridoio (evita tagli lontani, es. verso l'apice)."""
+    if any(_dentro_scatola(q, piani) for q in poly):
+        return True
+    for i in range(len(poly)):
+        a, b = poly[i], poly[(i + 1) % len(poly)]
+        mid = tuple((a[k] + b[k]) / 2 for k in range(3))
+        if _dentro_scatola(mid, piani):
+            return True
+    return False
+
+
+def _porta_entra_mondo(faces, p: Params, dist, W, H):
+    """Come porta_entra, ma su facce nel mondo e nel riferimento di _porta_frame (zome coricata): il vano W x H e' centrato sul
+    piede della porta a distanza `dist` e parte dalla soglia (porta_z0 sopra il piede)."""
+    from dataclasses import replace
+    foot, tw, up, out = _porta_frame(replace(p, porta_dist=dist))
+    hull = _sezione_verticale(faces, math.degrees(math.atan2(out[1], out[0])), _dot(out, foot))
+    u0, z0 = _dot(tw, foot), foot[2] + p.porta_z0
+    return bool(hull) and all(_in_convesso(hull, u0 + u, z) for u in (-W/2, W/2) for z in (z0, z0 + H))
 
 
 def _sottrai_scatola(poly, piani, eps=1e-6):
@@ -586,6 +963,13 @@ def _sottrai_scatola(poly, piani, eps=1e-6):
     return contorni
 
 
+def _corridoio_inizio(p: Params, fo):
+    """Fin dove arriva verso la zome il corridoio col piano della porta fuori.  Sulla zome dritta e' l'asse.  Sul tappo si va a meta'
+    della zome, dove la sezione e' larga: il vano sta tutto dentro e il corridoio ha gia' attraversato il guscio attorno al tappo."""
+    s = fo - p.porta_dist
+    return s - p.ZH / 2 if _porta_su_parete_polo(p) else s
+
+
 def _corridoio_piani(p: Params):
     """Corridoio tolto verso l'esterno: da `porta_dist` in poi, largo porta_w, con soffitto a due falde: al colmo (asse) alto
     porta_h dalla base, ai lati porta_h - porta_falda.
@@ -610,21 +994,125 @@ def _corridoio_piani(p: Params):
     u_pos, u_neg = _unit_plane(tw, ft), _unit_plane(neg(tw), -ft)
     limiti = {"corridoio: parete sinistra": [s_ok, z_lat], "corridoio: parete destra": [s_ok, z_lat],
               "corridoio: falda destra": [s_ok, u_pos, t_dx], "corridoio: falda sinistra": [s_ok, u_neg, t_sx]}
-    if p.porta_fuori:                                         # il prisma va dal piano della porta verso la zome (fino all'asse)
+    if p.porta_fuori:                                         # il prisma va dal piano della porta verso la zome
         # si toglie tutto il corridoio da s >= 0 (l'asse) in fuori: oltre il piano della porta la zome c'e' solo se il piano la
         # taglia (dentro in basso, fuori in alto): li' servono le pareti di sezione come per il piano dentro
-        s_ax = _unit_plane(out, fo - p.porta_dist)
+        s_ax = _unit_plane(out, _corridoio_inizio(p, fo))
         return {"scatola": [s_ax, t_sx, t_dx, f_dx, f_sx], "muri": muri, "limiti": limiti, "fuori": True}
     return {"scatola": [s_ok, t_sx, t_dx, f_dx, f_sx], "muri": muri, "limiti": limiti, "fuori": False}
 
 
-def _pareti_fuori(p: Params, facce):
-    """Piano della porta fuori dalla zome: le pareti (due laterali e due falde di soffitto) vanno dall'asse al piano della
-    porta, ma si tiene solo la parte fuori dal solido della zome: collegano il telaio al profilo d'incontro col guscio."""
+def _traccia(f, n, d, eps=1e-9):
+    """Il tratto in cui la faccia f attraversa il piano (n, d), o None."""
+    pts = []
+    for i in range(len(f)):
+        a, b = f[i], f[(i + 1) % len(f)]
+        da, db = _dot(n, a) - d, _dot(n, b) - d
+        if abs(da) <= eps:
+            pts.append(a)
+        elif da * db < 0 and abs(db) > eps:
+            pts.append(_add(a, _scale(_sub(b, a), da / (da - db))))
+    if len(pts) < 2:
+        return None
+    lung, q1, q2 = max(((_dist(x, y), x, y) for x in pts for y in pts), key=lambda t: t[0])
+    return (q1, q2) if lung > 1e-7 else None
+
+
+def _parete_fino_al_guscio(rett, out, facce, s0, tetto=None, pieghe=()):
+    """Ritaglia una parete del corridoio (rettangolo nel piano che contiene `out`) al profilo del guscio: per ogni quota v lungo la
+    parete, il punto del guscio piu' lontano lungo `out`.  La zome ridotta in punta non e' convessa, quindi non basta togliere
+    un solido convesso: il profilo si legge dalle facce.  Dove il guscio non c'e', o sta prima di s0, la parete arriva fino a s0.
+    Il lato lontano e' il bordo del rettangolo; con `tetto` (punto -> limite lungo `out`, lineare fra le `pieghe`) e' una spezzata:
+    serve alla parete che chiude il corridoio sotto le due falde.  Ritorna i pezzi."""
+    n = _face_normal(rett)
+    d = _dot(n, rett[0])
+    w = _unit(_cross(n, out))
+    o = rett[0]
+    so, vo = _dot(out, o), _dot(w, o)
+    coord = lambda q: (_dot(out, q) - so, _dot(w, q) - vo)
+    us = [coord(q) for q in rett]
+    fine0 = max(c[0] for c in us)                             # il piano della porta
+    v0, v1 = min(c[1] for c in us), max(c[1] for c in us)
+    if tetto is None:
+        fine = lambda v: fine0
+    else:
+        fine = lambda v: tetto(_add(o, _scale(w, v))) - so
+    vp = sorted(coord(q)[1] for q in pieghe if v0 + 1e-9 < coord(q)[1] < v1 - 1e-9)
+    tratti = []
+    for f in facce:
+        t = _traccia(f, n, d)
+        if t:
+            (s1, v_1), (s2, v_2) = coord(t[0]), coord(t[1])
+            if v_1 > v_2:
+                s1, v_1, s2, v_2 = s2, v_2, s1, v_1
+            if v_2 - v_1 > 1e-9:
+                tratti.append((v_1, s1, v_2, s2))
+    tagli = sorted({v0, v1} | set(vp) | {x for t in tratti for x in (t[0], t[2]) if v0 < x < v1})
+    inizio = s0 - so
+
+    def taglia(prof, va, sa, vb, sb, lim):
+        """Aggiunge (vb, sb), preceduto dal punto in cui s - lim(v) cambia segno fra va e vb."""
+        da, db = sa - lim(va), sb - lim(vb)
+        if da * db < 0:
+            vc = va + (vb - va) * da / (da - db)
+            prof.append((vc, sa + (sb - sa) * (vc - va) / (vb - va)))
+        prof.append((vb, sb))
+    prof = []                                                 # (v, s) lungo la parete, senza oltrepassare la porta
+    for va, vb in zip(tagli, tagli[1:]):
+        if vb - va < 1e-9:
+            continue
+        vm = (va + vb) / 2
+        al = lambda t, v: t[1] + (t[3] - t[1]) * (v - t[0]) / (t[2] - t[0])
+        sopra = [t for t in tratti if t[0] <= vm <= t[2]]
+        if sopra:
+            t = max(sopra, key=lambda t: al(t, vm))
+            sa, sb = al(t, va), al(t, vb)
+        else:
+            sa = sb = inizio
+        tratto = [(va, sa)]
+        taglia(tratto, va, sa, vb, sb, lambda v: inizio)     # il guscio prima dell'inizio non conta
+        tratto = [(v, max(s_, inizio)) for v, s_ in tratto]
+        prof.append(tratto[0])
+        for (xa, ya), (xb, yb) in zip(tratto, tratto[1:]):
+            taglia(prof, xa, ya, xb, yb, fine)                # il guscio passa oltre il piano della porta (o sopra le falde)
+    pezzi, corrente = [], []
+    for k in range(0, len(prof) - 1):
+        (va, sa), (vb, sb) = prof[k], prof[k + 1]
+        if vb - va > 1e-9 and min(sa - fine(va), sb - fine(vb)) < -1e-7:
+            if not corrente or abs(corrente[-1][0] - va) > 1e-9:
+                if corrente:
+                    pezzi.append(corrente)
+                corrente = []
+            corrente += [(va, min(sa, fine(va))), (vb, min(sb, fine(vb)))]
+    if corrente:
+        pezzi.append(corrente)
+    res = []
+    for pz in pezzi:
+        va_, vb_ = pz[0][0], pz[-1][0]
+        cont = ([(va_, fine(va_))] + pz + [(vb_, fine(vb_))] +
+                [(v, fine(v)) for v in reversed(vp) if va_ + 1e-9 < v < vb_ - 1e-9])
+        poly = []
+        for v, s in cont:
+            q = _add(_add(o, _scale(out, s)), _scale(w, v))
+            if not poly or _dist(q, poly[-1]) > 1e-7:
+                poly.append(q)
+        if _dist(poly[0], poly[-1]) <= 1e-7:
+            poly.pop()
+        pulito = [b for a, b, c in zip(poly[-1:] + poly[:-1], poly, poly[1:] + poly[:1])
+                  if _norm(_cross(_sub(b, a), _sub(c, b))) > 1e-9]
+        if len(pulito) >= 3 and _area(pulito) > 1e-4:
+            res.append(pulito if _dot(_face_normal(pulito), n) > 0 else pulito[::-1])
+    return res
+
+
+def _pareti_fuori(p: Params, facce, chiusure=()):
+    """Piano della porta fuori dalla zome: le pareti (due laterali e due falde di soffitto) vanno dall'inizio del corridoio al piano
+    della porta, ma si tiene solo la parte fuori dalla zome: collegano il telaio al profilo d'incontro col guscio.
+    chiusure = poligoni che chiudono la zome dove manca una faccia del guscio (il tappo del polo)."""
     foot, tw, up, out = _porta_frame(p)
     W2, H, R = p.porta_w / 2, p.porta_h, p.porta_falda
     ft, fu, fo = _dot(tw, foot), _dot(up, foot), _dot(out, foot)
-    s0 = fo - p.porta_dist
+    s0 = _corridoio_inizio(p, fo)
     def pt(s, u, z):
         return _add(_add(_add(foot, _scale(out, s - fo)), _scale(tw, u)), _scale(up, z - fu))
     z0, zl, zc = fu, fu + p.porta_z0 + H - R, fu + p.porta_z0 + H
@@ -632,27 +1120,20 @@ def _pareti_fuori(p: Params, facce):
             "corridoio: parete destra": [pt(s0, W2, z0), pt(s0, W2, zl), pt(fo, W2, zl), pt(fo, W2, z0)],
             "corridoio: falda sinistra": [pt(s0, -W2, zl), pt(fo, -W2, zl), pt(fo, 0, zc), pt(s0, 0, zc)],
             "corridoio: falda destra": [pt(s0, 0, zc), pt(fo, 0, zc), pt(fo, W2, zl), pt(s0, W2, zl)]}
-    tutti = [v for f in facce for v in f]
-    if not tutti:
+    tutte = list(facce) + list(chiusure)
+    if not tutte:
         return rett
-    cen = tuple(sum(v[j] for v in tutti) / len(tutti) for j in range(3))
-    solido = []
-    for f in facce:
-        k = len(f)
-        nx = sum((f[i][1] - f[(i + 1) % k][1]) * (f[i][2] + f[(i + 1) % k][2]) for i in range(k))
-        ny = sum((f[i][2] - f[(i + 1) % k][2]) * (f[i][0] + f[(i + 1) % k][0]) for i in range(k))
-        nz = sum((f[i][0] - f[(i + 1) % k][0]) * (f[i][1] + f[(i + 1) % k][1]) for i in range(k))
-        n = _unit_plane((nx, ny, nz), 0.0)[0]
-        d = _dot(n, f[0])
-        if _dot(n, cen) < d:
-            n, d = _scale(n, -1), -d
-        solido.append((n, d))
     res = {}
     for nome, poly in rett.items():
-        for k, pezzo in enumerate(_sottrai_scatola(poly, solido)):
-            if _area(pezzo) < 0.02:                    # ritaglio del taglio col guscio, non una parete
-                continue
-            res[nome if k == 0 else f"{nome} {k + 1}"] = list(pezzo)
+        for k, pezzo in enumerate(_parete_fino_al_guscio(poly, out, tutte, s0)):
+            res[nome if k == 0 else f"{nome} {k + 1}"] = pezzo
+    # se il colmo sta sopra la zome anche all'inizio (porta piu' alta della zome), le falde la attraversano in cima e qui le chiude
+    # una parete: la sezione del passaggio sopra il guscio.  Di solito all'inizio il passaggio e' tutto dentro e non c'e'
+    m = R / W2 if W2 > 0 else 0.0
+    dietro = [pt(s0, -W2, z0), pt(s0, W2, z0), pt(s0, W2, zc), pt(s0, -W2, zc)]
+    tetto = lambda q: zc - m * abs(_dot(tw, q) - ft)
+    for k, pezzo in enumerate(_parete_fino_al_guscio(dietro, up, tutte, z0, tetto, [pt(s0, 0.0, zc)])):
+        res["corridoio: chiusura" if k == 0 else f"corridoio: chiusura {k + 1}"] = pezzo
     return res
 
 
@@ -663,6 +1144,28 @@ def _porta_frame(p: Params):
     a = math.radians(porta_angolo(p))
     off = (p.px, p.py, p.pz)
     if p.floor and abs(p.tilt) >= 45.0:
+        poly = _parete_polo(p)
+        up = (0.0, 0.0, 1.0)
+        if poly:
+            n = _face_normal(poly)
+            cen = tuple(sum(v[i] for v in poly) / len(poly) for i in range(3))
+            if _dot(n, _rot((0.0, 0.0, 1.0), p.tilt, p.orient)) > 0:     # il solido sta dalla parte dell'apice: fuori e' il contrario
+                n = _scale(n, -1)
+            out = n
+            tw = _cross(up, n)
+            if _norm(tw) < 1e-6:
+                tw = _rot((-math.sin(a), math.cos(a), 0.0), 0.0, p.orient)
+            else:
+                tw = _unit(tw)
+            ref = _rot((math.cos(a), math.sin(a), 0.0), 0.0, p.orient)
+            ref = _sub(ref, _scale(n, _dot(ref, n)))
+            if _norm(ref) > 1e-6:
+                tw = _unit(ref)
+            d0 = _dot(n, _sub((cen[0], cen[1], p.zfloor), poly[0]))
+            foot = tuple((cen[0], cen[1], p.zfloor)[i] - d0 * n[i] for i in range(3))
+            if p.porta_modo == "corridoio":                     # la porta sta in fondo al passaggio, porta_dist fuori dal tappo
+                foot = _add(foot, _scale(out, p.porta_dist))
+            return foot, tw, up, out
         out = _rot((math.cos(a), math.sin(a), 0.0), 0.0, p.orient)
         tw = _rot((-math.sin(a), math.cos(a), 0.0), 0.0, p.orient)
         up = (0.0, 0.0, 1.0)
@@ -752,6 +1255,47 @@ def porta_entra(faces, a_deg, c, W, H, z0=0.0):
     return bool(hull) and all(_in_convesso(hull, u, z) for u in (-W/2, W/2) for z in (z0, z0 + H))
 
 
+LATO_MIN_PORTA = 0.08   # m: un pezzo con un lato piu' corto, accanto al piano della porta, e' un «triangolino»
+
+
+def porta_posizioni(p: Params, lmin=LATO_MIN_PORTA):
+    """Posizioni buone per il piano della porta a parete: i piani che passano per dei nodi, cosi' il taglio non crea vertici
+    nuovi li'. Per ognuna: dist (il valore di porta_dist), nodi sul piano, triangolini (pezzi con un lato < lmin vicino al piano)
+    e se il vano entra. Con la zome coricata e il piano perpendicolare all'asse i nodi di un anello stanno tutti sul piano:
+    e' il taglio pulito che prima si otteneva abbassando M. Vuota se la porta sta sulla parete di fondo gia' aperta."""
+    from dataclasses import replace
+    q = replace(p, porta=True, porta_modo="parete", porta_dist=0.0)
+    if _porta_su_parete_polo(q):
+        return []
+    base = build(replace(p, porta=False))
+    foot, _tw, _up, out = _porta_frame(replace(base["params"], porta=True, porta_modo="parete", porta_dist=0.0))
+    ss = sorted({round(_dot(out, _sub(v, foot)), 3) for st in base["strata"] for _, f in st["facce"] for v in f})
+    res = []
+    for d in ss:
+        if d < 0.05:
+            continue
+        m = build(replace(p, porta=True, porta_modo="parete", porta_dist=d))
+        info = m["summary"].get("porta") or {}
+        fo = _dot(out, foot) + d
+        nodi, piccoli = set(), 0
+        for st in m["strata"]:
+            for _, f in st["facce"]:
+                sul = [v for v in f if abs(_dot(out, v) - fo) < 2e-3]
+                nodi.update(tuple(round(c, 3) for c in v) for v in sul)
+                if sul and min(_norm(_sub(f[i], f[i - 1])) for i in range(len(f))) < lmin:
+                    piccoli += 1
+        if nodi:                                                  # i nodi sotto il pavimento non contano
+            res.append({"dist": d, "nodi": len(nodi), "triangolini": piccoli, "entra": bool(info.get("entra"))})
+    return res
+
+
+def porta_posizione_auto(p: Params, lmin=LATO_MIN_PORTA):
+    """Fra le posizioni in cui il vano entra: quella con meno triangolini e, a parita', la piu' lontana dall'asse (zome piu'
+    grande). None se il vano non entra in nessuna."""
+    buone = [r for r in porta_posizioni(p, lmin) if r["entra"]]
+    return min(buone, key=lambda r: (r["triangolini"], -r["dist"])) if buone else None
+
+
 def porta_dist_max(p: Params, tol=1e-4):
     """Distanza massima del piano dall'asse per cui il vano porta_w x porta_h entra ancora (0 se non entra neppure al centro)."""
     from dataclasses import replace
@@ -772,37 +1316,59 @@ def porta_dist_max(p: Params, tol=1e-4):
     return lo
 
 
+PORTA_MARGINE = 0.06          # corridoio: la porta e' piu' stretta del passaggio di tanto per lato
+PORTA_SOPRA = 0.05            # corridoio: quanto il telaio resta sotto la falda
+
+
 def porta_h_utile(p: Params):
     """Altezza ai lati del vano (dal pavimento finito): in corridoio il soffitto ha due falde, i lati sono porta_falda piu' bassi del colmo."""
     return p.porta_h - (p.porta_falda if p.porta_modo != "parete" else 0.0)
 
 
 def _porta_pt(p: Params, u, z, w):
-    """Punto della porta nel mondo: u lungo la parete, z dalla soglia, w dal piano della porta verso la parte tolta del prisma."""
-    verso = -1.0 if p.porta_fuori else 1.0
+    """Punto del telaio: u lungo la parete, z dalla soglia, w dal piano della porta.  Nel corridoio il telaio sta fuori dal piano, nello
+    spessore della parete di fondo; a parete verso la parte tolta."""
+    verso = -1.0 if (p.porta_fuori and p.porta_modo != "corridoio") else 1.0
     return _porta_punto(p, u, z, verso * w)
 
 
-def porta_timpano(p: Params, TT=0.02):
-    """Corridoio: triangolo di parete fissa sopra l'architrave, sul piano della porta, fino al colmo del soffitto (la porta resta rettangolare)."""
-    if p.porta_modo == "parete" or p.porta_falda <= TT + 0.005:
-        return None
-    zl, zc = p.porta_z0 + porta_h_utile(p) + TT, p.porta_z0 + p.porta_h
-    W2 = p.porta_w / 2
-    return [_porta_punto(p, -W2, zl, 0.0), _porta_punto(p, W2, zl, 0.0), _porta_punto(p, 0.0, zc, 0.0)]
+def _anta_dentro(p: Params):
+    """L'anta sta dal lato della zome rispetto al piano della porta: sempre nel corridoio, a parete solo col piano fuori."""
+    return p.porta_fuori or p.porta_modo == "corridoio"
+
+
+def porta_vano(p: Params):
+    """Luce netta (larghezza, altezza) della porta.  A parete sono le misure scelte.  Nel corridoio le misure sono quelle del passaggio:
+    la porta sta dentro la parete di fondo, PORTA_MARGINE piu' stretta per lato (montante della parete) e col telaio che resta
+    PORTA_SOPRA sotto la falda, misurata dove la falda scende all'angolo del telaio."""
+    if p.porta_modo != "corridoio":
+        return p.porta_w, p.porta_h
+    w = max(p.porta_w - 2 * PORTA_MARGINE, 0.3)
+    falda = p.porta_h - p.porta_falda * min(1.0, (w / 2 + p.TT) / (p.porta_w / 2))
+    return w, max(falda - PORTA_SOPRA - p.TT, 0.5)
+
+
+def porta_fondo(p: Params):
+    """Parete di fondo del corridoio, sul piano della porta: la sezione del passaggio, con la sagoma del telaio tolta fino a terra."""
+    W2, H, R = p.porta_w / 2, p.porta_h, p.porta_falda
+    w, h = porta_vano(p)
+    s, t = w / 2 + p.TT, p.porta_z0 + h + p.TT
+    zc, zl = p.porta_z0 + H, p.porta_z0 + H - R
+    return [_porta_punto(p, u, z, 0.0) for u, z in ((-W2, 0.0), (-s, 0.0), (-s, t), (s, t), (s, 0.0), (W2, 0.0), (W2, zl), (0.0, zc), (-W2, zl))]
 
 
 def porta_anta(p: Params, TT=0.02, spessore=0.04, apertura=20.0):
     """Anta rettangolare di legno con una finestra a rombo (vetro) e una maniglia a rombo.  Cerniera a sinistra entrando, maniglia a
     destra, socchiusa verso l'interno (verso la zome) di `apertura` gradi.
     Ritorna {"legno": [prismi], "vetro": [poligono], "maniglia": [prismi]} nel mondo (prismi: anello basso + anello alto)."""
-    W2, H, z0 = p.porta_w / 2, porta_h_utile(p), p.porta_z0
+    w_, H = porta_vano(p) if p.porta_modo == "corridoio" else (p.porta_w, porta_h_utile(p))
+    W2, z0 = w_ / 2, p.porta_z0
     g = 0.005                                                   # gioco dentro il telaio
     u0, u1, zb, zt = -W2 + g, W2 - g, z0 + g, z0 + H - g
-    ra, rb = 0.15, 0.33                                         # semi-diagonali del rombo: piu' alto che largo
+    ra, rb = 0.18, 0.33                                         # semi-diagonali del rombo: piu' alto che largo
     cy = max(min(z0 + 1.45, zt - rb - 0.08), zb + rb + 0.2)     # centro del rombo ad altezza di sguardo
     ph = math.radians(apertura)
-    verso = -1.0 if p.porta_fuori else 1.0
+    verso = -1.0 if _anta_dentro(p) else 1.0
     v0, v1 = (0.005, 0.005 + spessore) if verso > 0 else (-0.005 - spessore, -0.005)
     vc = (v0 + v1) / 2
     def pt(u, z, v):                                            # v: distanza dal piano, positiva verso l'esterno della zome
@@ -836,9 +1402,10 @@ def porta_cerniera(p: Params, spessore=0.04):
     """Cerniere dell'anta (3 perni e le piastre) sul lato sinistro entrando.  Ritorna {"punto": un punto dell'asse di rotazione,
     "asse": versore dell'asse (verticale della zome), "cerniere": [prismi nel mondo: anello basso + anello alto]}.  L'anta si apre
     ruotando di +apertura gradi attorno a quest'asse (verso la zome); le parti sono modellate a porta chiusa."""
-    W2, H, z0 = p.porta_w / 2, porta_h_utile(p), p.porta_z0
+    w_, H = porta_vano(p) if p.porta_modo == "corridoio" else (p.porta_w, porta_h_utile(p))
+    W2, z0 = w_ / 2, p.porta_z0
     u0 = -W2 + 0.005
-    verso = -1.0 if p.porta_fuori else 1.0
+    verso = -1.0 if _anta_dentro(p) else 1.0
     v0, v1 = (0.005, 0.005 + spessore) if verso > 0 else (-0.005 - spessore, -0.005)
     vc = (v0 + v1) / 2
     _, _, up, _ = _porta_frame(p)
@@ -859,7 +1426,8 @@ def porta_cerniera(p: Params, spessore=0.04):
 def porta_telaio(p: Params, TT, TW):
     """Telaio del vano sul piano della porta: due stipiti e un architrave, sezione TT x TW, TW verso la parte tolta (verso l'esterno,
     o verso la zome se il piano sta fuori).  Pezzi di 8 vertici nel mondo (0-3 sul piano della porta, 4-7 a TW)."""
-    W2, H, z0 = p.porta_w / 2, porta_h_utile(p), p.porta_z0
+    w_, H = porta_vano(p) if p.porta_modo == "corridoio" else (p.porta_w, porta_h_utile(p))
+    W2, z0 = w_ / 2, p.porta_z0
     sezioni = [("stipite sinistro", [(-W2 - TT, z0), (-W2, z0), (-W2, z0 + H), (-W2 - TT, z0 + H)]),
                ("stipite destro", [(W2, z0), (W2 + TT, z0), (W2 + TT, z0 + H), (W2, z0 + H)]),
                ("architrave", [(-W2 - TT, z0 + H), (W2 + TT, z0 + H), (W2 + TT, z0 + H + TT), (-W2 - TT, z0 + H + TT)])]
@@ -871,23 +1439,60 @@ def porta_telaio(p: Params, TT, TW):
     return res
 
 
+def _carico_zome_pav(p0, fz0):
+    """Peso della zome e neve sulle travi del pavimento (zome_pavimento.carico_zome), sul perimetro dell'impronta."""
+    from zome_pavimento import carico_zome, impronta as _impronta
+    Bz0 = _impronta(fz0, p0.zfloor, p0.pav_taglio >= 0)
+    perim0 = 0.0
+    if len(Bz0) >= 2:
+        perim0 = sum(math.hypot(Bz0[(i + 1) % len(Bz0)][0] - Bz0[i][0],
+                                Bz0[(i + 1) % len(Bz0)][1] - Bz0[i][1]) for i in range(len(Bz0)))
+    return carico_zome(fz0, p0.zfloor, perim0, g_guscio=p0.pav_g_guscio,
+                       g_scheletro=p0.pav_g_scheletro or None, neve=p0.pav_neve)
+
+
 def build(p: Params, _pav=True):
     """Ritorna dict: params, vertices (rings per parte), strata (da apice a terra), summary."""
     validate(p)
     p0 = p
-    m0, pav, fz0 = None, None, None
+    m0, pav, fz0, cz = None, None, None, None
     if _pav:
         # la zome posata senza il vano della porta: serve per il pavimento e per le aree di sezione
         from dataclasses import replace as _rep
         lv, sg = _livello_taglio(p0) if (p0.floor and p0.pav_taglio >= 0) else (None, 0.0)
-        # con il taglio a triangoli m0 e' la zome tagliata con il piano (serve l'impronta del pavimento vera) allo stesso livello
-        m0 = build(_rep(p0, porta=False, ztop=p0.ztop, **({} if lv is None else {"pav_taglio": -1.0, "pz": p0.pz - lv})), _pav=False)
+        # m0 e' la zome intera (non tagliata) con il piano di posa a zfloor; con il taglio a triangoli il piano passa per il
+        # vertice piu' basso dei triangoli tenuti, e l'impronta del pavimento e' la sezione li'
+        z_posa = (p0.zfloor if p0.floor else 0.0) - (0.0 if lv is None else lv)
+        m0 = build(_rep(p0, porta=False, ztop=p0.ztop, floor=False, pz=p0.pz + z_posa,
+                          **({} if lv is None else {"pav_taglio": -1.0})), _pav=False)
         fz0 = [pts for s_ in m0["strata"] for _, pts in s_["facce"]]
         if p0.floor:
-            p = _rep(p0, pz=p0.pz + p0.zfloor - (0.0 if lv is None else lv), pav_soglia=sg)
+            from zome_pavimento import quote_pavimento
+            cz = _carico_zome_pav(p0, fz0)
+            # la porta a parete taglia l'impronta e crea un lato nuovo: entra nel caso peggiore. Il corridoio no
+            # (fuori o dentro si sa solo dopo); se lo allunga, pavimento() lo verifica e lo segnala
+            pa0, dist0 = None, None
+            if p0.porta and p0.porta_modo == "parete":
+                _, _, _, out0 = _porta_frame(p0)
+                pa0 = math.degrees(math.atan2(out0[1], out0[0]))
+                dist0 = p0.porta_dist * max(math.hypot(out0[0], out0[1]), 1e-9)
+            qq = quote_pavimento(fz0, {
+                "porta": pa0, "porta_modo": "parete" if pa0 is not None else None, "porta_dist": dist0,
+                "zf": p0.zfloor, "tipo": p0.pav_tipo, "sezione": p0.pav_sezione,
+                "carico": p0.pav_carico, "seme": p0.pav_seme, "dens_iso": p0.pav_dens_iso,
+                "centro": (p0.px, p0.py), "solo_piano": p0.pav_taglio >= 0,
+                "q_bordo": cz["q_bordo"], "zome": cz,
+            })
+            z_app = p0.zfloor + qq["h_trave"]
+            p = _rep(p0, pz=p0.pz + z_app - (0.0 if lv is None else lv),
+                     pav_soglia=sg, porta_z0=qq["spessore"], z_appoggio=z_app)
     elif p.floor:
         from dataclasses import replace as _rep
-        p = _rep(p, pz=p.pz + p.zfloor)
+        from zome_pavimento import quote_pavimento
+        qq = quote_pavimento([], {"zf": p.zfloor, "tipo": p.pav_tipo, "sezione": p.pav_sezione,
+                                  "carico": p.pav_carico, "dens_iso": p.pav_dens_iso, "solo_piano": True})
+        z_app = p.zfloor + qq["h_trave"]
+        p = _rep(p, pz=p.pz + z_app, z_appoggio=z_app)
     N, M = p.N, p.M
     h = p.ZH / (M - 1)
     P = rings(N, M, p.theta, p.ZH)
@@ -920,9 +1525,10 @@ def build(p: Params, _pav=True):
         sec_faces = _faces_of(S)
         for j in sorted(sec_faces):
             strata.append({"parte": "secondaria", "j": j, "facce": sec_faces[j]})
-        # primario: dall'anello c in giu'
+        # primario: dall'anello c in giu'. Con M = N+1 l'anello a terra e' un punto:
+        # _faces_of non crea l'ultimo strato, e chiederlo faceva sparire il pannello.
         pf = _faces_of(P, cut_stratum=c)
-        for j in range(c, M):
+        for j in sorted(k for k in pf if k >= c):
             strata.append({"parte": "primaria", "j": j, "facce": pf[j]})
         axis_z = 0.0
     else:
@@ -950,19 +1556,50 @@ def build(p: Params, _pav=True):
     if p.porta:
         fz = [pts for s_ in strata for _, pts in s_["facce"]]
         he = p.porta_h - (p.porta_falda if p.porta_modo != "parete" else 0.0)       # altezza ai lati
-        entra = porta_entra(fz, porta_angolo(p), p.porta_dist, p.porta_w, he, p.porta_z0)
-        if p.porta_modo != "parete":
-            entra = entra and porta_entra(fz, porta_angolo(p), p.porta_dist, 0.0, p.porta_h, p.porta_z0)   # anche il colmo
-        fuori = False
-        if p.porta_modo != "parete" and not entra:
+        parete_poly = _parete_polo(p)
+        su_parete = parete_poly and _porta_su_parete_polo(p, parete_poly)
+        if p.floor and abs(p.tilt) >= 45.0 and fz0:
+            # zome coricata: l'asse e' orizzontale e la sezione nel sistema della zome non dice niente. Si guarda la zome posata
+            # (fz0 alzata alla cima della trave) nel piano della porta, col vano centrato sul piede della porta
+            dz = p.pz - m0["params"].pz
+            fzw = [[(q[0], q[1], q[2] + dz) for q in f] for f in fz0]
+            def ci_sta(dist, W, H):
+                return _porta_entra_mondo(fzw, p, dist, W, H)
+        else:
+            def ci_sta(dist, W, H):
+                return porta_entra(fz, porta_angolo(p), dist, W, H, p.porta_z0)
+        sopra_polo = False
+        if su_parete and p.porta_modo == "corridoio" and fz0:
+            # il tappo puo' essere piu' piccolo del vano: basta che il corridoio entri nella zome, a meta' di essa
+            mezzo = -p.ZH / 2
+            entra = ci_sta(mezzo, p.porta_w, he) and ci_sta(mezzo, 0.0, p.porta_h)
+            if not entra and ci_sta(mezzo, p.porta_w, 0.0):
+                entra = sopra_polo = True                   # piu' alta della zome: il tetto del corridoio prosegue sopra (come sulla dritta)
+        elif su_parete:
+            entra = _porta_entra_in_parete_polo(p, parete_poly)
+        else:
+            entra = ci_sta(p.porta_dist, p.porta_w, he)
+            if p.porta_modo != "parete":
+                entra = entra and ci_sta(p.porta_dist, 0.0, p.porta_h)   # anche il colmo
+        fuori = sopra = False
+        if su_parete:
+            fuori = p.porta_modo == "corridoio"             # sul tappo il corridoio esce sempre: il piano della porta sta fuori
+            sopra = sopra_polo
+        elif p.porta_modo != "parete" and not entra:
             # il vano non entra a questa distanza: se entra al centro, il piano della porta sta fuori dalla zome (il passaggio
             # collega il guscio al piano), altrimenti la porta e' troppo grande per la zome
-            if porta_entra(fz, porta_angolo(p), 1e-9, p.porta_w, he, p.porta_z0) and porta_entra(fz, porta_angolo(p), 1e-9, 0.0, p.porta_h, p.porta_z0):
+            if ci_sta(1e-9, p.porta_w, he) and ci_sta(1e-9, 0.0, p.porta_h):
                 fuori, entra = True, True
+            elif p.porta_modo == "corridoio" and ci_sta(1e-9, p.porta_w, 0.0):
+                # la porta e' piu' alta della zome anche sull'asse: come sopra, ma il tetto a due falde del corridoio prosegue sopra
+                # la zome finche' incontra il guscio, e sull'asse una parete chiude quello che resta fuori
+                fuori, entra, sopra = True, True, True
         if fuori:
             from dataclasses import replace as _replace
             p = _replace(p, porta_fuori=True)
-        porta_info = {"entra": entra, "fuori": fuori,
+        vano_ = porta_vano(p)
+        porta_info = {"entra": entra, "fuori": fuori, "vano": vano_, "sopra": sopra,
+                      "su_parete": bool(su_parete),
                       "larghezza": p.porta_w, "altezza": p.porta_h, "distanza": p.porta_dist}
     if _pav and p0.floor and fz0:
         # il pavimento segue la porta: a parete taglia l'impronta, in corridoio fuori dalla zome la allunga fino al piano della porta
@@ -973,9 +1610,13 @@ def build(p: Params, _pav=True):
             pa = math.degrees(math.atan2(out_p[1], out_p[0]))
             dist_h = p0.porta_dist * max(math.hypot(out_p[0], out_p[1]), 1e-9)
             modo = "parete" if p0.porta_modo == "parete" else ("fuori" if fuori else "dentro")
-        pav = pavimento(fz0, {"zf": p0.zfloor, "tipo": p0.pav_tipo, "interasse": p0.pav_interasse, "carico": p0.pav_carico,
-                              "seme": p0.pav_seme, "porta": pa, "porta_modo": modo, "porta_dist": dist_h, "porta_w": p0.porta_w,
-                              "densita": 700.0, "centro": (p0.px, p0.py), "solo_piano": p0.pav_taglio >= 0})
+        cz = cz or _carico_zome_pav(p0, fz0)
+        pav = pavimento(fz0, {"zf": p0.zfloor, "tipo": p0.pav_tipo, "sezione": p0.pav_sezione,
+                              "carico": p0.pav_carico, "seme": p0.pav_seme, "porta": pa, "porta_modo": modo,
+                              "porta_dist": dist_h, "porta_w": p0.porta_w, "densita": 700.0,
+                              "dens_iso": p0.pav_dens_iso, "q_bordo": cz["q_bordo"], "zome": cz,
+                              "travetto_fisso": qq["travetto"], "trave_fissa": qq["trave"],
+                              "centro": (p0.px, p0.py), "solo_piano": p0.pav_taglio >= 0})
     if posed:
         caps = apply_pose_and_cuts(strata, p)
         for i, s_ in enumerate(strata, start=1):
@@ -1009,17 +1650,66 @@ def build(p: Params, _pav=True):
         summary.update({"ZH_secondario": ZH2, "l_secondario": ZH2 / (p.M2 - 1) / math.cos(math.radians(p.theta2)),
                         "quota_taglio": zc})
     if m0 is not None:
-        from zome_pavimento import sezione, area as _area_xy
+        from zome_pavimento import sezione, area as _area_xy, _prisma, _con_corridoio, T_TAVOLATO
         f0 = [pts for s_ in m0["strata"] for _, pts in s_["facce"]]
         zs0 = [q[2] for f in f0 for q in f]
-        zref = pav["z_finito"] if pav else min(zs0)
-        summary.update({"quota_max": max(zs0), "ingombro_x": max(q[0] for f in f0 for q in f) - min(q[0] for f in f0 for q in f),
+        z_fetta = _z_piano_zome(p0) if p0.floor else min(zs0)
+        zref = pav["z_finito"] if pav else z_fetta
+        z_int_max = max(zs0)
+        # m0 ha il piano di posa a zfloor, la zome vera sta sulla cima dei travi (z_appoggio): m0 e' piu' bassa di dz.  Il
+        # pavimento finito e' a quota assoluta zref, quindi in m0 si taglia a zref - dz (dritta e coricata uguali)
+        dz = (p.z_appoggio - z_fetta) if (p0.floor and pav) else 0.0
+        z_sez = zref - dz
+        poly_calp = sezione(f0, z_sez)
+        area_calp = _area_xy(poly_calp)
+        area_sotto = pav["summary"]["area_tavolato"] if pav else _area_xy(sezione(f0, z_fetta))
+        if pav and poly_calp:
+            zd = pav["z_finito"]
+            poly_tav = poly_calp
+            if pav.get("corr_args"):                      # il tavolato prosegue nel corridoio, come l'impronta: dritta e coricata
+                U_, _t, ok_ = _con_corridoio([(x, y, zd) for x, y in poly_calp], *pav["corr_args"], zd, 0.01)
+                if ok_:
+                    poly_tav = [(q[0], q[1]) for q in U_]
+            area_tav = _area_xy(poly_tav)
+            pav["tavolato"] = _prisma([(x, y, zd - T_TAVOLATO) for x, y in poly_tav],
+                                      [(x, y, zd) for x, y in poly_tav])
+            pav["summary"]["area_calpestio"] = area_calp
+            pav["summary"]["area_sottopavimento"] = area_sotto
+            pav["summary"]["area_tavolato"] = area_tav
+            pav["summary"]["volume_tavolato"] = area_tav * T_TAVOLATO
+        summary.update({"quota_max": z_int_max + dz, "ingombro_x": max(q[0] for f in f0 for q in f) - min(q[0] for f in f0 for q in f),
                         "ingombro_y": max(q[1] for f in f0 for q in f) - min(q[1] for f in f0 for q in f),
-                        "quota_pavimento": zref, "area_pavimento": pav["summary"]["area_tavolato"] if pav else _area_xy(sezione(f0, zref)),
-                        "area_180": _area_xy(sezione(f0, zref + 1.80))})
+                        "quota_pavimento": zref, "quota_fetta": z_fetta, "z_appoggio": p.z_appoggio if p.floor else z_fetta,
+                        "area_pavimento": area_calp,
+                        **dict(zip(("diametro_circoscritto", "diametro_inscritto"), diametri_cerchi(poly_calp))),
+                        "area_sottopavimento": area_sotto,
+                        "area_180": _area_xy(sezione(f0, z_sez + 1.80)),
+                        "aree_altezza": {h_: _area_xy(sezione(f0, z_sez + h_)) for h_ in AREE_ALTEZZE},
+                        "altezza_geometrica": z_int_max - z_fetta,
+                        "altezza_interna": z_int_max - z_sez})
         if pav:
             summary["pavimento"] = pav["summary"]
     return {"params": p, "parts": parts, "strata": strata, "caps": caps, "summary": summary, "pavimento": pav}
+
+
+def diametri_cerchi(poly):
+    """Diametri del cerchio circoscritto e inscritto di un poligono convesso in pianta ((x, y)), centrati nel suo
+    baricentro d'area.  Sulla zome dritta il baricentro e' l'asse e l'inscritto e' la distanza tra due lati paralleli
+    opposti (N pari); sulla coricata sono i cerchi attorno al baricentro della sezione (l'inscritto puo' non essere
+    il piu' grande possibile)."""
+    if not poly or len(poly) < 3:
+        return 0.0, 0.0
+    a2 = cx = cy = 0.0
+    for (x0, y0), (x1, y1) in zip(poly, poly[1:] + poly[:1]):
+        c = x0 * y1 - x1 * y0
+        a2 += c; cx += (x0 + x1) * c; cy += (y0 + y1) * c
+    if abs(a2) < 1e-12:
+        return 0.0, 0.0
+    cx, cy = cx / (3 * a2), cy / (3 * a2)
+    r_c = max(math.hypot(x - cx, y - cy) for x, y in poly)
+    r_i = min(abs((x1 - x0) * (cy - y0) - (y1 - y0) * (cx - x0)) / (math.hypot(x1 - x0, y1 - y0) or 1.0)
+              for (x0, y0), (x1, y1) in zip(poly, poly[1:] + poly[:1]))
+    return 2 * r_c, 2 * r_i
 
 
 
@@ -1076,11 +1766,12 @@ def _edge_key(a, b):
     return (ka, kb) if ka <= kb else (kb, ka)
 
 
-def offset_surface(faces, offsets, shared=True):
+def offset_surface(faces, offsets, shared=True, bordi=()):
     """faces: lista di poligoni (vertici antiorari visti da fuori); offsets: spostamento di ciascuna
     lungo la sua normale esterna.  shared=True: un solo vertice per ogni vertice interno (minimi quadrati sui piani
     spostati; le facce restano quasi piane).  shared=False: ogni faccia e' esattamente piana (intersezione dei piani
-    suo e dei due vicini), ma le facce vicine non combaciano ai vertici."""
+    suo e dei due vicini), ma le facce vicine non combaciano ai vertici.
+    bordi: piani (n, d) su cui finisce la superficie (le pareti del corridoio): un lato libero che ci sta sopra resta su quel piano."""
     nrm = [_face_normal(pts) for pts in faces]
     edges = {}
     for fi, pts in enumerate(faces):
@@ -1098,6 +1789,9 @@ def offset_surface(faces, offsets, shared=True):
         if others:
             g = others[0]
             return plane(g, offsets[g])
+        for n, d in bordi:
+            if abs(_dot(n, a) - d) < 1e-7 and abs(_dot(n, b) - d) < 1e-7 and abs(_dot(n, nrm[fi])) < 0.999:
+                return (n, d)
         n = _unit(_cross(_sub(b, a), nrm[fi]))      # perpendicolare alla faccia, passante per lo spigolo
         return (n, _dot(n, a))
 
@@ -1131,11 +1825,23 @@ def offset_surface(faces, offsets, shared=True):
         new = []
         for i in range(m):
             q = _solve3([plane(fi, offsets[fi]), across(fi, (i - 1) % m), across(fi, i)])
-            if q is None:
+            if q is None or (bordi and _dist(q, pts[i]) > 4 * abs(offsets[fi]) + 0.01):   # faccia quasi parallela al bordo
                 q = _add(pts[i], _scale(nrm[fi], offsets[fi]))
             new.append(q)
         out.append(new)
     return out
+
+
+def _perline_corridoio(basso, alto, cap, p: Params):
+    """Le perline del corridoio partono dal pavimento finito."""
+    nome = cap.get("cap_nome", "")
+    if not nome.startswith("corridoio:"):
+        return basso, alto
+    foot, _tw, up, _out = _porta_frame(p)
+    n, d = up, _dot(up, foot) + p.porta_z0
+    b2, _ = _clip_poly(basso, n, d)
+    a2, _ = _clip_poly(alto, n, d)
+    return (b2, a2) if (b2 and a2 and len(b2) == len(a2)) else (basso, alto)
 
 
 def shell(model, p: Params):
@@ -1144,8 +1850,12 @@ def shell(model, p: Params):
     cat = p.catalogo
     man = _manuali(p.usi_manuali)
     flat = [(st["strato"], f, kind, pts) for st in model["strata"] for f, (kind, pts) in enumerate(st["facce"])]
-    polys = [pts for _, _, _, pts in flat]
+    n_guscio = len(flat)
     chiave = [face_use(p, s_, f, pts, man) for s_, f, _, pts in flat]
+    annesse = _facce_annesse(model)                       # tappo e corridoio: stessi strati del guscio, sulla dritta e sulla coricata
+    flat += [(a["strato"], a["faccia"], "tappo", a["pts"]) for a in annesse]
+    chiave += [a["chiave"] for a in annesse]
+    polys = [pts for _, _, _, pts in flat]
     for k in chiave:
         if k != APERTO and k not in cat:
             raise ValueError(f"voce di catalogo sconosciuta: {k}")
@@ -1165,21 +1875,25 @@ def shell(model, p: Params):
     t_legno_cat = cat.get("wood_external", {}).get("spessore", 0.0)
     tbase = max([t_ext[i] for i in range(len(polys)) if ext_ok[i] and not es_tetto[i]] + [t_legno_cat if any(es_tetto) else 0.0])
     D = p.TW + tbase
-    struct_out = offset_surface(polys, [p.TW] * len(polys), shared=False)
-    base_out = offset_surface(polys, [D] * len(polys), shared=False)
+    # i rivestimenti tagliati dal corridoio finiscono sul piano delle sue pareti, non in perpendicolare alla faccia
+    pm = model["params"]
+    bordi = _corridoio_piani(pm)["scatola"] if (pm.porta and pm.porta_modo == "corridoio") else ()
+    struct_out = offset_surface(polys, [p.TW] * len(polys), shared=False, bordi=bordi)
+    base_out = offset_surface(polys, [D] * len(polys), shared=False, bordi=bordi)
     tr = max([t_ext[i] for i in range(len(polys)) if es_tetto[i]] + [0.0])
     # NON si mescolano spostamenti diversi nella stessa superficie (le linee d'incontro tra falde quasi parallele scappano):
     # due superfici uniformi, legno/vetro a D e "inviluppo del tetto" a D + tetto; del secondo si usano solo le facce di tetto.
-    env_out = offset_surface(polys, [D + tr] * len(polys), shared=False) if tr > 0 else base_out
+    env_out = offset_surface(polys, [D + tr] * len(polys), shared=False, bordi=bordi) if tr > 0 else base_out
     cover_out = [env_out[i] if es_tetto[i] else base_out[i] for i in range(len(polys))]
     cover_in = [[_add(q, _scale(nrm_f[i], -t_ext[i])) for q in cover_out[i]] for i in range(len(polys))]
     # rivestimento interno (perline): lastra che parte dalla faccia e rientra verso l'interno; superficie unica, cosi' gli
     # spigoli tra facce vicine combaciano (regola: mai spostamenti diversi nella stessa superficie)
-    lin_in = offset_surface(polys, [-t_int[i] for i in range(len(polys))], shared=False) if any(t > 0 for t in t_int) else None
+    lin_in = offset_surface(polys, [-t_int[i] for i in range(len(polys))], shared=False, bordi=bordi) if any(t > 0 for t in t_int) else None
     ext, tot = [], {}
     for k, (s_, f, kind, pts) in enumerate(flat):
         uso = layer[k]["uso"] if layer[k] else "aperto"
-        d = {"strato": s_, "faccia": f, "tipo": kind, "chiave": chiave[k], "uso": uso, "spessore": t_ext[k],
+        cap = {"cap_nome": annesse[k - n_guscio]["nome"]} if k >= n_guscio else {}
+        d = {**cap, "strato": s_, "faccia": f, "tipo": kind, "chiave": chiave[k], "uso": uso, "spessore": t_ext[k],
              "fuori_piano": _nonplanarity(cover_out[k]), "struttura_est": struct_out[k],
              "copertura_est": cover_out[k] if ext_ok[k] else None,
              "copertura_int": cover_in[k] if ext_ok[k] else None,
@@ -1196,7 +1910,7 @@ def shell(model, p: Params):
         if es_tetto[k] and t_legno_cat > 0:                   # il legno sotto il tetto (conta nel materiale)
             base_in = [_add(q, _scale(nrm_f[k], -t_legno_cat)) for q in base_out[k]]
             vb = 0.5 * (_area(base_in) + _area(base_out[k])) * t_legno_cat
-            ext.append({"strato": s_, "faccia": f, "tipo": kind, "chiave": "wood_external", "uso": "legno",
+            ext.append({**cap, "strato": s_, "faccia": f, "tipo": kind, "chiave": "wood_external", "uso": "legno",
                         "spessore": t_legno_cat, "fuori_piano": _nonplanarity(base_out[k]), "struttura_est": struct_out[k],
                         "copertura_est": base_out[k], "copertura_int": base_in, "area_struttura": d["area_struttura"],
                         "area_copertura": _area(base_out[k]), "volume_copertura": vb, "inclinazione": d["inclinazione"],
@@ -1204,8 +1918,7 @@ def shell(model, p: Params):
             gw = tot.setdefault("wood_external", {"facce": 0, "area": 0.0, "volume": 0.0})
             gw["facce"] += 1; gw["area"] += _area(base_out[k]); gw["volume"] += vb
         if lin_in and t_int[k] > 0:
-            d["rivestimento_int"] = lin_in[k]
-            d["rivestimento_int_alto"] = pts
+            d["rivestimento_int"], d["rivestimento_int_alto"] = _perline_corridoio(lin_in[k], pts, cap, pm)
             d["chiave_int"] = int_key[k]
             d["volume_rivest_int"] = 0.5 * (_area(lin_in[k]) + _area(pts)) * t_int[k]
             g = tot.setdefault(int_key[k], {"facce": 0, "area": 0.0, "volume": 0.0})
@@ -1235,6 +1948,8 @@ def shell(model, p: Params):
             for i in range(n):
                 others = [g for g in edges[_edge_key(pts[i], pts[(i + 1) % n])] if g != k]
                 if not (others and chiave[others[0]] != "roof_external" and cz[others[0]] < cz[k]):
+                    continue
+                if (others[0] >= n_guscio) != (k >= n_guscio):   # dove corridoio e tappo incontrano il guscio non c'e' gronda
                     continue
                 a, b = co[i], co[(i + 1) % n]
                 nrm = _face_normal(co)
@@ -1364,13 +2079,103 @@ def shell(model, p: Params):
     model["summary"]["altezza_esterna"] = max(zs)
     # il limite dei 3 m si misura dal punto piu' alto (con il tetto) fino al pavimento finito (sopra il tavolato), non da terra
     model["summary"]["altezza_esterna_su_pavimento"] = max(zs) - model["summary"].get("quota_pavimento", 0.0)
-    model["summary"]["z_min_esterna"] = min(zs)
+    model["summary"]["z_min_esterna"] = min(q[2] for d in ext if d["strato"] < 900 for q in (d["copertura_est"] or d["struttura_est"]))
     # ingombro con la copertura e la gronda (il tetto sporge oltre il bordo): larghezza reale della zome finita
-    pe = [q for d in ext for q in (d["copertura_est"] or d["struttura_est"])] + [q for g_ in gronda for q in (g_["pts"] + g_["bot"])]
+    pe = [q for d in ext if d["strato"] < 900 for q in (d["copertura_est"] or d["struttura_est"])] + [q for g_ in gronda for q in (g_["pts"] + g_["bot"])]
     model["summary"]["ingombro_x_esterno"] = max(q[0] for q in pe) - min(q[0] for q in pe)
     model["summary"]["ingombro_y_esterno"] = max(q[1] for q in pe) - min(q[1] for q in pe)
     model["summary"]["fuori_piano_esterno"] = max(d["fuori_piano"] for d in ext)
+    _shell_tappi_porta(model, p)
+    # sedime: superficie massima occupata in pianta dalla zome finita, gronda e annessi (corridoio, tunnel) compresi
+    ps = [q for d in model["esterno"] for q in (d["copertura_est"] or d["struttura_est"] or [])] + [q for g_ in gronda for q in (g_["pts"] + g_["bot"])]
+    model["summary"]["sedime_poligono"] = inviluppo_2d(ps)
+    model["summary"]["sedime"] = area_2d(model["summary"]["sedime_poligono"])
     return model
+
+
+def inviluppo_2d(pts):
+    """Inviluppo convesso in pianta (x, y) dei punti, in senso antiorario. La zome e' convessa in pianta: e' il suo contorno."""
+    q = sorted(set((round(p[0], 9), round(p[1], 9)) for p in pts))
+    if len(q) < 3:
+        return q
+
+    def mezzo(seq):
+        h = []
+        for r in seq:
+            while len(h) >= 2 and (h[-1][0]-h[-2][0])*(r[1]-h[-2][1]) - (h[-1][1]-h[-2][1])*(r[0]-h[-2][0]) <= 0:
+                h.pop()
+            h.append(r)
+        return h
+    return mezzo(q)[:-1] + mezzo(q[::-1])[:-1]
+
+
+def area_2d(poly):
+    """Area di un poligono in pianta (formula di Gauss)."""
+    return abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(poly, poly[1:] + poly[:1]))) / 2 if len(poly) >= 3 else 0.0
+
+
+def _facce_annesse(model):
+    """Tappo del polo e corridoio fuori dalla zome, come facce in piu' del guscio, sulla zome dritta e su quella coricata: stessi strati
+    (perline, scheletro, isolante, legno, tetto), stesse collection, spigoli uniti a quelli del guscio.  Normale verso fuori.
+    La parete di fondo c'e' sempre; restano fogli le pareti di sezione, dove il passaggio e' gia' fuori e l'interno sta dall'altra parte."""
+    p, caps = model["params"], model.get("caps") or {}
+    res = []
+    def aggiungi(nome, poly, n, chiave):
+        strato = 901 if chiave == "roof_external" else 900
+        res.append({"nome": nome, "pts": list(poly) if _dot(_face_normal(poly), n) > 0 else list(poly)[::-1], "chiave": chiave, "strato": strato,
+                    "faccia": 9001 + len(res)})
+    parete = _parete_polo(p)
+    if parete:
+        fuori = _scale(_rot((0.0, 0.0, 1.0), p.tilt, p.orient), -1)
+        su_parete = _porta_su_parete_polo(p, parete)
+        for nome, poly in caps.items():
+            if poly and len(poly) >= 3 and (nome.startswith("parete") or (su_parete and nome.startswith("porta:"))):
+                aggiungi(nome, poly, fuori, "wood_external")
+    if p.porta and p.porta_modo == "corridoio":
+        foot, _tw, up, out = _porta_frame(p)
+        centro = _add(foot, _scale(up, p.porta_z0 + p.porta_h / 2))
+        if p.porta_fuori:
+            for nome, poly in caps.items():
+                if nome.startswith("corridoio:") and "fondo" not in nome and "(sezione)" not in nome and poly and len(poly) >= 3:
+                    n = _scale(out, -1) if "chiusura" in nome else _sub(poly[0], centro)   # la chiusura guarda verso la zome
+                    aggiungi(nome, poly, n, "roof_external" if "falda" in nome else "wood_external")
+        if caps.get("corridoio: fondo"):
+            aggiungi("corridoio: fondo", caps["corridoio: fondo"], out, "wood_external")
+            res[-1]["vano"] = caps["corridoio: fondo"][1:5]     # i lati del vano: li' c'e' il telaio, non le travi della parete
+    return res
+
+
+def _shell_tappi_porta(model, p: Params):
+    """Rivestimento dei pezzi della parete piana con la porta, che tagliano la zome: fuori dal guscio.  Tappo del polo e corridoio
+    fuori sono facce del guscio: vedi _facce_annesse."""
+    caps = model.get("caps") or {}
+    t = float((p.catalogo.get("wood_external") or {}).get("spessore") or 0.0)
+    if not caps or t <= 0:
+        return
+    ext = model.setdefault("esterno", [])
+    tot = model.setdefault("esterno_totali", {})
+    gia = {a["nome"] for a in _facce_annesse(model)}
+    fac = 9500
+    for nome, poly in caps.items():
+        if not poly or len(poly) < 3 or nome in gia or not (nome.startswith("porta:") or nome.startswith("parete")):
+            continue
+        nrm = _face_normal(poly)
+        cover_out = [_add(q, _scale(nrm, p.TW + t)) for q in poly]
+        cover_in = [_add(q, _scale(nrm, p.TW)) for q in poly]
+        fac += 1
+        vol = 0.5 * (_area(cover_in) + _area(cover_out)) * t
+        ext.append({
+            "strato": 900, "faccia": fac, "tipo": "tappo", "chiave": "wood_external", "uso": "legno",
+            "spessore": t, "fuori_piano": _nonplanarity(cover_out), "struttura_est": list(poly),
+            "copertura_est": cover_out, "copertura_int": cover_in,
+            "area_struttura": _area(poly), "area_copertura": _area(cover_out),
+            "volume_copertura": vol, "inclinazione": face_tilt(poly)[0],
+            "cap_nome": nome,
+        })
+        g = tot.setdefault("wood_external", {"facce": 0, "area": 0.0, "volume": 0.0})
+        g["facce"] += 1
+        g["area"] += _area(cover_out)
+        g["volume"] += vol
 
 
 # ---------------------------------------------------------------------------
@@ -1399,43 +2204,138 @@ def _face_normal(pts):
     return _unit(n)
 
 
-def parse_traverse(txt):
-    """'1:ta,4:t' -> {1: {'t','a'}, 4: {'t'}}. t = tra anelli, a = sull'anello."""
-    out = {}
+def _lettere_traverse(lettere):
+    if isinstance(lettere, (set, frozenset, list, tuple)):
+        return {c for c in lettere if c in ("t", "a")}
+    return {c for c in str(lettere) if c in ("t", "a")}
+
+
+def _voci_traverse(txt):
+    """Spezza '2:ta,2.3:t' in (strato, faccia o None, lettere)."""
+    out = []
     for parte in str(txt or "").split(","):
         parte = parte.strip()
         if ":" not in parte:
             continue
         num, lettere = parte.split(":", 1)
-        try:
-            i = int(num)
-        except ValueError:
+        accesi = _lettere_traverse(lettere)
+        if not accesi:
             continue
-        accesi = {c for c in lettere if c in ("t", "a")}
-        if accesi:
-            out[i] = accesi
+        if "." in num:
+            a, b = num.split(".", 1)
+            try:
+                out.append((int(a), int(b), accesi))
+            except ValueError:
+                continue
+        else:
+            try:
+                out.append((int(num), None, accesi))
+            except ValueError:
+                continue
     return out
 
 
+def _testo_traverse(voci):
+    """voci: (strato, faccia o None, set). La faccia, se c'è, viene dopo il flag di tutto lo strato."""
+    righe = []
+    for strato, faccia, accesi in voci:
+        lettere = "".join(c for c in ("t", "a") if c in accesi)
+        if not lettere:
+            continue
+        if faccia is None:
+            righe.append((strato, -1, f"{strato}:{lettere}"))
+        else:
+            righe.append((strato, faccia, f"{strato}.{faccia}:{lettere}"))
+    righe.sort()
+    return ",".join(r[2] for r in righe)
+
+
+def parse_traverse(txt):
+    """'1:ta,4:t' -> {1: {'t','a'}, 4: {'t'}}. Le voci '1.3:t' sono di una faccia sola e qui non compaiono."""
+    return {s: set(acc) for s, f, acc in _voci_traverse(txt) if f is None}
+
+
+def parse_traverse_facce(txt):
+    """'2.3:t' -> {(2, 3): {'t'}}."""
+    return {(s, f): set(acc) for s, f, acc in _voci_traverse(txt) if f is not None}
+
+
+def lettere_traversa(txt, strato, faccia):
+    """Rinforzi di un rombo: la voce della faccia, se c'è, altrimenti quella di tutto lo strato."""
+    propria = parse_traverse_facce(txt).get((int(strato), int(faccia)))
+    if propria is not None:
+        return set(propria)
+    return set(parse_traverse(txt).get(int(strato), ()))
+
+
 def toggle_traverse(txt, strato, quale):
-    """Accende o spegne la lettera `quale` ('t' o 'a') sullo strato."""
-    flags = parse_traverse(txt)
+    """Accende o spegne la lettera `quale` ('t' o 'a') su tutto lo strato. Le facce già segnate restano."""
+    voci = [(s, f, set(acc)) for s, f, acc in _voci_traverse(txt)]
     i = int(strato)
-    accesi = set(flags.get(i, ()))
+    accesi = set()
+    resto = []
+    for s, f, acc in voci:
+        if s == i and f is None:
+            accesi = set(acc)
+        else:
+            resto.append((s, f, acc))
     if quale in accesi:
         accesi.discard(quale)
     else:
         accesi.add(quale)
     if accesi:
-        flags[i] = accesi
+        resto.append((i, None, accesi))
+    return _testo_traverse(resto)
+
+
+def toggle_traversa_faccia(txt, strato, faccia, quale, n_facce):
+    """Accende o spegne `quale` su un solo rombo. Se lo strato era tutto uguale, lo apre faccia per faccia."""
+    s, f = int(strato), int(faccia)
+    n = int(n_facce)
+    voci = [(a, b, set(acc)) for a, b, acc in _voci_traverse(txt)]
+    strato_tutto = None
+    facce = {}
+    altre = []
+    for a, b, acc in voci:
+        if a != s:
+            altre.append((a, b, acc))
+        elif b is None:
+            strato_tutto = set(acc)
+        else:
+            facce[b] = set(acc)
+    if strato_tutto is not None and n > 0:
+        for i in range(n):
+            facce.setdefault(i, set(strato_tutto))
+        strato_tutto = None
+    accesi = set(facce.get(f, () if strato_tutto is None else strato_tutto))
+    if quale in accesi:
+        accesi.discard(quale)
     else:
-        flags.pop(i, None)
-    parti = []
-    for k in sorted(flags):
-        lettere = "".join(c for c in ("t", "a") if c in flags[k])
-        if lettere:
-            parti.append(f"{k}:{lettere}")
-    return ",".join(parti)
+        accesi.add(quale)
+    if accesi:
+        facce[f] = accesi
+    else:
+        facce.pop(f, None)
+    if n > 0 and strato_tutto is None and all(i in facce for i in range(n)):
+        prima = facce[0]
+        if all(facce[i] == prima for i in range(n)):
+            facce = {}
+            if prima:
+                strato_tutto = set(prima)
+    if strato_tutto:
+        altre.append((s, None, strato_tutto))
+    altre.extend((s, i, acc) for i, acc in facce.items())
+    return _testo_traverse(altre)
+
+
+def traversa_tutto_strato(txt, strato, lettere):
+    """Copia i rinforzi di un rombo su tutti i rombi dello stesso strato e toglie le eccezioni."""
+    s = int(strato)
+    accesi = _lettere_traverse(lettere)
+    altre = [(a, b, set(acc)) for a, b, acc in _voci_traverse(txt) if a != s]
+    if accesi:
+        altre.append((s, None, accesi))
+    return _testo_traverse(altre)
 
 
 def _asse_zome(p):
@@ -1462,17 +2362,21 @@ def segmenti_traverse(model):
     Se sul rombo sono accese entrambe, `extra` è il punto d'incrocio (il telaio le unisce lì).
     Una faccia tagliata, che non è più un rombo o un triangolo intero, non riceve traverse."""
     p = model.get("params")
-    flags = parse_traverse(getattr(p, "traverse", "") if p is not None else "")
-    if not flags:
+    txt = getattr(p, "traverse", "") if p is not None else ""
+    flags = parse_traverse(txt)
+    per_faccia = parse_traverse_facce(txt)
+    if not flags and not per_faccia:
         return []
     asse = _asse_zome(p)
     out = []
     for st in model["strata"]:
-        accesi = flags.get(st["strato"])
-        if not accesi:
+        if st["strato"] not in flags and not any(s == st["strato"] for s, _f in per_faccia):
             continue
         for f, (kind, pts) in enumerate(st["facce"]):
-            if len(pts) < 3:
+            accesi = per_faccia.get((st["strato"], f))
+            if accesi is None:
+                accesi = flags.get(st["strato"])
+            if not accesi or len(pts) < 3:
                 continue
             nrm = _face_normal(pts)
             if kind == "rombo" and len(pts) == 4 and ("t" in accesi or "a" in accesi):
@@ -1646,6 +2550,12 @@ def isolante_guscio(model, TT):
             nrm = _unit(_face_normal(pts))
             top = [_add(q, _scale(nrm, p.TW)) for q in Q]
             out.append({"strato": st["strato"], "faccia": f, "spessore": p.TW, "area": _area(Q), "in": Q, "out": top})
+    for a in _facce_annesse(model):
+        Q = _cavita_faccia(a["pts"], TT)
+        if Q:
+            nrm = _unit(_face_normal(a["pts"]))
+            out.append({"strato": a["strato"], "faccia": a["faccia"], "spessore": p.TW, "area": _area(Q), "in": Q,
+                        "out": [_add(q, _scale(nrm, p.TW)) for q in Q]})
     return out
 
 
@@ -1655,8 +2565,10 @@ def beams(model, TT, TW, joint="butt_ccw", triangles=False, density=700.0):
     if TT <= 0 or TW <= 0:
         raise ValueError("TT e TW devono essere positivi")
     out = []
-    for st in model["strata"]:
-        for f, (kind, pts) in enumerate(st["facce"]):
+    gruppi = [(st["strato"], st["parte"], list(enumerate(st["facce"])), ()) for st in model["strata"]]
+    gruppi += [(a["strato"], "annessa", [(a["faccia"], ("tappo", a["pts"]))], a.get("vano", ())) for a in _facce_annesse(model)]   # tappo e corridoio
+    for strato, parte, facce, vano in gruppi:
+        for f, (kind, pts) in facce:
             if kind != "rombo" and not triangles:
                 continue
             nrm = _face_normal(pts)
@@ -1665,6 +2577,8 @@ def beams(model, TT, TW, joint="butt_ccw", triangles=False, density=700.0):
                 o0, o1, i1, i0 = quad
                 if not _tavola_valida(o0, o1, i1, i0, TT):
                     continue
+                if vano and all(any(_dist(q, v) < 1e-6 for v in vano) for q in (pts[e], pts[(e + 1) % len(pts)])):
+                    continue                                    # il lato del vano: li' sta il telaio della porta
                 verts = [o0, o1, i1, i0] + [_add(v, up) for v in (o0, o1, i1, i0)]
                 axis = _unit(_sub(pts[(e + 1) % len(pts)], pts[e]))
                 lens = [_dist(o0, o1), _dist(i0, i1)]
@@ -1673,7 +2587,7 @@ def beams(model, TT, TW, joint="butt_ccw", triangles=False, density=700.0):
                     return math.degrees(math.acos(min(1.0, c)))
                 area = _area([o0, o1, i1, i0])
                 vol = area * TW
-                out.append({"strato": st["strato"], "parte": st["parte"], "faccia": f, "lato": e, "tipo": kind,
+                out.append({"strato": strato, "parte": parte, "faccia": f, "lato": e, "tipo": kind,
                             "ruolo": "bordo", "vertici": verts, "lung_max": max(lens), "lung_min": min(lens),
                             "taglio_inizio": cut_angle(o0, i0), "taglio_fine": cut_angle(o1, i1),
                             "area_pianta": area, "volume": vol, "massa": vol * density})
@@ -1739,6 +2653,134 @@ def report(model):
         lati = " ".join(f"{x:.3f}" for x in st["lati"])
         lines.append(f"strato {st['strato']:2d} {st['parte'][:3]} {st['tipo']:14s} x{st['n']}  lati: {lati}  area {st['area']:.4f}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------------------------------------------- pezzi generati e oggetti tenuti
+# Le sotto-collection «<modello> · <ruolo>» che l'algoritmo crea e rifà: Ricostruisci cancella e ricrea solo quello che c'è dentro.
+# Un ruolo vale anche con un seguito («Esterno · legno», «Statica momento»).  Tutto il resto del modello (Arredo, Terreno, cartelle
+# fatte a mano, oggetti messi direttamente nella collection del modello) non si cancella né si ricrea: si sposta e si gira soltanto.
+RUOLI_GENERATI = ("Riferimento", "Struttura", "Basamento", "Solaio", "Pavimento", "Isolante", "Esterno", "Interno", "Tetto",
+                  "Porta", "Buchi", "Statica", "Animazione")
+
+
+def ruolo_generato(nome, collezione):
+    """Vero se `collezione` è una sotto-collection che l'algoritmo genera per il modello `nome`."""
+    pref = f"{nome} · "
+    if not collezione.startswith(pref):
+        return False
+    r = collezione[len(pref):]
+    return any(r == g or r.startswith(g + " ") for g in RUOLI_GENERATI)
+
+
+def collezioni_generate(nome, albero):
+    """Le collection del modello i cui oggetti Ricostruisci cancella e ricrea: quelle dei ruoli generati con tutto ciò che hanno
+    dentro (Statica → Sforzo, Momento, Appoggi). `albero` è {collection: [figlie]}."""
+    generate, da_vedere = set(), [c for c in albero if ruolo_generato(nome, c)]
+    while da_vedere:
+        c = da_vedere.pop()
+        if c not in generate:
+            generate.add(c)
+            da_vedere.extend(albero.get(c, ()))
+    return generate
+
+
+def oggetto_tenuto(collezioni_oggetto, generate):
+    """Un oggetto si tiene se nessuna delle sue collection è generata: Arredo, Terreno, cartelle fatte a mano, la collection
+    del modello stessa."""
+    return not any(c in generate for c in collezioni_oggetto)
+
+
+def parti_collection(collezione):
+    """«zome stefano · Esterno · legno» → («zome stefano», «Esterno · legno»): il componente e il ruolo.
+    Una collection senza « · » non ha ruolo."""
+    if " · " not in collezione:
+        return collezione, ""
+    comp, ruolo = collezione.split(" · ", 1)
+    return comp, ruolo
+
+
+SPAZI_ACCESSORI = "Spazi accessori"
+
+
+def e_spazi_accessori(collezione):
+    """Vero per la cartella degli spazi accessori: «Spazi accessori», anche con un seguito («Spazi accessori bagno»)."""
+    return collezione.strip().lower().startswith(SPAZI_ACCESSORI.lower())
+
+
+def componente_di(collezione, sopra):
+    """Il componente di un oggetto che sta in `collezione`: il prefisso se ha un ruolo («Legnaia · Tetto» → «Legnaia»),
+    se no il nome della collection stessa; una cartella «Spazi accessori» passa il componente di sopra (`sopra`)."""
+    comp, ruolo = parti_collection(collezione)
+    if ruolo:
+        return comp
+    return sopra if e_spazi_accessori(collezione) and sopra else collezione
+
+
+def accessori_report(alberi_accessori, componenti):
+    """I componenti che sono spazi accessori: quelli le cui collection stanno sotto una cartella «Spazi accessori».
+    `alberi_accessori` sono i nomi delle collection dentro ogni cartella degli spazi accessori."""
+    sotto = set().union(*alberi_accessori) if alberi_accessori else set()
+    return [c for c in componenti if any(n.startswith(c + " · ") for n in sotto)]
+
+
+TUTTO = "TUTTO"
+
+
+def componenti_file(collezioni, sotto_accessori):
+    """I componenti del file per il menu del report: prima le zome, poi gli spazi accessori, nell'ordine in cui compaiono.
+    `collezioni` sono i nomi delle collection accese (una copia nascosta non conta), `sotto_accessori` quelli delle collection
+    dentro una cartella «Spazi accessori».  → [{"nome", "tipo": "zome" | "accessorio"}]"""
+    comp = componenti_report(collezioni)
+    acc = set(accessori_report([set(sotto_accessori)], comp))
+    return ([{"nome": c, "tipo": "zome"} for c in comp if c not in acc]
+            + [{"nome": c, "tipo": "accessorio"} for c in comp if c in acc])
+
+
+def voci_report(componenti):
+    """Le voci del menu del report: (identificatore, testo, descrizione).  Una per zome, una per spazio accessorio, e Tutto."""
+    voci = []
+    for c in componenti:
+        if c["tipo"] == "accessorio":
+            voci.append(("A:" + c["nome"], c["nome"] + " (spazio accessorio)",
+                         f"Report del solo spazio accessorio «{c['nome']}», fatto a mano"))
+        else:
+            voci.append(("Z:" + c["nome"], c["nome"], f"Report della sola zome «{c['nome']}»"))
+    voci.append((TUTTO, "Tutto", "Tutte le zome e tutti gli spazi accessori visibili nel file, sommati"))
+    return voci
+
+
+def componenti_scelti(scelta, componenti):
+    """I nomi dei componenti che vanno nel report per la voce `scelta` del menu: uno solo, o tutti con Tutto.
+    Vuoto se la voce non c'è più (componente rinominato o nascosto)."""
+    nomi = [c["nome"] for c in componenti]
+    if scelta == TUTTO:
+        return nomi
+    for c in componenti:
+        if scelta == ("A:" if c["tipo"] == "accessorio" else "Z:") + c["nome"]:
+            return [c["nome"]]
+    return []
+
+
+def componenti_report(collezioni):
+    """Le zome (o i pezzi fatti a parte) dentro la collection del report, nell'ordine in cui compaiono: il prefisso di ogni
+    sotto-collection con un ruolo che l'algoritmo genera."""
+    visti = []
+    for c in collezioni:
+        comp, ruolo = parti_collection(c)
+        if ruolo and ruolo_generato(comp, c) and comp not in visti:
+            visti.append(comp)
+    return visti
+
+
+def segue_pavimento(nome, collezioni_oggetto):
+    """Gli oggetti tenuti salgono e scendono col pavimento quando Ricostruisci lo sposta; il terreno no."""
+    return f"{nome} · Terreno" not in collezioni_oggetto
+
+
+def ore_giro_sole(ora, alba, tramonto):
+    """Da che ora a che ora gira il sole nella visita: parte dall'ora del pannello, così il primo fotogramma è la scena che si sta guardando."""
+    fine = tramonto - 0.3
+    return min(max(ora, alba + 0.3), fine), fine
 
 
 if __name__ == "__main__":

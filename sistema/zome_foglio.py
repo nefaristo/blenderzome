@@ -203,10 +203,10 @@ def peso_di(chiave, qta, unita, mm, riga, dens_vetro):
     if unita == "m³":
         return qta * dens, f"{dens:.0f} kg/m³"
     if chiave == "tegole":
-        sp = riga.get("spessore_mm")
-        if sp and mm is not None and abs(float(sp) - mm) <= 2.0:
-            return qta * float(sp) / 1000.0 * dens, f"{dens:.0f} kg/m³ × {float(sp):.0f} mm"
-        return None, "lo spessore disegnato non è quello delle tegole"
+        # Lo spessore delle tegole, non quello disegnato (il tetto nel modello è più spesso per vedersi).
+        # Senza spessore nel foglio vale 3 mm, come nella statica.
+        sp = float(riga.get("spessore_mm") or 3.0)
+        return qta * sp / 1000.0 * dens, f"{dens:.0f} kg/m³ × {sp:.0f} mm di tegole"
     if unita == "m²" and mm:
         return qta * mm / 1000.0 * dens, f"{dens:.0f} kg/m³ × {mm:.0f} mm"
     return None, ""
@@ -482,15 +482,15 @@ def prepara(model, opz, prezzi):
     if opz["travi"] and model.get("pavimento"):
         pv = model["pavimento"]["summary"]
         b, h = pv["travetto_b"], pv["travetto_h"]
-        aggiungi("travi", "Dormienti" if pv["tipo"] == "muretto" else "Pali del pavimento",
-                 "C24", pv["volume_dormienti"], "m³", "c24")
+        aggiungi("travi", "Travi",
+                 "C24", pv.get("volume_travi", pv.get("volume_dormienti", 0.0)), "m³", "c24")
         aggiungi("travi", f"Travetti, {pv['travetti']} pezzi",
                  f"C24, sezione {_n(b*100, 0)}×{_n(h*100, 0)} cm, luce {_n(pv['luce'], 2)} m",
                  pv["volume_travetti"], "m³", "c24")
         aggiungi("travi", "Tavolato", "Tavole di abete grezze", pv["area_tavolato"], "m²", "tavole", mm=25)
         note.append(f"I travetti sono dimensionati in modo indicativo (C24, freccia L/300, carico { _n(pv['carico'], 1) } kN/m²). "
                     "Il tavolato del modello è 25 mm; il prezzo delle tavole, se c'è, è quello del listone da 20 mm.")
-        note.append(f"Le pietre della fondazione ({pv['pietre']}) e il gradino non hanno un prezzo di listino in questo conto.")
+        note.append(f"Le pietre dello zoccolo ({pv['pietre']}) e il gradino non hanno un prezzo di listino in questo conto.")
 
     # rivestimenti
     tot = model.get("esterno_totali") or {}
@@ -687,8 +687,23 @@ def html_foglio(dati):
         pav = (f"<p>Pavimento {pv['tipo']}: {pv['travetti']} travetti "
                f"{_n(pv['travetto_b']*100, 0)}×{_n(pv['travetto_h']*100, 0)} cm, "
                f"luce {_n(pv['luce'], 2)} m, interasse {_n(pv['interasse']*100, 0)} cm. "
-               f"Dormienti o pali {_n(pv['volume_dormienti'], 3)} m³. "
+               f"Travi {_n(pv.get('volume_travi', pv.get('volume_dormienti', 0)), 3)} m³. "
                f"Tavolato {_n(pv['area_tavolato'], 2)} m².</p>")
+    if p.tilt:       # coricata: la base del poliedro dritto non e' a terra, si dice il sedime della zome posata
+        base = (f"<p>Diametro massimo {_n(s['diametro_max'], 2)} m.</p>" if s.get("sedime") or "ingombro_x" not in s else
+                f"<p>Ingombro della struttura {_n(s['ingombro_x'], 2)} × {_n(s['ingombro_y'], 2)} m.</p>")
+    else:
+        base = (f"<p>Base ø {_n(s['diametro_base'], 2)} m, {_n(s['area_base'], 2)} m². "
+                f"Diametro massimo {_n(s['diametro_max'], 2)} m.</p>")
+    if "area_180" in s:
+        base += (f"<p>Pavimento {_n(s['area_pavimento'], 2)} m², a 1,80 m dal pavimento {_n(s['area_180'], 2)} m². "
+                 f"Altezza interna {_n(s['altezza_interna'], 2)} m.</p>")
+    if s.get("diametro_inscritto"):
+        base += (f"<p>Al pavimento: diametro del cerchio circoscritto {_n(s['diametro_circoscritto'], 2)} m, "
+                 f"inscritto {_n(s['diametro_inscritto'], 2)} m.</p>")
+    if s.get("sedime"):
+        base += (f"<p>Sedime {_n(s['sedime'], 2)} m²: superficie massima occupata in pianta dalla zome finita, "
+                 f"gronda e corridoio compresi.</p>")
     return f"""<!DOCTYPE html>
 <html lang="it"><head><meta charset="utf-8"><title>Report — {_esc(dati['nome'])}</title>
 <style>
@@ -724,8 +739,7 @@ svg.torta {{ background: transparent; }}
 <h2>Riepilogo</h2>
 <div class="teste">{dati['profilo']}
 <div><p>{s['strati']} strati, {s['facce']} facce. h {_n(s['h']*100, 1)} cm, lato {_n(s['l']*100, 1)} cm.</p>
-<p>Base ø {_n(s['diametro_base'], 2)} m, { _n(s['area_base'], 2) } m².
-Diametro massimo {_n(s['diametro_max'], 2)} m.</p>
+{base}
 <p>Superficie interna {_n(s['area_superficie_interna'], 2)} m².
 Altezza della struttura {_n(s['altezza_totale'], 2)} m.</p>
 {pav}</div></div>

@@ -317,11 +317,13 @@ def _peso_rivestimenti(model, nodi, pelli):
             kg["esterno"] += m
             _riparti(indice, pts, m, acc)
         elif chiave == "roof_external" and dens_tetto and d.get("volume_copertura"):
-            mm = float(d.get("spessore") or 0.0) * 1000.0
-            if tetto_mm is None or abs(mm - float(tetto_mm)) <= 2.0:
-                m = d["volume_copertura"] * float(dens_tetto)
-                kg["copertura"] += m
-                _riparti(indice, pts, m, acc)
+            # Superficie del tetto per lo spessore delle tegole: il tetto disegnato è più spesso per vedersi,
+            # e prima, con lo spessore diverso, la copertura restava fuori dal carico.
+            sp = float(d.get("spessore") or 0.0)
+            area = d.get("area_copertura") or (d["volume_copertura"] / sp if sp else 0.0)
+            m = float(area) * float(tetto_mm or 3.0) / 1000.0 * float(dens_tetto)
+            kg["copertura"] += m
+            _riparti(indice, pts, m, acc)
         elif chiave == "glass_external" and d.get("area_copertura"):
             grande = (_luce_faccia(pts) >= float(pelli.get("luce_grande") or 0.90)
                       and _tilt_faccia(pts) <= float(pelli.get("tilt_neve") or 55.0))
@@ -343,7 +345,48 @@ def _peso_rivestimenti(model, nodi, pelli):
             m = float(sl.get("area") or 0.0) * float(sl.get("spessore") or 0.0) * float(dens_iso)
             kg["isolante"] += m
             _riparti(indice, pts, m, acc)
+    t_est = float(pelli.get("t_esterno") or 0.02)
+    t_int = float(pelli.get("t_interno") or 0.015)
+    t_iso = float(pelli.get("t_isolante") or 0.05)
+    from zome_core import _area as _area_poly
+    for nome, poly in (model.get("caps") or {}).items():
+        if not poly or nome == "pavimento" or "falda" in nome:
+            continue
+        area = _area_poly(poly)
+        if area < 1e-4:
+            continue
+        if dens_est:
+            m = area * t_est * float(dens_est)
+            kg["esterno"] += m
+            _riparti_vicini(indice, nodi, poly, m, acc)
+        if dens_int:
+            m = area * t_int * float(dens_int)
+            kg["interno"] += m
+            _riparti_vicini(indice, nodi, poly, m, acc)
+        if dens_iso:
+            m = area * t_iso * float(dens_iso)
+            kg["isolante"] += m
+            _riparti_vicini(indice, nodi, poly, m, acc)
     return kg, acc
+
+
+def _riparti_vicini(indice, nodi, pts, kg, acc, raggio=0.05):
+    """Come _riparti, ma un vertice del tappo che non è un nodo del telaio va al nodo più vicino."""
+    if kg <= 0 or len(pts) < 3:
+        return
+    ids = []
+    for p in pts:
+        i = indice.get(tuple(round(float(c), 4) for c in p))
+        if i is None:
+            i = min(range(len(nodi)), key=lambda j: _dist(nodi[j], p))
+            if _dist(nodi[i], p) > raggio:
+                continue
+        ids.append(i)
+    if not ids:
+        return
+    quota = kg / len(set(ids))
+    for i in set(ids):
+        acc[i] = acc.get(i, 0.0) + quota
 
 
 def _righe_pelli(kg):
@@ -507,7 +550,7 @@ def analizza(model, TT, TW, density=700.0, snow_kN_m2=1.0, pelli=None):
         f"Neve {neve_n/1000:.2f} kN ({neve_n/9.81:.0f} kg)",
         *([f"Traverse: {n_tra} tra anelli, {n_anello} sull'anello. Stessa sezione delle altre aste; all'incrocio si uniscono."]
           if (n_tra or n_anello) else []),
-        f"La zome si abbassa al massimo di {spost_vert*1000:.1f} mm",
+        f"Abbassamento max {spost_vert*1000:.1f} mm: scesa massima di un nodo, telaio elastico lineare (non manca un vincolo)",
         f"Spinta di lato massima su un appoggio: {spinta_max/1000:.2f} kN ({spinta_max/9.81:.0f} kg)",
         f"Compressione max {compr_max/1000:.2f} kN = {sigma_c:.1f} MPa (il legno ne regge ~20)",
         f"Trazione max {traz_max/1000:.2f} kN",
@@ -544,11 +587,14 @@ def analizza(model, TT, TW, density=700.0, snow_kN_m2=1.0, pelli=None):
         "reazione_verticale_N": reazione_z,
         "spinta_massima_N": spinta_max,
         "spostamento_m": spost_max,
+        "abbassamento_m": spost_vert,
         "compressione_N": compr_max,
         "trazione_N": traz_max,
         "momento_Nm": mom_max,
         "aste_viste": aste_out,
         "reazioni": reazioni,
+        "TT": TT,
+        "TW": TW,
     }
 
 

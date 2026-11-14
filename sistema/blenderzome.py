@@ -5,7 +5,7 @@ Uso: nel Text editor di Blender aprire carica_zome.py e premere "Esegui script",
 oppure (da codice) aggiungere la cartella a sys.path e chiamare blenderzome.register().
 Il pannello compare nella barra laterale della vista 3D (tasto N), scheda "Zome".
 """
-VERSIONE = "2.0.5"   # tag della release su github.com/nefaristo/blenderzome.
+VERSIONE = "2.0.6"   # tag della release su github.com/nefaristo/blenderzome.
 _REPO = "nefaristo/blenderzome"
 
 bl_info = {"name": "Zome", "author": "Stefano", "version": (2, 0, 4), "blender": (5, 2, 0),
@@ -35,7 +35,7 @@ try:
     _CODICE = os.path.dirname(os.path.abspath(__file__))
 except NameError:                                  # eseguito da un blocco di testo
     _CODICE = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
-# Il codice sta in sistema/. Texture, prezzi e istanze stanno nella cartella del progetto.
+# Il codice sta in sistema/. Texture, prezzi, tipologie e istanze stanno nella cartella del progetto.
 _ROOT = os.path.dirname(_CODICE) if os.path.basename(_CODICE).lower() == "sistema" else _CODICE
 _HERE = _ROOT
 if _CODICE and _CODICE not in sys.path:
@@ -44,9 +44,16 @@ import zome_core
 importlib.reload(zome_core)
 import zome_pavimento
 importlib.reload(zome_pavimento)
+import zome_percorsi
+importlib.reload(zome_percorsi)
 from zome_core import (Params, build, shell, beams, CATALOGO, APERTO, cutlist, beams_summary, BEAM_FACES,
-                        isolante_guscio,
-                       porta_dist_max, porta_telaio, porta_anta, porta_cerniera, chiave_taglio, parse_traverse, toggle_traverse)
+                        isolante_guscio, _facce_annesse,
+                       porta_dist_max, porta_posizioni, porta_posizione_auto, porta_telaio, porta_anta, porta_cerniera, chiave_taglio,
+                       toggle_traverse, toggle_traversa_faccia, traversa_tutto_strato, lettere_traversa, spostamento_pezzi,
+                       centro_locale, posa_iniziale, posa_ricentrata, confronto_terreno, pannello_da_costruzione, stessa_forma)
+from zome_core import (collezioni_generate, oggetto_tenuto, posa_con_spostamento, ruolo_generato, segue_pavimento,
+                       componenti_report, parti_collection, componente_di, e_spazi_accessori,
+                       componenti_file, voci_report, componenti_scelti, TUTTO)
 import zome_viste
 importlib.reload(zome_viste)
 import zome_statica
@@ -72,6 +79,7 @@ def _carica_modulo(nome):
 
 
 zome_foglio = _carica_modulo("zome_foglio")
+_carica_modulo("zome_planimetria")
 zome_scena = _carica_modulo("zome_scena")
 
 _REBUILDING = False
@@ -220,6 +228,12 @@ def _materiale_pietra(nome="pietra_01"):
     return mat
 
 
+_VOCI_SEZIONI_TRAVETTO = (("auto", "Automatica (~50 cm)", "La prima sezione del catalogo che sta a 50 cm di interasse"),) + tuple(
+    (zome_pavimento.codice_sezione(b, h), f"{int(b*100)}×{int(h*100)} cm", "")
+    for b, h in zome_pavimento.SEZIONI
+)
+
+
 def _nome_isolante(ident):
     """Dal codice del menu al nome della riga nel foglio materiali."""
     for cod, nome, _d in _voci_isolanti(None, None):
@@ -278,29 +292,31 @@ def _mesh_prismi(nome, prismi, mat, L, ruolo):
 
 
 def _costruisci_pavimento(pav, name, z, L):
-    """Fondazione, dormienti, travetti, tavolato e gradino nella collection «Pavimento»."""
-    ruolo = "Pavimento"
+    """Basamento (pietre e travi), solaio (travetti, tavolato) e gradino."""
     if pav["pietre"]:
-        _mesh_poliedri(name + "_pav_pietre", pav["pietre"], _materiale_pietra(), L, ruolo)
-    if pav["dormienti"]:
-        _segna(_mesh_poliedri(name + "_pav_dormienti", pav["dormienti"], _materiale_tinta("dormiente_01", (0.30, 0.19, 0.10), 0.8), L, ruolo), "c24")
+        _mesh_poliedri(name + "_pav_pietre", pav["pietre"], _materiale_pietra(), L, "Basamento")
+    travi = pav.get("travi") or pav.get("dormienti") or []
+    if travi:
+        _segna(_mesh_poliedri(name + "_pav_travi", travi, _materiale_tinta("trave_01", (0.30, 0.19, 0.10), 0.8), L, "Basamento"), "c24")
+    ruolo_s = "Solaio"
     if pav["travetti"]:
-        ob_t = _mesh_poliedri(name + "_pav_travetti", pav["travetti"], _materiale_tinta("travetto_01", (0.62, 0.45, 0.27), 0.7), L, ruolo)
+        ob_t = _mesh_poliedri(name + "_pav_travetti", pav["travetti"], _materiale_tinta("travetto_01", (0.62, 0.45, 0.27), 0.7), L, ruolo_s)
         _segna(ob_t, "c24")
         if ob_t is not None and pav.get("summary"):
             ob_t["travetti_formula"] = json.dumps(pav["summary"].get("formula") or {})
+            ob_t["travi_formula"] = json.dumps(pav["summary"].get("formula_travi") or {})
     if pav["tavolato"]:
-        ob = _mesh_poliedri(name + "_pav_tavolato", [pav["tavolato"]], _materiale(_catalogo(z)["wood_external"]["materiale"], "legno"), L, ruolo)
+        ob = _mesh_poliedri(name + "_pav_tavolato", [pav["tavolato"]], _materiale(_catalogo(z)["wood_external"]["materiale"], "legno"), L, ruolo_s)
         _uv_pareti(ob.data, z)
         _segna(ob, "perline")
     if pav.get("fondo"):
-        ob = _mesh_poliedri(name + "_pav_fondo", pav["fondo"], _materiale(_catalogo(z)["wood_internal"]["materiale"], "legno"), L, ruolo)
+        ob = _mesh_poliedri(name + "_pav_fondo", pav["fondo"], _materiale(_catalogo(z)["wood_internal"]["materiale"], "legno"), L, ruolo_s)
         _segna(ob, "perline")
     if pav.get("isolante"):
         ob = _mesh_poliedri(name + "_pav_isolante", pav["isolante"], _materiale_tinta("isolante_01", (0.86, 0.78, 0.45), 0.85), L, "Isolante")
         _segna(ob, _nome_isolante(z.isolante))
     if pav["gradino"]:
-        _mesh_poliedri(name + "_pav_gradino", [pav["gradino"]], _materiale_pietra(), L, ruolo)
+        _mesh_poliedri(name + "_pav_gradino", [pav["gradino"]], _materiale_pietra(), L, "Basamento")
 
 
 def _materiale_legno(nome):
@@ -362,7 +378,19 @@ def _materiale_legno(nome):
     perc = os.path.join(_HERE, "textures", "assi_singole.jpg") if _HERE else ""
     img = bpy.data.images.get("assi_singole.jpg")
     if img is None and perc and os.path.exists(perc):
+        # il progetto tiene le sue immagini in textures/ accanto al blend: si copia lì, così il blend basta da solo
+        locale = os.path.join(os.path.dirname(bpy.data.filepath), "textures", "assi_singole.jpg") if bpy.data.filepath else ""
+        if locale:
+            try:
+                if not os.path.isfile(locale):
+                    os.makedirs(os.path.dirname(locale), exist_ok=True)
+                    shutil.copyfile(perc, locale)
+                perc = locale
+            except OSError:
+                pass
         img = bpy.data.images.load(perc)
+        if perc == locale:
+            img.filepath = "//textures/assi_singole.jpg"
     if img is not None:
         tex.image = img
     L.new(comb.outputs["Vector"], tex.inputs["Vector"])
@@ -419,18 +447,407 @@ def _usi_manuali(z):
 def _params(z):
     return Params(N=z.N, M=z.M, theta=z.theta, ZH=z.ZH,
                   cut=z.cut if z.secondario else 0, M2=z.M2, theta2=z.theta2,
-                  tilt=(90.0 if z.posa == "CORICATA" else 0.0), orient=z.orient, px=z.px, py=z.py, pz=z.pz,
-                  radial=0.0, pav_taglio=(z.pav_taglio if z.posa == "CORICATA" else -1.0), floor=z.floor, zfloor=z.zfloor, pav_tipo=z.pav_tipo, pav_carico=z.pav_carico, pav_interasse=z.pav_interasse / 100.0, pav_seme=z.pav_seme,
+                  tilt=(90.0 if z.posa == "CORICATA" else 0.0), px=z.px, py=z.py, pz=z.pz,   # la posizione sta sugli oggetti: _matrice_posa
+                  radial=0.0, pav_taglio=(z.pav_taglio if z.posa == "CORICATA" else -1.0), floor=z.floor, zfloor=z.zfloor, pav_tipo=z.pav_tipo, pav_carico=z.pav_carico, pav_sezione=z.pav_sezione, pav_seme=z.pav_seme,
+                  pav_neve=z.statica_neve, pav_g_scheletro=z.TT / 100.0 * z.TW / 100.0 * z.densita * 9.81 / 1000.0,
                   ztop=0.0, caps=z.caps,
                   porta=z.porta, porta_dir=z.porta_dir, porta_modo=z.porta_modo, porta_dist=z.porta_dist, porta_w=z.porta_w / 100.0, porta_h=z.porta_h / 100.0, porta_falda=z.porta_falda / 100.0,
-                  TW=z.TW / 100.0, pendenza_tetto=z.pendenza_tetto, usi_manuali=z.usi_manuali, catalogo=_catalogo(z),
+                  TW=z.TW / 100.0, TT=z.TT / 100.0, pendenza_tetto=z.pendenza_tetto, usi_manuali=z.usi_manuali, catalogo=_catalogo(z),
                   stella_vetri=z.stella_vetri, finestre=z.finestre, strato_finestre=z.strato_finestre,
                   sporgenza_tetto=z.sporgenza / 100.0, traverse=z.traverse)
+
+
+def _id_trave(b):
+    """Nome stabile di un pezzo dello scheletro: il bordo o la traversa di un rombo."""
+    if b.get("ruolo") == "traversa":
+        segno = "t" if "tra" in str(b.get("tipo", "")) else "a"
+        return f"s{int(b['strato']):02d}f{int(b['faccia']):02d}{segno}"
+    return f"s{int(b['strato']):02d}f{int(b['faccia']):02d}e{int(b['lato'])}"
+
+
+def _oggetto_lastra(nome, top, bot, mat, chiave, cat, z, strato, faccia):
+    """Una lastra sola (un pannello): si seleziona con un clic, senza entrare in Modifica."""
+    n_ = len(top)
+    ev = list(top) + list(bot)
+    ep = [list(range(n_)), list(range(2 * n_ - 1, n_ - 1, -1))]
+    for i in range(n_):
+        j = (i + 1) % n_
+        ep.append([i, n_ + i, n_ + j, j])
+    me = bpy.data.meshes.new(nome)
+    me.from_pydata(ev, [], ep)
+    me.update()
+    nfacce = len(ep)
+    for nome_a, val in (("strato", int(strato)), ("faccia", int(faccia)), ("voce", 0)):
+        a_ = me.attributes.new(nome_a, 'INT', 'FACE')
+        a_.data.foreach_set("value", [val] * nfacce)
+    me.materials.append(mat)
+    chiavi = [chiave]
+    _uv_orizzontali(me, z.scala_texture, {0: (z.scala_legno if cat[chiave]["uso"] == "legno" else z.scala_texture)})
+    _uv_legno(me, z, chiavi, cat)
+    return bpy.data.objects.new(nome, me)
+
+
+def _materiale_buco():
+    """Solo il contorno del buco: non ha la proprietà materiale, quindi non entra in conti né statica."""
+    mat = bpy.data.materials.get("zome_contorno_buco")
+    if mat is None:
+        mat = bpy.data.materials.new("zome_contorno_buco")
+        mat.diffuse_color = (1.0, 0.45, 0.08, 1.0)
+        if mat.node_tree:
+            for nodo in mat.node_tree.nodes:
+                if nodo.bl_idname == "ShaderNodeBsdfPrincipled":
+                    nodo.inputs["Base Color"].default_value = (1.0, 0.45, 0.08, 1.0)
+    return mat
+
+
+def _finestre(context):
+    wm = getattr(context, "window_manager", None)
+    if wm is None:
+        return
+    for window in list(getattr(wm, "windows", []) or []):
+        yield window
+
+
+def _inizia_attesa(context, testo):
+    """Cursore e riga in alto, ridisegnati prima del lavoro lungo: altrimenti Blender sembra fermo."""
+    wm = getattr(context, "window_manager", None)
+    if wm is None:
+        return
+    try:
+        wm.progress_begin(0, 100)
+        wm.progress_update(8)
+    except Exception:
+        pass
+    for window in _finestre(context):
+        try:
+            window.cursor_set('WAIT')
+        except Exception:
+            pass
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                try:
+                    area.header_text_set(testo)
+                except Exception:
+                    pass
+    try:
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+    except Exception:
+        pass
+
+
+def _aggiorna_attesa(context, quota, testo):
+    wm = getattr(context, "window_manager", None)
+    if wm is not None:
+        try:
+            wm.progress_update(quota)
+        except Exception:
+            pass
+    for window in _finestre(context):
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                try:
+                    area.header_text_set(testo)
+                except Exception:
+                    pass
+    try:
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+    except Exception:
+        pass
+
+
+def _fine_attesa(context):
+    wm = getattr(context, "window_manager", None)
+    if wm is not None:
+        try:
+            wm.progress_end()
+        except Exception:
+            pass
+    for window in _finestre(context):
+        try:
+            window.cursor_set('DEFAULT')
+        except Exception:
+            pass
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                try:
+                    area.header_text_set(None)
+                except Exception:
+                    pass
+
+
+def _chiudi_collezioni(context, nome):
+    """Chiude nell'outliner le sotto-collection generate della zome: con un oggetto per pannello resterebbero lunghissime.
+    Quelle fatte a mano (Arredo e le altre) restano come sono."""
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return
+    pieni = [c.name for c in coll.children if ruolo_generato(nome, c.name) and (c.objects or c.children)]
+    if not pieni:
+        return
+    for window in _finestre(context):
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type != 'OUTLINER':
+                continue
+            region = next((r for r in area.regions if r.type == 'WINDOW'), None)
+            space = area.spaces.active
+            if region is None or space is None or space.type != 'OUTLINER':
+                continue
+            vecchio = space.filter_text
+            try:
+                for nome_c in pieni:
+                    space.filter_text = nome_c
+                    with context.temp_override(window=window, screen=screen, area=area, region=region):
+                        bpy.ops.outliner.show_one_level(open=False)
+            except Exception as e:
+                print("zome outliner:", e)
+            finally:
+                space.filter_text = vecchio
+
+
+def _spostamento_zome(nome):
+    """Solo per i modelli senza zome_posa, una volta: dove sta la zome lo dicono i suoi pezzi visibili."""
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return (0.0, 0.0, 0.0)
+    pezzi = [ob for ob in coll.all_objects if ob.get("zome_pezzo") or ob.name == nome + "_interno"]
+    posizioni = [tuple(ob.matrix_world.translation if ob.parent else ob.location + ob.delta_location)
+                 for ob in ([ob for ob in pezzi if ob.visible_get()] or pezzi)]
+    return spostamento_pezzi(posizioni)
+
+
+def _matrice_posa(po):
+    return (mathutils.Matrix.Translation((po["x"], po["y"], po["z"])) @ mathutils.Matrix.Rotation(math.radians(po["angolo"]), 4, 'Z')
+            @ mathutils.Matrix.Translation((-po["cx"], -po["cy"], 0.0)))
+
+
+def _leggi_posa(coll):
+    try:
+        return json.loads(coll.get(_PROP_POSA, "") or "") if coll is not None else None
+    except ValueError:
+        return None
+
+
+def _posa_modello(nome, z):
+    """I valori di Posizione del modello. Un modello di prima non li ha: si leggono una volta dai suoi pezzi e dall'orientamento salvato."""
+    coll = bpy.data.collections.get(nome)
+    po = _leggi_posa(coll)
+    if po:
+        return po
+    try:
+        c = centro_locale(_params(z))
+    except ValueError:
+        c = (0.0, 0.0)
+    orient = 0.0
+    if coll is not None:
+        try:
+            orient = float(json.loads(coll.get(_PROP_PARAMETRI, "") or "{}").get("orient", 0.0))
+        except ValueError:
+            pass
+    po = posa_iniziale(_spostamento_zome(nome), orient, c)
+    if coll is not None:
+        coll[_PROP_POSA] = json.dumps(po)
+    return po
+
+
+def _posa_vista(nome, z):
+    """Dove sta la zome adesso: i valori di Posizione più lo spostamento fatto a mano con G, che sta nella Location dei pezzi."""
+    salvata = _leggi_posa(bpy.data.collections.get(nome))
+    po = _posa_modello(nome, z)
+    if salvata is None:                                # letta ora dai pezzi: la G è già contata
+        return po
+    coll = bpy.data.collections.get(nome)
+    return posa_con_spostamento(po, spostamento_pezzi([tuple(ob.location) for ob in coll.all_objects
+                                                       if ob.get("zome_pezzo") and ob.parent is None]))
+
+
+def _applica_a_oggetto(ob, M, angolo):
+    """Sposta e gira un oggetto attorno a Z. In Delta, non in Location e Rotazione: così le chiavi e la forma data a mano non si toccano."""
+    if ob.rotation_mode == 'AXIS_ANGLE':
+        zome_viste.gira_cerniera(ob, ob.rotation_axis_angle[0])
+    if ob.rotation_mode == 'QUATERNION':
+        ob.matrix_world = M @ ob.matrix_world
+        return
+    ob.delta_location = (M @ (ob.location + ob.delta_location)) - ob.location
+    giro = mathutils.Matrix.Rotation(angolo, 3, 'Z')
+    ob.delta_rotation_euler = (giro @ ob.delta_rotation_euler.to_matrix()).to_euler(ob.delta_rotation_euler.order)
+
+
+def _radici(coll):
+    """Gli oggetti del modello da muovere: un figlio segue il suo genitore."""
+    dentro = {o.name for o in coll.all_objects}
+    return [o for o in coll.all_objects if o.parent is None or o.parent.name not in dentro]
+
+
+def _muovi_modello(coll, M, angolo):
+    for ob in _radici(coll):
+        if ob.parent is None:
+            _applica_a_oggetto(ob, M, angolo)
+        else:
+            ob.matrix_world = M @ ob.matrix_world
+
+
+def _posa_visita(nome, po):
+    """La visita ha le chiavi sulla posizione della camera: la segue un oggetto vuoto che le fa da genitore."""
+    cam, tgt = bpy.data.objects.get(nome + "_camera_visita"), bpy.data.objects.get(nome + "_sguardo")
+    if cam is None or tgt is None:
+        return
+    emp = bpy.data.objects.get(nome + "_posa_visita")
+    if emp is None:
+        emp = bpy.data.objects.new(nome + "_posa_visita", None)
+        emp.empty_display_size = 0.15
+        cam.users_collection[0].objects.link(emp)
+    emp.matrix_basis = _matrice_posa(po)
+    for ob in (cam, tgt):
+        ob.delta_location = (0.0, 0.0, 0.0)
+        if ob.parent is not emp:
+            ob.parent = emp
+
+
+def _nuovi_al_posto(coll, po):
+    """I pezzi appena fatti nascono nel sistema del modello: si portano dove sta la zome."""
+    M, a = _matrice_posa(po), math.radians(po["angolo"])
+    dentro = {o.name for o in coll.all_objects}
+    for ob in coll.all_objects:
+        if _TENUTO in ob:
+            del ob[_TENUTO]
+        elif ob.parent is None or ob.parent.name not in dentro:
+            _applica_a_oggetto(ob, M, a)
+
+
+def _con_posa(nome, z, fn):
+    """Fa una modifica che crea pezzi, e porta al posto solo quelli: gli oggetti che c'erano già restano dove sono."""
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return fn()
+    po = _posa_modello(nome, z)
+    for ob in coll.all_objects:
+        ob[_TENUTO] = 1
+    risultato = fn()
+    _nuovi_al_posto(coll, po)
+    return risultato
+
+
+def _campi_posa(z, po):
+    global _SENZA_POSA
+    _SENZA_POSA = True
+    try:
+        z.pos_x, z.pos_y, z.pos_z, z.pos_angolo = po["x"], po["y"], po["z"], po["angolo"]
+    finally:
+        _SENZA_POSA = False
+
+
+def _controlla_terreno(z):
+    """Confronta il terreno con la base della zome lungo il bordo dell'impronta. Avvisa e basta."""
+    ter, nome = z.pos_terreno, z.nome or "zome"
+    po = _leggi_posa(bpy.data.collections.get(nome))
+    m = _model_for(z)
+    if ter is None or ter.type != 'MESH' or not po or not m:
+        z.pos_avviso, z.pos_avviso_ok = "", True
+        return
+    if m.get("pavimento"):
+        B = m["pavimento"]["base"]
+    else:
+        tutti = [q for s in m["strata"] for _, f in s["facce"] for q in f]
+        zb = min(q[2] for q in tutti)
+        B = [q for q in tutti if q[2] < zb + 0.01]
+    punti = []
+    for i, q in enumerate(B):
+        r = B[(i + 1) % len(B)]
+        punti += [q, tuple((q[k] + r[k]) / 2 for k in range(2)) + (q[2],)]
+    M = _matrice_posa(po)
+    ev = ter.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    inv = ev.matrix_world.inverted()
+    giu = (inv.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    quote = []
+    for q in punti:
+        w = M @ Vector(q)
+        ok, loc, _n, _i = ev.ray_cast(inv @ Vector((w.x, w.y, 10000.0)), giu)
+        quote.append((ev.matrix_world @ loc).z if ok else None)
+    esito = confronto_terreno(quote, po["z"], z.pos_soglia)
+    z.pos_avviso, z.pos_avviso_ok = esito["testo"], esito["ok"]
+
+
+def _sincronizza_posa(z):
+    """Porta nel pannello i valori del modello e rifà il controllo del terreno."""
+    nome = z.nome or "zome"
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return
+    _campi_posa(z, _posa_modello(nome, z))
+    if z.pos_terreno is None and bpy.data.objects.get("Ground") is not None:
+        z.pos_terreno = bpy.data.objects["Ground"]
+    try:
+        _controlla_terreno(z)
+    except Exception as e:
+        print("zome terreno:", e)
+
+
+def _update_posa(self, context):
+    """Sposta e gira quello che c'è, senza ricostruire: la differenza fra i valori nuovi e quelli di prima, su ogni oggetto del modello."""
+    if _SENZA_POSA:
+        return
+    nome = self.nome or "zome"
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return
+    prima = _leggi_posa(coll)
+    if not prima:                                      # modello di prima: si leggono i suoi valori, e il campo torna a quelli
+        _sincronizza_posa(self)
+        return
+    po = {**prima, "x": self.pos_x, "y": self.pos_y, "z": self.pos_z, "angolo": self.pos_angolo}
+    _muovi_modello(coll, _matrice_posa(po) @ _matrice_posa(prima).inverted(), math.radians(po["angolo"] - prima["angolo"]))
+    coll[_PROP_POSA] = json.dumps(po)
+    _posa_visita(nome, po)
+    if self.spaccato > 0.0:
+        zome_viste.aggiorna_spaccato(context.scene, self)
+    try:
+        _controlla_terreno(self)
+    except Exception as e:
+        print("zome terreno:", e)
+
+
+def _update_terreno(self, context):
+    if not _SENZA_POSA:
+        _controlla_terreno(self)
 
 
 def costruisci(context, z):
     """(Ri)crea la collection e la mesh dell'interno."""
     global _REBUILDING
+    if _REBUILDING:
+        return None
+    _REBUILDING = True
+    _inizia_attesa(context, "Costruisco la zome…")
+    try:
+        return _costruisci_corpo(context, z)
+    finally:
+        _fine_attesa(context)
+        _REBUILDING = False
+
+
+def _quota_pavimento(nome):
+    """Quota del pavimento dell'ultima costruzione, nel sistema del modello."""
+    rif = bpy.data.objects.get(nome + "_interno")
+    try:
+        return json.loads(rif["zome_summary"]).get("quota_pavimento", 0.0) if rif is not None and "zome_summary" in rif.keys() else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _costruisci_corpo(context, z):
+    global _SENZA_RINOMINA
     z.errore = ""
     try:
         pr = _params(z)
@@ -441,25 +858,45 @@ def costruisci(context, z):
     except ValueError as e:
         z.errore = str(e)
         return None
+    _aggiorna_attesa(context, 40, "Scrivo i pannelli…")
     name = z.nome or "zome"
-    # pulizia: stessa collection, stesso oggetto, stessa mesh.
-    # L'arredo resta: non lo ha generato questa ricostruzione.
+    ignoto = bpy.data.collections.get(name)
+    if ignoto is not None and ignoto.all_objects and _PROP_PARAMETRI not in ignoto.keys() and _costruzione(ignoto) is None:
+        z.errore = f"«{name}» non ha parametri salvati: Ricostruisci la sovrascriverebbe con quelli del pannello"
+        return None
+    if bpy.data.collections.get(name) is None:
+        # rinominata dall'Outliner: la si ritrova dalle sue sotto-collection «name · …» e si continua su quella
+        rinominata = next((c for c in bpy.data.collections
+                           if any(s.name.startswith(name + " · ") for s in c.children)), None)
+        if rinominata is not None:
+            _SENZA_RINOMINA = True
+            try:
+                z.nome = name = rinominata.name
+            finally:
+                _SENZA_RINOMINA = False
+            _allinea_nomi(rinominata)
+    if z.nome_costruito != name:
+        z.nome_costruito = name
+    posa = _posa_vista(name, z)                 # la zome ricostruita resta dov'è; si legge prima di cancellare i pezzi
+    quota_prima = _quota_pavimento(name)
+    # pulizia: si cancella e si rifà solo quello che sta nelle sotto-collection generate (Struttura, Esterno, Porta…).
+    # Tutto il resto del modello (Arredo, Terreno, cartelle fatte a mano, oggetti sciolti nel modello) resta: si sposta soltanto.
     coll = bpy.data.collections.get(name)
     if coll is None:
         coll = bpy.data.collections.new(name)
         context.scene.collection.children.link(coll)
-    conservare = (f"{name} · Arredo",)
-
-    def _conserva(ob):
-        return any(c.name in conservare for c in ob.users_collection)
+    generate = collezioni_generate(name, {c.name: [f.name for f in c.children] for c in (coll, *coll.children_recursive)})
 
     for ob in list(coll.all_objects):
-        if _conserva(ob):
+        if oggetto_tenuto([c.name for c in ob.users_collection], generate):
             continue
         me = ob.data
         bpy.data.objects.remove(ob, do_unlink=True)
         if me and me.users == 0:
             bpy.data.meshes.remove(me)
+    for ob in coll.all_objects:
+        ob[_TENUTO] = 1
+
     def L(ob, ruolo):
         """collega l'oggetto alla sotto-collection del suo ruolo (esterno, tetto, interno, struttura...)"""
         nome_s = f"{name} · {ruolo}"
@@ -512,11 +949,17 @@ def costruisci(context, z):
     ob["zome_summary"] = json.dumps({k: (round(v, 6) if isinstance(v, float) else v)
                                      for k, v in model["summary"].items()})
     L(ob, "Riferimento")
-    if z.esterno:                      # con l'esterno acceso l'interno colorato si vedrebbe attraverso i vetri
-        ob.hide_viewport = True
+    if z.esterno:                      # con l'esterno acceso l'interno colorato si vedrebbe attraverso i vetri e tapperebbe i buchi
+        ob.hide_viewport = ob.hide_render = True
     tutti = model.get("caps") or {}
     pareti = {k: v for k, v in tutti.items() if k.startswith("corridoio:")}
     caps = {k: v for k, v in tutti.items() if k not in pareti and k != "pavimento" and z.caps}
+    if z.esterno:                      # con l'esterno il corridoio ha i suoi strati, come il guscio: restano i fogli che non ne hanno
+        rivestite = {a["nome"] for a in _facce_annesse(model)}
+        pareti = {k: v for k, v in pareti.items() if k not in rivestite}
+    if z.esterno:
+        caps = {k: v for k, v in caps.items()
+                if not (k.startswith("porta:") or k.startswith("parete"))}
     if pareti:
         pv, pp = [], []
         for poly in pareti.values():
@@ -584,63 +1027,70 @@ def costruisci(context, z):
             emp.empty_display_type = 'ARROWS'
             emp.empty_display_size = 0.08
             emp.location = ce["punto"]
-            emp.rotation_mode = 'AXIS_ANGLE'
-            emp.rotation_axis_angle = (0.0, *ce["asse"])
+            emp["zome_asse"] = list(ce["asse"])
             L(emp, "Porta")
             inv = mathutils.Matrix.Translation(Vector(ce["punto"])).inverted()
             for fo_ in (oa, og_, om_, oce):
                 fo_.parent = emp
                 fo_.matrix_parent_inverse = inv
-            emp.rotation_axis_angle = (math.radians(z.porta_apertura), *ce["asse"])
+            zome_viste.gira_cerniera(emp, math.radians(z.porta_apertura))
     if model.get("pavimento"):
         _costruisci_pavimento(model["pavimento"], name, z, L)
+    if model.get("esterno_totali"):
+        ob["esterno_totali"] = json.dumps(model["esterno_totali"])
     if z.esterno and model.get("esterno"):
         cat = _catalogo(z)
         est = [d for d in model["esterno"] if d["copertura_est"]]
-        gruppi = (("_legno", "Esterno · legno", [d for d in est if d["uso"] == "legno"]),
-                  ("_vetro", "Esterno · vetro", [d for d in est if d["uso"] == "vetro"]),
-                  ("_tetto", "Tetto", [d for d in est if d["uso"] == "tetto"]),
-                  ("_perline", "Interno · perline", [dict(d, chiave="wood_internal", uso="legno", copertura_est=d["rivestimento_int_alto"],
-                                                           copertura_int=d["rivestimento_int"])
-                                                     for d in model["esterno"] if d.get("rivestimento_int")]))
-        for suffisso, ruolo, voci in gruppi:
-            if not voci:
-                continue
-            chiavi = sorted({d["chiave"] for d in voci})
-            ev, ep, ei, es, ef = [], [], [], [], []
+        gruppi = (("_legno", "Esterno · legno", "esterno", [d for d in est if d["uso"] == "legno"], "tavole"),
+                  ("_vetro", "Esterno · vetro", "esterno", [d for d in est if d["uso"] == "vetro"], "vetro"),
+                  ("_tetto", "Tetto", "esterno", [d for d in est if d["uso"] == "tetto"], "tegole"),
+                  ("_perline", "Interno · perline", "interno",
+                   [dict(d, chiave="wood_internal", uso="legno", copertura_est=d["rivestimento_int_alto"],
+                         copertura_int=d["rivestimento_int"])
+                    for d in model["esterno"] if d.get("rivestimento_int")], "perline"))
+        for suffisso, ruolo, lato, voci, segno in gruppi:
             for d in voci:
-                top, bot = d["copertura_est"], d["copertura_int"]
-                n_ = len(top)
-                base = len(ev)
-                ev.extend(top); ev.extend(bot)
-                lati = [list(range(base, base + n_)),                                  # faccia esterna
-                        list(range(base + 2 * n_ - 1, base + n_ - 1, -1))]            # faccia interna (rovesciata)
-                for i in range(n_):
-                    j = (i + 1) % n_
-                    lati.append([base + i, base + n_ + i, base + n_ + j, base + j])   # fianchi
-                for pl in lati:
-                    ep.append(pl)
-                    ei.append(chiavi.index(d["chiave"]))
-                    es.append(d["strato"]); ef.append(d["faccia"])
-            me = bpy.data.meshes.new(name + suffisso)
-            me.from_pydata(ev, [], ep)
-            me.update()
-            for nome_a, vals in (("strato", es), ("faccia", ef), ("voce", ei)):
-                a_ = me.attributes.new(nome_a, 'INT', 'FACE')
-                a_.data.foreach_set("value", vals)
-            for k in chiavi:
-                me.materials.append(_materiale(cat[k]["materiale"], cat[k]["uso"]))
-            for poly, i in zip(me.polygons, ei):
-                poly.material_index = i
-            _uv_orizzontali(me, z.scala_texture, {i: (z.scala_legno if cat[k]["uso"] == "legno" else z.scala_texture) for i, k in enumerate(chiavi)})
-            _uv_legno(me, z, chiavi, cat)
-            oe = bpy.data.objects.new(name + suffisso, me)
-            if suffisso == "_legno":
-                oe["esterno_totali"] = json.dumps(model["esterno_totali"])
-            else:
-                oe.hide_viewport = oe.hide_render = not z.tetto_visibile
-            L(oe, ruolo)
-            _segna(oe, {"_legno": "tavole", "_vetro": "vetro", "_tetto": "tegole", "_perline": "perline"}.get(suffisso, "perline"))
+                if not d.get("copertura_est") or not d.get("copertura_int"):
+                    continue
+                nome_ob = f"{name}_s{int(d['strato']):02d}f{int(d['faccia']):02d}{suffisso}"
+                oe = _oggetto_lastra(nome_ob, d["copertura_est"], d["copertura_int"],
+                                     _materiale(cat[d["chiave"]]["materiale"], cat[d["chiave"]]["uso"]),
+                                     d["chiave"], cat, z, d["strato"], d["faccia"])
+                if suffisso != "_legno":
+                    oe.hide_viewport = oe.hide_render = not z.tetto_visibile
+                oe["zome_pezzo"] = "pannello"
+                oe["zome_strato"] = int(d["strato"])
+                oe["zome_faccia"] = int(d["faccia"])
+                oe["zome_uso"] = d["uso"]
+                oe["zome_lato"] = lato
+                if d.get("sotto_tetto"):
+                    oe["zome_sotto_tetto"] = 1
+                L(oe, ruolo)
+                _segna(oe, segno)
+        for d in model["esterno"]:
+            if d.get("sotto_tetto") or d.get("uso") != "aperto":
+                continue
+            pts = d.get("struttura_est")
+            if not pts or len(pts) < 3:
+                continue
+            nome_b = f"{name}_s{int(d['strato']):02d}f{int(d['faccia']):02d}_buco"
+            mb = bpy.data.meshes.new(nome_b)
+            mb.from_pydata(list(pts), [], [list(range(len(pts)))])
+            mb.update()
+            mb.materials.append(_materiale_buco())
+            ob_b = bpy.data.objects.new(nome_b, mb)
+            ob_b.display_type = 'WIRE'
+            ob_b.show_wire = True
+            ob_b.show_all_edges = True
+            ob_b.hide_render = True
+            ob_b.visible_camera = ob_b.visible_shadow = False
+            ob_b.visible_diffuse = ob_b.visible_glossy = ob_b.visible_transmission = False
+            ob_b["zome_pezzo"] = "buco"
+            ob_b["zome_strato"] = int(d["strato"])
+            ob_b["zome_faccia"] = int(d["faccia"])
+            ob_b["zome_uso"] = "aperto"
+            ob_b["zome_lato"] = "esterno"
+            L(ob_b, "Buchi")
         if model.get("gronda"):
             gv, gp = [], []
             for g_ in model["gronda"]:
@@ -677,39 +1127,71 @@ def costruisci(context, z):
             classe = {}
             for i, g in enumerate(cl):
                 classe[chiave_taglio(g)] = i
-            tv, tp, f_strato, f_classe = [], [], [], []
-            for b in bl:
-                base = len(tv)
-                tv.extend(b["vertici"])
-                for f in BEAM_FACES:
-                    tp.append([base + k for k in f])
-                    f_strato.append(b["strato"])
-                    f_classe.append(classe[chiave_taglio(b)])
-            mt = bpy.data.meshes.new(name + "_scheletro")
-            mt.from_pydata(tv, [], tp)
-            mt.update()
-            for nome_attr, vals in (("strato", f_strato), ("classe", f_classe)):
-                a = mt.attributes.new(nome_attr, 'INT', 'FACE')
-                a.data.foreach_set("value", vals)
+            cut_json = json.dumps(cl)
+            sum_json = json.dumps(beams_summary(bl, z.TT / 100.0, z.TW / 100.0))
+            tipi_faccia = {(st["strato"], fi): kind
+                           for st in model["strata"] for fi, (kind, _pts) in enumerate(st["facce"])}
+            uso_faccia = {}
+            for d in model.get("esterno") or []:
+                if not d.get("sotto_tetto"):
+                    uso_faccia[(d["strato"], d["faccia"])] = d.get("uso") or ""
             mw = bpy.data.materials.get(name + "_legno") or bpy.data.materials.new(name + "_legno")
             mw.diffuse_color = (0.72, 0.5, 0.28, 1.0)
             for nodo in (mw.node_tree.nodes if mw.node_tree else []):
                 if nodo.bl_idname == "ShaderNodeBsdfPrincipled":
                     nodo.inputs["Base Color"].default_value = (0.72, 0.5, 0.28, 1.0)
-            mt.materials.append(mw)
-            ot = bpy.data.objects.new(name + "_scheletro", mt)
-            ot["scheletro_summary"] = json.dumps(beams_summary(bl, z.TT / 100.0, z.TW / 100.0))
-            ot["scheletro_cutlist"] = json.dumps(cl)
-            L(ot, "Struttura")
-            _segna(ot, "c24")
+            primo = True
+            for b in bl:
+                id_ = _id_trave(b)
+                mt = bpy.data.meshes.new(name + "_" + id_ + "_scheletro")
+                mt.from_pydata(b["vertici"], [], [list(f) for f in BEAM_FACES])
+                mt.update()
+                nfac = len(BEAM_FACES)
+                for nome_attr, val in (("strato", int(b["strato"])), ("classe", int(classe[chiave_taglio(b)]))):
+                    a = mt.attributes.new(nome_attr, 'INT', 'FACE')
+                    a.data.foreach_set("value", [val] * nfac)
+                mt.materials.append(mw)
+                ot = bpy.data.objects.new(name + "_" + id_ + "_scheletro", mt)
+                ot["scheletro_cutlist"] = cut_json
+                if primo:
+                    ot["scheletro_summary"] = sum_json
+                    primo = False
+                ot["zome_pezzo"] = "scheletro"
+                ot["zome_strato"] = int(b["strato"])
+                ot["zome_faccia"] = int(b["faccia"])
+                ot["zome_id"] = id_
+                ot["zome_tipo"] = str(tipi_faccia.get((b["strato"], b["faccia"]), "") or b.get("tipo") or "")
+                ot["zome_uso"] = uso_faccia.get((b["strato"], b["faccia"]), "")
+                ot["zome_lato"] = "esterno"
+                ot["zome_trave"] = int(b.get("lato", -1))
+                L(ot, "Struttura")
+                _segna(ot, "c24")
             model["scheletro"] = {"lista": bl, "cutlist": cl, "summary": beams_summary(bl, z.TT / 100.0, z.TW / 100.0)}
-    try:                                           # arredo e animazione seguono la zome ricostruita
-        zome_viste.aggiorna_arredo(context.scene, z, model)
+    try:                                           # la visita segue la zome ricostruita; il sole, che è del file, non si tocca
         if zome_viste.animazione_esiste(z):
-            zome_viste.crea_animazione(context.scene, z, model, z.anim_secondi, z.anim_sole)
-        zome_viste.aggiorna_spaccato(context.scene, z)          # per ultimo: taglia anche il nuovo arredo
+            zome_viste.crea_animazione(context.scene, z, model, z.anim_secondi, z.anim_sole, solo_visita=True)
     except Exception as e:                         # sono solo resa: un errore qui non deve fermare la zome
         print("zome_viste:", e)
+    # la forma puo' aver spostato il centro: il centro resta dov'e', e quello che e' stato tenuto non si muove
+    nuova = dict(posa)
+    nuova["cx"], nuova["cy"] = centro_locale(pr)
+    _nuovi_al_posto(coll, nuova)
+    coll[_PROP_POSA] = json.dumps(nuova)
+    salita = model["summary"].get("quota_pavimento", 0.0) - quota_prima
+    if abs(salita) > 1e-6:                         # gli oggetti tenuti (non il terreno) salgono e scendono col pavimento
+        for ob in coll.all_objects:
+            if (ob.parent is None and oggetto_tenuto([c.name for c in ob.users_collection], generate)
+                    and segue_pavimento(name, [c.name for c in ob.users_collection])):
+                ob.delta_location.z += salita
+    try:
+        _posa_visita(name, nuova)
+        zome_viste.aggiorna_spaccato(context.scene, z)          # per ultimo: taglia anche l'arredo
+    except Exception as e:
+        print("zome_viste:", e)
+    _chiudi_collezioni(context, name)
+    coll[_PROP_PARAMETRI] = json.dumps(_dati_modello(z), ensure_ascii=False)   # per ritrovarlo dal menu dei modelli
+    _segna_modello(z, name)
+    _sincronizza_posa(z)
     return model
 
 
@@ -725,13 +1207,101 @@ def _update(self, context):
     costruisci(context, self)
 
 
+def _porta_auto(z):
+    """Porta a parete: la distanza con meno triangolini dove il vano entra (zome_core.porta_posizione_auto). None se non c'e'."""
+    r = porta_posizione_auto(_params(z))
+    if r:
+        z.porta_dist_scelta = True
+        z.porta_dist = r["dist"]
+    return r
+
+
+def _update_porta(self, context):
+    # alla prima accensione la distanza si sceglie da sola; se e' gia' stata scelta (o non e' quella di partenza) resta
+    if (self.porta and self.porta_modo == "parete" and not self.porta_dist_scelta and abs(self.porta_dist - 1.0) < 1e-9
+            and not _REBUILDING and self.live):
+        try:
+            _porta_auto(self)
+        except Exception as exc:
+            print("zome porta automatica:", exc)
+    self.porta_dist_scelta = True
+    _update(self, context)
+
+
+def _update_porta_dist(self, context):
+    if not self.porta_dist_scelta:
+        self.porta_dist_scelta = True
+    _update(self, context)
+
+
+def _rinomina_zome(vecchio, nuovo):
+    """Rinomina la collection della zome, le sue sotto-collection «vecchio · …» e i pezzi «vecchio_…»."""
+    coll = bpy.data.collections.get(vecchio) if vecchio else None
+    if coll is None or not nuovo or vecchio == nuovo or bpy.data.collections.get(nuovo) is not None:
+        return False
+    for c in [*coll.children_recursive, coll]:
+        if c.name.startswith(vecchio + " · "):
+            c.name = nuovo + c.name[len(vecchio):]
+    coll.name = nuovo
+    _rinomina_pezzi(coll, vecchio, nuovo)
+    return True
+
+
+def _rinomina_pezzi(coll, vecchio, nuovo):
+    """Pezzi «vecchio_…» del modello; anche quelli fuori dalla collection (camera della visita, spaccato, statica)."""
+    altri = {o.name for c in bpy.data.collections if c != coll and c.name in _elenco_modelli() for o in c.all_objects}
+    for ob in bpy.data.objects:
+        if ob.name in altri and ob.name not in coll.all_objects:
+            continue
+        if ob.name.startswith(vecchio + "_") or ob.name.startswith(vecchio + " · "):
+            ob.name = nuovo + ob.name[len(vecchio):]
+
+
+def _allinea_nomi(coll):
+    """Collection rinominata dall'Outliner: sotto-collection e pezzi prendono il nome nuovo."""
+    prefissi = {c.name.split(" · ", 1)[0] for c in coll.children_recursive if " · " in c.name}
+    for vecchio in prefissi - {coll.name}:
+        for c in coll.children_recursive:
+            if c.name.startswith(vecchio + " · "):
+                c.name = coll.name + c.name[len(vecchio):]
+        _rinomina_pezzi(coll, vecchio, coll.name)
+
+
+def _update_nome(self, context):
+    global _SENZA_RINOMINA
+    if _SENZA_RINOMINA:
+        return
+    nuovo = self.nome or "zome"
+    vecchio = self.nome_costruito
+    if not vecchio:
+        # file di prima: la zome è l'unica collection piena con la sotto-collection «… · Riferimento»
+        piene = [c.name for c in bpy.data.collections
+                 if c.all_objects and bpy.data.collections.get(c.name + " · Riferimento") in list(c.children)]
+        vecchio = piene[0] if len(piene) == 1 else ""
+    if vecchio and vecchio != nuovo and bpy.data.collections.get(vecchio) is not None \
+            and bpy.data.collections.get(nuovo) is not None:
+        # nome già preso: non si passa di nascosto all'altra collection (la ricostruzione la sovrascriverebbe)
+        _SENZA_RINOMINA = True
+        try:
+            self.nome = vecchio
+        finally:
+            _SENZA_RINOMINA = False
+        self.errore = f"«{nuovo}» c'è già: scegli un altro nome, o quel modello dal menu"
+        return
+    if _rinomina_zome(vecchio, nuovo) or bpy.data.collections.get(nuovo) is not None:
+        self.nome_costruito = nuovo
+        if self.errore.endswith("o quel modello dal menu"):
+            self.errore = ""
+        _segna_modello(self, nuovo)
+
+
 def _update_statica_momento(self, context):
     """Cambia solo il disegno del momento. Non ricalcola il telaio e non ricostruisce la zome."""
     esito = _STATICA_CACHE.get("esito")
     if not esito or not esito.get("ok"):
         return
     try:
-        _statica_disegna(context, self.nome or "zome", esito, fuori_m=self.TW / 100.0 + 0.04)
+        _con_posa(self.nome or "zome", self, lambda: _statica_disegna(context, self.nome or "zome", esito, fuori_m=self.TW / 100.0 + 0.04))
     except Exception as e:
         print("statica momento:", e)
 
@@ -740,19 +1310,28 @@ def _update_sole(self, context):
     zome_viste.aggiorna_sole(self)
 
 
-def _update_arredo(self, context):
-    zome_viste.aggiorna_arredo(context.scene, self, _model_for(self))
-    zome_viste.aggiorna_spaccato(context.scene, self)
-
-
 def _update_spaccato(self, context):
+    if _REBUILDING:
+        return
     zome_viste.aggiorna_spaccato(context.scene, self)
 
 
 # ---------------------------------------------------------------------------------------------------------------- preset
-_PRESET_ESCLUSI = {"nome", "live", "errore", "preset_nome", "preset_scelta", "rna_type", "name", "statica_testo"}
-_PRESET_PREFISSI = ("sole_", "arredo_", "anim_", "spaccato")          # solo resa: non fanno parte del modello
+# Tipologia: parametri salvati su file in Tipologie/ (cartella del progetto, nel repo), validi per ogni blend.
+# Modello: una zome costruita in questo blend, cioè una collection; ha i suoi parametri e il suo nome.
+_PRESET_ESCLUSI = {"nome", "nome_costruito", "live", "errore", "preset_nome", "preset_scelta", "modello_scelta",
+                   "rna_type", "name", "statica_testo", "render_motore"}
+_PRESET_PREFISSI = ("sole_", "anim_", "spaccato", "pos_")  # solo resa, o posizione: la posizione sta in zome_posa
+_VISTA_PREFISSI = ("anim_", "spaccato")   # valgono per un modello ma non per la tipologia: stanno in zome_vista. Il sole è del sito
 _preset_voci = []
+_modelli_voci = []
+_PROP_PARAMETRI = "zome_parametri"      # sulla collection del modello: i parametri dell'ultima costruzione (JSON)
+_PROP_TIPOLOGIA = "zome_tipologia"      # sulla collection del modello: la tipologia da cui è nato
+_PROP_VISTA = "zome_vista"              # sulla collection del modello: spaccato e animazione (JSON)
+_PROP_POSA = "zome_posa"                # sulla collection del modello: dove sta (x, y, z del centro, angolo) e il centro nel suo sistema (JSON)
+_TENUTO = "zome_tenuto"                 # segno temporaneo sugli oggetti che c'erano già prima di una modifica
+_SENZA_POSA = False                     # i campi di Posizione si stanno riempiendo: non muovere niente
+_SENZA_RINOMINA = False                 # cambio di modello: il nome nuovo non rinomina la collection di prima
 
 
 def _nome_file(nome):
@@ -760,54 +1339,68 @@ def _nome_file(nome):
     return pulito
 
 
-def _cartella_istanze():
-    return os.path.join(_ROOT or bpy.utils.user_resource('CONFIG'), "Istanze")
+def _cartella_tipologie():
+    return os.path.join(_ROOT or bpy.utils.user_resource('CONFIG'), "Tipologie")
 
 
-def _cartella_istanza(nome):
-    return os.path.join(_cartella_istanze(), nome)
+def _file_tipologia(nome):
+    return os.path.join(_cartella_tipologie(), nome + ".json")
 
 
 def _elenco_preset():
-    """Un preset per istanza: Istanze/<nome>/preset.json. Il nome in elenco è la cartella."""
-    d = _cartella_istanze()
+    """Una tipologia per file: Tipologie/<nome>.json. Il nome in elenco è il nome del file."""
+    d = _cartella_tipologie()
     try:
-        return sorted(
-            voce for voce in os.listdir(d)
-            if os.path.isfile(os.path.join(d, voce, "preset.json")))
+        return sorted(voce[:-5] for voce in os.listdir(d) if voce.lower().endswith(".json"))
     except OSError:
         return []
 
 
+def _elenco_modelli():
+    """Collection di zome in questo blend: costruite dal pannello (parametri salvati) o con la sotto-collection «· Riferimento»."""
+    return sorted(c.name for c in bpy.data.collections
+                  if _PROP_PARAMETRI in c.keys()
+                  or bpy.data.collections.get(c.name + " · Riferimento") in list(c.children))
+
+
+def _nome_libero(base):
+    """«<base> v1», «<base> v2»…: il primo che non è già una collection."""
+    i = 1
+    while bpy.data.collections.get(f"{base} v{i}") is not None:
+        i += 1
+    return f"{base} v{i}"
+
+
 _PARAMETRI_GRUPPI = (
     ("Forma", ("N", "M", "theta", "ZH", "secondario", "cut", "M2", "theta2")),
-    ("Posa e tagli", ("posa", "tilt", "pav_taglio", "orient", "px", "py", "pz", "caps", "radial", "parete_alta", "ztop")),
-    ("Pavimento", ("floor", "zfloor", "pav_tipo", "pav_carico", "pav_interasse", "pav_seme")),
+    ("Posa e tagli", ("posa", "tilt", "pav_taglio", "caps", "radial", "parete_alta", "ztop")),
+    ("Pavimento", ("floor", "zfloor", "pav_tipo", "pav_carico", "pav_sezione", "pav_seme")),
     ("Porta", ("porta", "porta_modo", "porta_dir", "porta_dist", "porta_w", "porta_h", "porta_anta", "porta_apertura", "porta_falda")),
-    ("Esterno", ("esterno", "tetto_visibile", "stella_vetri", "finestre", "strato_finestre", "pendenza_tetto", "isolante",
+    ("Esterno", ("esterno", "tetto_visibile", "finestre", "strato_finestre", "pendenza_tetto", "isolante",
                  "t_tetto", "t_legno", "t_vetro", "t_int_legno", "sporgenza", "larghezza_assi", "larghezza_perline",
                  "scala_legno", "scala_texture", "seme_legno", "usi_manuali", "trasparenza")),
     ("Scheletro", ("scheletro", "TT", "TW", "giunto", "densita", "traverse", "statica_neve", "statica_momento")),
-    ("Report", ("foglio_esterno", "foglio_perline", "foglio_vetro", "foglio_travi")),
+    ("Report", ("foglio_esterno", "foglio_perline", "foglio_vetro", "foglio_travi", "foglio_approssimativi")),
 )
 _NOMI_PARAMETRI = {
     "theta": "θ (°)", "ZH": "ZH (m)", "secondario": "Riduzione punta", "cut": "Anello di taglio",
     "M2": "M secondario", "theta2": "θ secondario (°)", "posa": "Posa", "tilt": "Inclinazione nel file vecchio (°)",
     "pav_taglio": "Pavimento nella zome (%)", "orient": "Orientamento (°)", "caps": "Chiudi i tagli",
-    "floor": "Pavimento", "zfloor": "Quota pavimento (m)", "pav_tipo": "Fondazione",
-    "pav_carico": "Carico (kN/m²)", "pav_interasse": "Interasse (cm)", "pav_seme": "Seme pietre",
+    "floor": "Pavimento", "zfloor": "Cima pietre (m)", "pav_tipo": "Basamento",
+    "pav_carico": "Carico (kN/m²)", "pav_sezione": "Sezione travetti", "pav_seme": "Seme",
     "porta_modo": "Modo", "porta_dir": "Direzione porta (°)", "porta_dist": "Distanza porta (m)",
     "porta_w": "Larghezza porta (cm)", "porta_h": "Altezza porta (cm)", "porta_anta": "Anta",
     "porta_apertura": "Apertura anta (°)", "porta_falda": "Falda (cm)", "tetto_visibile": "Tetto visibile",
-    "stella_vetri": "Stella di vetri", "strato_finestre": "Strato finestre", "pendenza_tetto": "Pendenza max tetto (°)",
+    "strato_finestre": "Strato finestre", "pendenza_tetto": "Pendenza max tetto (°)",
     "t_tetto": "Tetto (cm)", "t_legno": "Legno est. (cm)", "t_vetro": "Vetro est. (cm)",
     "t_int_legno": "Perline int. (cm)", "sporgenza": "Gronda (cm)", "larghezza_assi": "Larghezza assi (cm)",
     "larghezza_perline": "Larghezza perline (cm)", "scala_legno": "Scala legno (m)",
     "scala_texture": "Scala texture (m)", "seme_legno": "Seme legno", "usi_manuali": "Scelte a mano",
     "TT": "TT (cm)", "TW": "TW (cm)", "giunto": "Giunto", "densita": "Densità (kg/m³)",
-    "statica_neve": "Neve (kN/m²)", "statica_momento": "Momento",
+    "statica_neve": "Carico neve (kN/m²)", "statica_momento": "Momento",
     "foglio_esterno": "Nel report: esterno", "foglio_perline": "Nel report: perline",
     "foglio_vetro": "Nel report: vetrocamera", "foglio_travi": "Nel report: travi e travetti",
+    "foglio_approssimativi": "Nel report: tagli approssimativi",
 }
 _INIZIO_PARAMETRI = "<!-- parametri -->"
 _FINE_PARAMETRI = "<!-- /parametri -->"
@@ -851,29 +1444,38 @@ def _blocco_parametri(dati):
     return _INIZIO_PARAMETRI + "\n" + _testo_parametri(dati) + _FINE_PARAMETRI + "\n"
 
 
-def _assicura_istanza(nome):
-    """Crea la cartella e, se manca, README.md: è il file che si trova aprendo la cartella."""
-    d = _cartella_istanza(nome)
+def root_progetti():
+    """(cartella, origine) della root dei progetti: preferenze dell'add-on, ZOME_PROGETTI, segnaposto, ripiego."""
+    pref = ""
+    try:
+        pref = bpy.context.preferences.addons["zome_loader"].preferences.progetti
+    except Exception:
+        pass
+    return zome_percorsi.root_progetti(bpy.path.abspath(pref) if pref else "", None, bpy.data.filepath, _ROOT)
+
+
+def _assicura_note(nome):
+    """Crea, se manca, Tipologie/<nome>.md: requisiti scritti a mano e copia leggibile dei parametri."""
+    d = _cartella_tipologie()
     os.makedirs(d, exist_ok=True)
-    note = os.path.join(d, "README.md")
+    note = os.path.join(d, nome + ".md")
     if not os.path.isfile(note):
         with open(note, "w", encoding="utf-8") as f:
             f.write(
                 f"# {nome}\n\n"
-                "Requisiti di questa istanza. È il file da leggere insieme al blend.\n\n"
+                "Requisiti di questa tipologia.\n\n"
                 "## Requisiti\n\n"
                 "(da scrivere)\n\n"
                 "## Parametri del pannello\n\n"
-                "Copia leggibile di `preset.json`. Salva nel pannello aggiorna solo il blocco qui sotto; "
-                "i requisiti restano. Strati, pezzi e preventivo stanno in `report.html`.\n\n"
+                f"Copia leggibile di `{nome}.json`. Salva nel pannello aggiorna solo il blocco qui sotto; "
+                "i requisiti restano. I report stanno accanto al blend, in `Report/<nome del modello>/` (o `Report/Tutto/`).\n\n"
                 + _blocco_parametri({}))
-    return d
+    return note
 
 
 def _aggiorna_readme(nome, dati):
     """Sostituisce solo il blocco dei parametri. I requisiti scritti a mano restano."""
-    d = _assicura_istanza(nome)
-    path = os.path.join(d, "README.md")
+    path = _assicura_note(nome)
     with open(path, encoding="utf-8") as f:
         testo = f.read()
     blocco = _blocco_parametri(dati).rstrip("\n")
@@ -890,13 +1492,165 @@ def _aggiorna_readme(nome, dati):
 def _items_preset(self, context):
     global _preset_voci
     nomi = _elenco_preset()
-    _preset_voci = [(n, n, "") for n in nomi] or [("_nessuno_", "(nessun preset)", "")]
+    _preset_voci = [(n, n, "") for n in nomi] or [("_nessuno_", "(nessuna tipologia)", "")]
     return _preset_voci
 
 
 def _update_preset_scelta(self, context):
     if self.preset_scelta and self.preset_scelta != "_nessuno_":
         self.preset_nome = self.preset_scelta
+
+
+def _items_modelli(self, context):
+    global _modelli_voci
+    _modelli_voci = [(n, n, "") for n in _elenco_modelli()] or [("_nessuno_", "(nessun modello)", "")]
+    return _modelli_voci
+
+
+def _segna_modello(z, nome):
+    """Allinea il menu dei modelli al nome su cui lavora il pannello."""
+    try:
+        if z.modello_scelta != nome:
+            z.modello_scelta = nome
+    except TypeError:
+        pass
+
+
+def _costruzione(coll):
+    """I parametri dell'ultima costruzione, scritti sulla mesh <nome>_interno: quelli che hanno fatto davvero la geometria."""
+    ob = bpy.data.objects.get(coll.name + "_interno")
+    try:
+        return json.loads(ob["zome_params"]) if ob is not None and "zome_params" in ob.keys() else None
+    except ValueError:
+        return None
+
+
+def _valori_iniziali(z):
+    d = {}
+    for p in z.bl_rna.properties:
+        k = p.identifier
+        if k in _PRESET_ESCLUSI or k.startswith(_PRESET_PREFISSI) or getattr(p, "array_length", 0):
+            continue
+        if getattr(p, "default", "") != "" or p.type == 'STRING':
+            d[k] = p.default
+    return d
+
+
+def _parametri_ricavati(coll, z, costruzione):
+    """Parametri completi per un modello che non ha i suoi: i valori iniziali, più quello che la costruzione e i pezzi dicono."""
+    d = {**_valori_iniziali(z), **pannello_da_costruzione(costruzione), "px": 0.0, "py": 0.0}
+    ha = lambda ruolo: any(s.all_objects for s in coll.children if s.name == f"{coll.name} · {ruolo}")
+    d["esterno"], d["scheletro"] = ha("Esterno · legno"), ha("Struttura")
+    d["porta_anta"] = bpy.data.objects.get(coll.name + "_anta") is not None
+    d["porta_dist_scelta"] = True
+    ossa = bpy.data.objects.get(coll.name + "_scheletro")
+    if ossa is not None and "scheletro_summary" in ossa.keys():
+        d["TT"] = json.loads(ossa["scheletro_summary"])["sezione"][0] * 100.0
+    try:
+        c = centro_locale(Params(**{k: v for k, v in costruzione.items() if k in Params.__dataclass_fields__}))
+    except (TypeError, ValueError) as e:
+        print("zome posizione:", e)
+        return d
+    px, py = costruzione.get("px", 0.0), costruzione.get("py", 0.0)
+    po = _leggi_posa(coll)
+    if po and any(ob.get("zome_pezzo") for ob in coll.all_objects):
+        nuova = posa_ricentrata(po, c, px, py)
+    else:                                               # fatto da script: dove sta lo dicono i pezzi che si vedono
+        radici = [ob for ob in _radici(coll) if ob.type == 'MESH']
+        visti = [ob for ob in radici if ob.visible_get()] or radici
+        spostamento = spostamento_pezzi([tuple(ob.location + ob.delta_location) for ob in visti])
+        nuova = {**posa_iniziale(spostamento, 0.0, (c[0] + px, c[1] + py)), "cx": c[0], "cy": c[1]}
+    coll[_PROP_POSA] = json.dumps(nuova)
+    return d
+
+
+def _parametri_modello(coll, z):
+    """I parametri di un modello e, secondo valore, se sono stati appena sistemati. Di solito sono quelli salvati. Se mancano, o
+    non descrivono la forma che c'è (un modello senza parametri prendeva quelli del modello di prima), si ricavano dalla costruzione."""
+    try:
+        salvati = json.loads(coll.get(_PROP_PARAMETRI, "") or "{}")
+    except ValueError:
+        salvati = {}
+    costruzione = _costruzione(coll)
+    if costruzione is None:
+        return salvati, False
+    fatta = pannello_da_costruzione(costruzione)
+    if salvati and stessa_forma(salvati, fatta):
+        return salvati, False
+    pannello = _dati_modello(z)
+    if not salvati and z.nome == coll.name and stessa_forma(pannello, fatta):
+        dati = pannello                                 # modello di prima, ma il pannello è davvero su di lui
+    else:
+        dati = _parametri_ricavati(coll, z, costruzione)
+    coll[_PROP_PARAMETRI] = json.dumps(dati, ensure_ascii=False)
+    return dati, True
+
+
+def _vista_iniziale(z):
+    return {p.identifier: p.default for p in z.bl_rna.properties if p.identifier.startswith(_VISTA_PREFISSI)}
+
+
+def _salva_vista(coll, z):
+    coll[_PROP_VISTA] = json.dumps({k: getattr(z, k) for k in _vista_iniziale(z)})
+
+
+def _vista_modello(coll, z):
+    """Spaccato e animazione del modello. Un modello di prima non li ha: lo spaccato resta quello del pannello se la zome è tagliata."""
+    try:
+        # una vista salvata prima che ci fossero le sezioni non le ha: prendono il default, non quelle dell'altro modello
+        return {**_vista_iniziale(z), **json.loads(coll.get(_PROP_VISTA, "") or "")}
+    except ValueError:
+        pass
+    d = _vista_iniziale(z)
+    if any(ob.get("spaccato_intero") for ob in coll.all_objects):
+        d["spaccato"], d["spaccato_dir"] = z.spaccato, z.spaccato_dir
+    return d
+
+
+def _ripara_modelli(z):
+    """All'apertura e al ricaricamento: rimette a posto i modelli con i parametri di un altro, anche quello su cui è il pannello."""
+    for nome in _elenco_modelli():
+        dati, riparato = _parametri_modello(bpy.data.collections.get(nome), z)
+        if riparato and nome == z.nome:
+            _applica_dati(z, dati)
+            _sincronizza_posa(z)
+
+
+def _update_modello_scelta(self, context):
+    """Porta nel pannello il modello scelto, con i parametri della sua ultima costruzione: risultati compresi."""
+    global _SENZA_RINOMINA
+    nome = self.modello_scelta
+    if not nome or nome == "_nessuno_" or nome == self.nome_costruito:
+        return
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return
+    prima = bpy.data.collections.get(self.nome_costruito or "")
+    if prima is not None:
+        _parametri_modello(prima, self)
+        _salva_vista(prima, self)
+    _allinea_nomi(coll)
+    dati, _ = _parametri_modello(coll, self)
+    _applica_dati(self, {**dati, **_vista_modello(coll, self)})    # ogni modello ha già il suo taglio: non si rifà
+    camera = zome_viste.camera_visita(nome)
+    if camera is not None:
+        self.id_data.camera = camera
+    _SENZA_RINOMINA = True
+    try:
+        self.nome = nome
+    finally:
+        _SENZA_RINOMINA = False
+    self.nome_costruito = nome
+    _STATICA_CACHE["esito"] = None
+    self.statica_testo = ""
+    self.errore = "" if dati else f"«{nome}» non ha parametri salvati: il pannello mostra ancora il modello di prima"
+    _sincronizza_posa(self)
+    tip = coll.get(_PROP_TIPOLOGIA, "")
+    if tip and tip in _elenco_preset():
+        try:
+            self.preset_scelta = tip
+        except TypeError:
+            pass
 
 
 def _dati_modello(z):
@@ -912,20 +1666,49 @@ def _dati_modello(z):
     return d
 
 
+def _applica_dati(z, dati):
+    """Scrive i parametri nel pannello senza ricostruire. Ritorna le chiavi ignorate."""
+    global _REBUILDING
+    if "posa" not in dati and abs(float(dati.get("tilt", 0.0))) > 45.0:        # preset vecchi: inclinazione -> zome coricata
+        dati = {**dati, "posa": "CORICATA"}
+    gia = _REBUILDING
+    _REBUILDING = True                                 # un solo ricalcolo alla fine, non uno per parametro
+    saltati = []
+    try:
+        for k, v in dati.items():
+            if k in _PRESET_ESCLUSI or k not in z.bl_rna.properties:
+                saltati.append(k)
+                continue
+            try:
+                setattr(z, k, v)
+            except (TypeError, ValueError, AttributeError):
+                saltati.append(k)
+    finally:
+        _REBUILDING = gia
+    return saltati
+
+
+def _leggi_tipologia(nome):
+    with open(_file_tipologia(nome), encoding="utf-8") as f:
+        return json.load(f)["dati"]
+
+
 class ZOME_OT_preset_salva(bpy.types.Operator):
     bl_idname = "zome.preset_salva"
-    bl_label = "Salva preset"
-    bl_description = "Salva i parametri in Istanze/<nome>/preset.json e aggiorna la copia nel README. I requisiti scritti a mano restano"
+    bl_label = "Salva tipologia"
+    bl_description = ("Salva i parametri in Tipologie/<nome>.json, nella cartella del progetto: si ritrova da ogni blend. "
+                      "Aggiorna la copia leggibile in <nome>.md; i requisiti scritti a mano restano. "
+                      "Solo numeri: mobili, persone e sanitari restano nel modello")
 
     def execute(self, context):
         z = context.scene.zome
         nome = _nome_file(z.preset_nome)
         if not nome:
-            self.report({'ERROR'}, "Scrivi un nome per l'istanza")
+            self.report({'ERROR'}, "Scrivi un nome per la tipologia")
             return {'CANCELLED'}
-        d = _assicura_istanza(nome)
+        os.makedirs(_cartella_tipologie(), exist_ok=True)
         dati = _dati_modello(z)
-        with open(os.path.join(d, "preset.json"), "w", encoding="utf-8") as f:
+        with open(_file_tipologia(nome), "w", encoding="utf-8") as f:
             json.dump({"zome_preset": 1, "dati": dati}, f, ensure_ascii=False, indent=1)
         _aggiorna_readme(nome, dati)
         z.preset_nome = nome
@@ -933,53 +1716,42 @@ class ZOME_OT_preset_salva(bpy.types.Operator):
             z.preset_scelta = nome
         except TypeError:
             pass
-        self.report({'INFO'}, f"Istanza «{nome}» salvata")
+        self.report({'INFO'}, f"Tipologia «{nome}» salvata")
         return {'FINISHED'}
 
 
 class ZOME_OT_preset_carica(bpy.types.Operator):
     bl_idname = "zome.preset_carica"
-    bl_label = "Carica preset"
-    bl_description = "Applica il preset scelto e ricostruisce la zome (i parametri non presenti nel preset restano come sono)"
+    bl_label = "Carica tipologia"
+    bl_description = ("Applica la tipologia scelta al modello attuale e lo ricostruisce (il nome del modello resta; "
+                      "i parametri non presenti nella tipologia restano come sono)")
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        global _REBUILDING
         z = context.scene.zome
         nome = z.preset_scelta
         if not nome or nome == "_nessuno_":
-            self.report({'ERROR'}, "Nessuna istanza scelta")
+            self.report({'ERROR'}, "Nessuna tipologia scelta")
             return {'CANCELLED'}
         try:
-            with open(os.path.join(_cartella_istanza(nome), "preset.json"), encoding="utf-8") as f:
-                dati = json.load(f)["dati"]
+            dati = _leggi_tipologia(nome)
         except (OSError, ValueError, KeyError) as e:
-            self.report({'ERROR'}, f"Preset illeggibile: {e}")
+            self.report({'ERROR'}, f"Tipologia illeggibile: {e}")
             return {'CANCELLED'}
-        if "posa" not in dati and abs(float(dati.get("tilt", 0.0))) > 45.0:        # preset vecchi: inclinazione -> zome coricata
-            dati = {**dati, "posa": "CORICATA"}
-        _REBUILDING = True                                 # un solo ricalcolo alla fine, non uno per parametro
-        saltati = []
-        try:
-            for k, v in dati.items():
-                if k in _PRESET_ESCLUSI or k not in z.bl_rna.properties:
-                    saltati.append(k)
-                    continue
-                try:
-                    setattr(z, k, v)
-                except (TypeError, ValueError, AttributeError):
-                    saltati.append(k)
-        finally:
-            _REBUILDING = False
+        saltati = _applica_dati(z, dati)
         costruisci(context, z)
-        self.report({'INFO'}, f"Istanza «{nome}» caricata" + (f" (ignorati: {', '.join(saltati)})" if saltati else ""))
+        coll = bpy.data.collections.get(z.nome or "zome")
+        if coll is not None:
+            coll[_PROP_TIPOLOGIA] = nome
+        self.report({'INFO'}, f"Tipologia «{nome}» applicata a «{z.nome}»"
+                    + (f" (ignorati: {', '.join(saltati)})" if saltati else ""))
         return {'FINISHED'}
 
 
 class ZOME_OT_preset_elimina(bpy.types.Operator):
     bl_idname = "zome.preset_elimina"
-    bl_label = "Elimina preset"
-    bl_description = "Toglie preset.json dell'istanza scelta. Appunti e blend restano (chiede conferma)"
+    bl_label = "Elimina tipologia"
+    bl_description = "Toglie Tipologie/<nome>.json. Le note .md e i modelli già costruiti restano (chiede conferma)"
 
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(self, event)
@@ -989,11 +1761,74 @@ class ZOME_OT_preset_elimina(bpy.types.Operator):
         if not nome or nome == "_nessuno_":
             return {'CANCELLED'}
         try:
-            os.remove(os.path.join(_cartella_istanza(nome), "preset.json"))
+            os.remove(_file_tipologia(nome))
         except OSError as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
         context.scene.zome.preset_nome = ""
+        return {'FINISHED'}
+
+
+class ZOME_OT_modello_nuovo(bpy.types.Operator):
+    bl_idname = "zome.modello_nuovo"
+    bl_label = "Nuovo modello"
+    bl_description = ("Costruisce un'altra zome in una collection nuova, con il nome che scrivi. "
+                      "Quella di prima resta com'è; Ricostruisci e Automatico passano alla nuova")
+    bl_options = {'REGISTER', 'UNDO'}
+
+    nome: StringProperty(name="Nome", default="")
+    dalla_tipologia: BoolProperty(name="Dalla tipologia scelta", default=True,
+                                  description="Parte dai parametri della tipologia; spento, copia quelli del modello attuale")
+
+    def invoke(self, context, event):
+        z = context.scene.zome
+        tip = z.preset_scelta if z.preset_scelta and z.preset_scelta != "_nessuno_" else ""
+        self.dalla_tipologia = bool(tip)
+        self.nome = _nome_libero(tip or (z.nome or "zome"))
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        z = context.scene.zome
+        self.layout.prop(self, "nome")
+        tip = z.preset_scelta if z.preset_scelta and z.preset_scelta != "_nessuno_" else ""
+        if tip:
+            self.layout.prop(self, "dalla_tipologia", text=f"Dalla tipologia «{tip}»")
+
+    def execute(self, context):
+        global _SENZA_RINOMINA
+        z = context.scene.zome
+        nome = _nome_file(self.nome)
+        if not nome:
+            self.report({'ERROR'}, "Scrivi un nome per il modello")
+            return {'CANCELLED'}
+        if bpy.data.collections.get(nome) is not None:
+            self.report({'ERROR'}, f"C'è già una collection «{nome}»: sceglila dal menu dei modelli")
+            return {'CANCELLED'}
+        tip = z.preset_scelta if z.preset_scelta and z.preset_scelta != "_nessuno_" else ""
+        prima = bpy.data.collections.get(z.nome_costruito or "")
+        if prima is not None:
+            _parametri_modello(prima, z)
+            _salva_vista(prima, z)
+        _applica_dati(z, _vista_iniziale(z))
+        if self.dalla_tipologia and tip:
+            try:
+                _applica_dati(z, _leggi_tipologia(tip))
+            except (OSError, ValueError, KeyError) as e:
+                self.report({'ERROR'}, f"Tipologia illeggibile: {e}")
+                return {'CANCELLED'}
+        _SENZA_RINOMINA = True
+        try:
+            z.nome = nome
+        finally:
+            _SENZA_RINOMINA = False
+        z.nome_costruito = ""
+        if costruisci(context, z) is None and z.errore:
+            self.report({'ERROR'}, z.errore)
+            return {'CANCELLED'}
+        coll = bpy.data.collections.get(nome)
+        if coll is not None and (self.dalla_tipologia and tip):
+            coll[_PROP_TIPOLOGIA] = tip
+        self.report({'INFO'}, f"Modello «{nome}» costruito")
         return {'FINISHED'}
 
 
@@ -1013,11 +1848,15 @@ def _voci_isolanti(self, context):
 
 
 class ZomeProps(bpy.types.PropertyGroup):
-    nome: StringProperty(name="Nome", default="zome", description="Nome della collection che contiene la zome")
+    nome: StringProperty(name="Nome", default="zome", update=_update_nome,
+                         description="Nome del modello, cioè della collection che contiene la zome: cambiandolo si rinominano "
+                                     "collection e pezzi. Per un'altra zome accanto usa «Nuovo»")
+    nome_costruito: StringProperty(default="", options={'HIDDEN'},
+                                   description="Nome con cui la zome è stata costruita l'ultima volta")
     N: IntProperty(name="N", default=8, min=3, max=40, update=_update,
                    description="Lati del poligono di base (= rombi per strato)")
     M: IntProperty(name="M", default=7, min=2, max=40, update=_update,
-                   description="Livelli (anelli di vertici, apice e terra compresi); gli strati sono M-1")
+                   description="Livelli (anelli di vertici, apice e terra compresi); gli strati sono M-1. M = N+1 chiude l'altro polo a un punto")
     theta: FloatProperty(name="θ", default=55.0, min=1.0, max=89.0, update=_update,
                          description="Angolo degli elementi del primo strato con la verticale (gradi)")
     ZH: FloatProperty(name="ZH", default=2.9, min=0.05, max=30.0, unit='LENGTH', update=_update,
@@ -1034,32 +1873,55 @@ class ZomeProps(bpy.types.PropertyGroup):
                               ("CORICATA", "Zome coricata", "Asse orizzontale (90°), a mezzo sigaro: il pavimento taglia la zome a triangoli interi")])
     pav_taglio: FloatProperty(name="Pavimento nella zome", default=50.0, min=0.0, max=100.0, subtype='PERCENTAGE', update=_update,
                               description="Zome coricata: dove il pavimento taglia. 0 = niente taglio (il pavimento tocca solo il fondo), 100 = resta solo la cima. Il taglio segue i triangoli: i rombi si spezzano e il pavimento passa per la base dei triangoli rimasti")
-    orient: FloatProperty(name="Orientamento °", default=0.0, min=-180.0, max=180.0, update=_update,
-                          description="Rotazione attorno a Z, dopo l'inclinazione")
+    orient: FloatProperty(name="Orientamento vecchio °", default=0.0, min=-180.0, max=180.0,
+                          description="Non si usa più: i modelli di prima lo portano in Posizione la prima volta")
+    pos_x: FloatProperty(name="X", default=0.0, unit='LENGTH', update=_update_posa,
+                           description="Dove sta il centro della zome. Muove tutto il modello, senza ricostruire")
+    pos_y: FloatProperty(name="Y", default=0.0, unit='LENGTH', update=_update_posa,
+                         description="Dove sta il centro della zome. Muove tutto il modello, senza ricostruire")
+    pos_z: FloatProperty(name="Z", default=0.0, unit='LENGTH', update=_update_posa,
+                         description="Quota della base della zome. Muove tutto il modello, senza ricostruire")
+    pos_angolo: FloatProperty(name="Orientamento °", default=0.0, min=-180.0, max=180.0, update=_update_posa,
+                              description="Rotazione attorno a Z, sul centro della zome. Non ricostruisce: gira tutti gli oggetti del modello")
+    pos_terreno: PointerProperty(name="Terreno", type=bpy.types.Object, update=_update_terreno,
+                                 description="L'oggetto terreno con cui si confronta la base della zome")
+    pos_soglia: FloatProperty(name="Soglia", default=0.30, min=0.0, unit='LENGTH', update=_update_terreno,
+                              description="Oltre questa differenza fra terreno e base della zome compare un avviso")
+    pos_avviso: StringProperty(default="")
+    pos_avviso_ok: BoolProperty(default=True)
     px: FloatProperty(name="X", default=0.0, unit='LENGTH', update=_update)
     py: FloatProperty(name="Y", default=0.0, unit='LENGTH', update=_update)
     pz: FloatProperty(name="Z", default=0.0, unit='LENGTH', update=_update)
     floor: BoolProperty(name="Pavimento", default=True, update=_update,
-                        description="La zome poggia sul piano z = quota: si tiene la parte sopra (anche se coricata o inclinata) e si costruiscono fondazione, dormienti, travetti e tavolato")
-    zfloor: FloatProperty(name="Quota", default=0.40, unit='LENGTH', update=_update,
-                          description="Quota del piano di appoggio dei triangoli (sopra dormienti o pali) dal terreno")
-    pav_tipo: EnumProperty(name="Fondazione", update=_update, default="muretto",
-                           items=[("muretto", "Muretto a secco", "Muretto di pietre irregolari (~40 cm) con un dormiente sopra e due varchi opposti per aerare e ispezionare"),
-                                  ("pietroni", "Pietroni e pali", "Un pietrone per ogni vertice e un palo squadrato di sopra, da un pietrone al successivo")])
-    pav_carico: FloatProperty(name="Carico (kN/m²)", default=0.5, min=0.5, max=6.0, update=_update, description="Carico di riferimento del solaio. 0,5 kN/m² sono circa 50 kg/m²: con la sezione data si calcola l'interasse")
-    pav_interasse: FloatProperty(name="Interasse (cm)", default=40.0, min=20.0, max=80.0, update=_update, description="Distanza tra i travetti")
-    pav_seme: IntProperty(name="Seme pietre", default=1, min=0, max=9999, update=_update, description="Cambia l'irregolarita' delle pietre")
+                        description="Basamento (pietre e travi), solaio dentro lo zome. I triangoli poggiano sulla cima dei travi. "
+                                    "Spento: niente pietre, travi, travetti né pavimento")
+    zfloor: FloatProperty(name="Altezza", default=0.40, unit='LENGTH', min=0.05, max=2.0, update=_update,
+                          description="Altezza delle pietre dal terreno: cima degli appoggi, piano di posa dei triangoli")
+    pav_tipo: EnumProperty(name="Zoccolo", update=_update, default="muretto",
+                           items=[("muretto", "Muretto", "Rivestimento parziale non portante, sotto i travi. I travi restano travi, con una luce"),
+                                  ("pietroni", "Pietroni", "Un pietrone per ogni vertice; i travi vanno da un pietrone al successivo")])
+    pav_carico: FloatProperty(name="Carico (kN/m²)", default=2.0, min=0.5, max=6.0, update=_update,
+                             description="Carico variabile del solaio: 2,0 kN/m² è la norma per le case. Con la sezione dei travetti si calcola l'interasse")
+    pav_sezione: EnumProperty(name="Sezione travetti", update=_update, default="auto",
+                              items=_VOCI_SEZIONI_TRAVETTO,
+                              description="Sezione commerciale dei travetti. L'interasse lo calcola il programma. Automatica: la sezione più piccola che sta a 50 cm")
+    pav_interasse: FloatProperty(name="Interasse (cm)", default=40.0, min=20.0, max=80.0,
+                                 description="Tenuto per i preset vecchi; non si sceglie, si calcola")
+    pav_seme: IntProperty(name="Seme", default=1, min=0, max=9999, update=_update, description="Irregolarità delle pietre (solo estetica)")
     caps: BoolProperty(name="Chiudi i tagli", default=True, update=_update,
                        description="Disegna le pareti di chiusura (tappi) sui piani di taglio")
-    porta: BoolProperty(name="Porta", default=False, update=_update,
+    porta: BoolProperty(name="Porta", default=False, update=_update_porta,
                         description="Taglia la zome con un piano verticale e lascia nella parete un vano di porta con le misure minime indicate")
     porta_modo: EnumProperty(name="Modo", update=_update, default="parete",
                              items=[("parete", "Parete", "Taglia la zome con una parete verticale e un vano di porta"),
                                     ("corridoio", "Corridoio", "Zome intera con un passaggio a casetta: le pareti collegano il telaio al profilo d'incontro col guscio. Piano della porta dentro la zome: il passaggio va verso fuori; piano fuori dalla zome: va verso la zome")])
     porta_dir: FloatProperty(name="Direzione °", default=0.0, min=-180.0, max=180.0, update=_update,
                              description="Direzione verso la porta, nel sistema della zome: 0 = sud (-Y), 90 = est (+X), -90 = ovest, 180 = nord")
-    porta_dist: FloatProperty(name="Distanza", default=1.0, min=0.05, max=30.0, unit='LENGTH', update=_update,
-                              description="Distanza del piano di taglio dall'asse; si tiene la parte verso l'asse")
+    porta_dist: FloatProperty(name="Distanza", default=1.0, min=0.05, max=30.0, unit='LENGTH', update=_update_porta_dist,
+                              description="Distanza del piano di taglio dall'asse; si tiene la parte verso l'asse. "
+                                          "Le frecce accanto portano il piano al nodo precedente o successivo")
+    porta_dist_scelta: BoolProperty(default=False, options={'HIDDEN'},
+                                    description="La distanza della porta e' gia' stata scelta: riaccendendo la porta non si ricalcola")
     porta_w: FloatProperty(name="Larghezza (cm)", default=80.0, min=10.0, max=500.0, update=_update, description="Larghezza minima del vano")
     porta_h: FloatProperty(name="Altezza (cm)", default=200.0, min=10.0, max=500.0, update=_update, description="Altezza minima del vano, dal piano della base (in corridoio: al colmo)")
     porta_anta: BoolProperty(name="Anta", default=True, update=_update, description="Disegna l'anta: legno con una finestra a rombo di vetro, socchiusa verso l'interno")
@@ -1069,7 +1931,8 @@ class ZomeProps(bpy.types.PropertyGroup):
                           description="Disegna la superficie esterna (copertura): tetto, legno, vetro")
     tetto_visibile: BoolProperty(name="Tetto visibile", default=True, update=_update,
                                  description="Mostra o nasconde il tetto (e la gronda); il legno sotto resta sempre e i conteggi non cambiano")
-    stella_vetri: BoolProperty(name="Stella di vetri", default=True, update=_update, description="Lo strato 1 (cima) tutto a vetro")
+    stella_vetri: BoolProperty(default=True, options={'HIDDEN'}, update=_update,
+                               description="La regola mette a vetro lo strato 1. Non sta nel menu: la stella si cambia dai tasti del pannello selezionato")
     finestre: IntProperty(name="Finestre", default=3, min=0, max=20, update=_update, description="Numero di finestre a vetro distribuite sullo strato indicato")
     strato_finestre: IntProperty(name="Strato finestre", default=4, min=1, max=40, update=_update)
     sporgenza: FloatProperty(name="Gronda (cm)", default=10.0, min=0.0, max=60.0, update=_update, description="Quanto il tetto sporge oltre il bordo basso")
@@ -1093,7 +1956,15 @@ class ZomeProps(bpy.types.PropertyGroup):
     foglio_esterno: BoolProperty(name="Esterno", default=True, description="Nel report: tavole esterne, tetto, pareti della porta")
     foglio_perline: BoolProperty(name="Perline", default=True, description="Nel report: rivestimento interno")
     foglio_vetro: BoolProperty(name="Vetrocamera", default=True, description="Nel report: vetri delle facce e dell'anta")
-    foglio_travi: BoolProperty(name="Travi e travetti", default=True, description="Nel report: scheletro, telaio, anta, dormienti e travetti")
+    foglio_travi: BoolProperty(name="Travi e travetti", default=True, description="Nel report: scheletro, telaio, anta, travi e travetti")
+    foglio_approssimativi: BoolProperty(name="Tagli approssimativi", default=True,
+                                        description="Travetti, travi, isolante, copertura e pareti del corridoio per quantità: "
+                                                    "lunghezze per eccesso ai 10 cm e barre da 4 m, le superfici in m². "
+                                                    "Spento: ogni pezzo disegnato. Lo scheletro è sempre pezzo per pezzo")
+    foglio_pdf: BoolProperty(name="Anche PDF", default=False,
+                             description="Scrive anche due PDF, stampati da Edge o Chrome: report.pdf (preventivo, statica, "
+                                         "termico, costruttivi, viste) e planimetria.pdf (la planimetria generale per la Regione, "
+                                         "senza parti interne). Gli HTML si rifanno lo stesso; l'indice ha i link ai due PDF")
     scheletro: BoolProperty(name="Scheletro", default=True, update=_update,
                          description="Disegna lo scheletro: le tavole di struttura sul bordo di ogni rombo (parallelepipedi perpendicolari al piano del rombo)")
     TT: FloatProperty(name="Spessore (cm)", default=2.0, min=0.1, max=30.0, update=_update,
@@ -1105,9 +1976,9 @@ class ZomeProps(bpy.types.PropertyGroup):
                                 ("miter", "A 45° (bisettrice)", "")])
     densita: FloatProperty(name="Densità (kg/m³)", default=700.0, min=100.0, max=1500.0, update=_update)
     traverse: StringProperty(name="Traverse", default="", update=_update,
-                             description="Per strato: t = tra anelli, a = sull'anello. Esempio 1:ta,4:t. Lo compila la tabella nello Scheletro")
-    statica_neve: FloatProperty(name="Neve (kN/m²)", default=1.0, min=0.0, max=10.0,
-                                description="Neve sulla proiezione orizzontale delle facce che guardano in su. Non ricostruisce la zome")
+                             description="2:ta = tutti i rombi dello strato; 2.3:t = solo la faccia 3. t = tra anelli, a = sull'anello")
+    statica_neve: FloatProperty(name="Carico neve (kN/m²)", default=1.0, min=0.0, max=10.0,
+                                description="Carico da neve sulla proiezione orizzontale delle facce che guardano in su. Non ricostruisce la zome: le travi del pavimento la contano alla prossima ricostruzione")
     statica_momento: EnumProperty(
         name="Momento", default="CIRCOLARE", update=_update_statica_momento,
         items=[("CIRCOLARE", "Circolare", "Freccia circolare nel piano in cui l'asta tende a ruotare"),
@@ -1122,21 +1993,46 @@ class ZomeProps(bpy.types.PropertyGroup):
     sole_giorno: IntProperty(name="Giorno", default=21, min=1, max=31, update=_update_sole)
     sole_ora: FloatProperty(name="Ora", default=12.0, min=0.0, max=24.0, update=_update_sole,
                             description="Ora civile italiana (legale o solare secondo la data); Neirone, 44,4° N 9,2° E")
-    arredo_mobili: BoolProperty(name="Mobili", default=False, update=_update_arredo,
-                                description="Il letto 160 x 190 cm, senza testiera, contro la parete opposta alla porta (cucina e scrivania tolte il 21/10/2026)")
-    arredo_persone: BoolProperty(name="Persone", default=False, update=_update_arredo, description="Un uomo e una donna in piedi")
     spaccato: FloatProperty(name="Spaccato", default=0.0, min=0.0, max=100.0, subtype='PERCENTAGE', update=_update_spaccato,
-                            description="0 = zome intera, 50 = tagliata a meta' con un piano verticale, 100 = sparita")
+                            description="0 = zome intera, 50 = tagliata a metà con un piano verticale, 100 = sparita. "
+                                        "Solo vista: non toglie pezzi e non cambia pesi né il calcolo")
     spaccato_dir: FloatProperty(name="Lato (°)", default=0.0, min=-180.0, max=180.0, update=_update_spaccato,
                                 description="Lato che si toglie: 0 = sud (si guarda da sud dentro la zome), 90 = est, 180 = nord, -90 = ovest")
+    # sezioni del report viste: valgono per il modello (zome_vista, col prefisso spaccato), non per la tipologia
+    spaccato_sezione_rot: FloatProperty(name="Rotazione (°)", default=0.0, min=-180.0, max=180.0,
+                                        description="Sezione verticale del report: rotazione del piano attorno alla verticale, "
+                                                    "sul centro della zome, rispetto al piano di default (per i centri delle due zome, "
+                                                    "o da ovest a est con una zome sola)")
+    spaccato_sezione_spost: FloatProperty(name="Spostamento", default=0.0, min=-20.0, max=20.0, unit='LENGTH',
+                                          description="Sezione verticale del report: spostamento del piano avanti (+) o indietro (−), "
+                                                      "perpendicolare al piano")
+    spaccato_orizz_h: FloatProperty(name="Altezza", default=1.0, min=0.05, max=6.0, unit='LENGTH',
+                                    description="Sezione orizzontale del report: altezza del taglio dal pavimento finito di ogni zome, "
+                                                "vista dall'alto")
     anim_secondi: FloatProperty(name="Durata (s)", default=40.0, min=8.0, max=120.0, description="Durata della visita animata")
     anim_distanza: FloatProperty(name="Distanza giro", default=1.3, min=0.9, max=5.0,
                                  description="Distanza della camera nel giro aereo, in multipli dell'ingombro della zome: piu' basso = piu' vicina")
-    anim_sole: BoolProperty(name="Il sole fa il giro", default=True, description="Durante la visita il sole va dall'alba al tramonto")
+    anim_sole: BoolProperty(name="Il sole fa il giro", default=True, description="Durante la visita il sole va dall'ora scelta in «Vista e sole» al tramonto")
+    render_motore: EnumProperty(name="Motore", default='EEVEE', items=[
+        ('EEVEE', "EEVEE", "Il render di sempre: luce e materiali veri, veloce. Usa la scheda video: sulle schede vecchie può piantare Blender"),
+        ('SOLID', "Solid", "Come la vista Solid: colori e texture senza luce vera, ombre semplici. Anche la vista Rendered diventa così. "
+                           "Molto veloce e funziona anche con una scheda video vecchia"),
+        ('CYCLES', "Cycles CPU", "Luce e materiali veri, calcolati dal processore e non dalla scheda video: funziona anche con una scheda "
+                                 "vecchia. Nella vista Rendered l'immagine compare sgranata e si pulisce in qualche secondo. "
+                                 "Il render è lento: minuti per un'immagine, ore per un video")],
+        update=lambda self, context: _prepara_motore(context.scene, self.render_motore),
+        description="Motore della scena, cambia subito: lo usano i tasti Render e la vista Rendered. Material Preview usa sempre "
+                    "EEVEE. Vale per questo blend: non entra nella tipologia")
     errore: StringProperty(default="")
-    preset_nome: StringProperty(name="Nome", default="", description="Nome dell'istanza: cartella in Istanze/")
-    preset_scelta: EnumProperty(name="Istanza", items=_items_preset, update=_update_preset_scelta,
-                                description="Istanze con preset.json in Istanze/<nome>/")
+    preset_nome: StringProperty(name="Nome", default="", description="Nome della tipologia: file Tipologie/<nome>.json")
+    preset_scelta: EnumProperty(name="Tipologia", items=_items_preset, update=_update_preset_scelta,
+                                description="Tipologie salvate in Tipologie/, nella cartella del progetto: le stesse in ogni blend")
+    report_scelta: EnumProperty(name="Report di", items=lambda self, context: _items_report(self, context),
+                                description="Di che cosa fare il report: una zome, uno spazio accessorio (solo i suoi dati), "
+                                            "oppure Tutto, cioè tutte le zome e tutti gli spazi accessori visibili nel file, sommati")
+    modello_scelta: EnumProperty(name="Modello", items=_items_modelli, update=_update_modello_scelta,
+                                 description="Zome costruite in questo blend (una collection ciascuna). "
+                                             "Quella scelta è quella che Ricostruisci, Automatico e i report usano")
 
 
 class ZOME_OT_crea(bpy.types.Operator):
@@ -1165,7 +2061,7 @@ class ZOME_OT_reimposta(bpy.types.Operator):
         z = context.scene.zome
         nome = z.nome
         for p in z.bl_rna.properties:
-            if p.identifier != "rna_type":
+            if p.identifier not in ("rna_type", "nome_costruito", "modello_scelta", "render_motore"):
                 z.property_unset(p.identifier)
         z.nome = nome
         costruisci(context, z)
@@ -1177,10 +2073,10 @@ _cache = {}
 
 def _model_for(z):
     key = (z.N, z.M, round(z.theta, 6), round(z.ZH, 6), z.secondario, z.cut, z.M2, round(z.theta2, 6),
-           z.posa, z.pav_taglio, z.orient, z.px, z.py, z.pz, z.floor, z.zfloor, z.pav_tipo, z.pav_carico, z.pav_interasse, z.pav_seme, z.caps,
+           z.posa, z.pav_taglio, z.orient, z.px, z.py, z.pz, z.floor, z.zfloor, z.pav_tipo, z.pav_carico, z.pav_sezione, z.pav_seme, z.caps,
            z.esterno, z.pendenza_tetto, z.usi_manuali, z.scala_texture, z.scala_legno, z.larghezza_assi, z.seme_legno, z.stella_vetri, z.finestre, z.strato_finestre, z.sporgenza, z.t_tetto, z.t_legno, z.t_vetro, z.t_int_legno, z.larghezza_perline,
            z.porta, z.porta_modo, z.porta_dir, round(z.porta_dist, 6), z.porta_w, z.porta_h, z.porta_falda, z.porta_anta, z.porta_apertura,
-           z.scheletro, round(z.TT, 4), round(z.TW, 4), z.giunto, round(z.densita, 2), z.traverse)
+           z.scheletro, round(z.TT, 4), round(z.TW, 4), z.giunto, round(z.densita, 2), z.traverse, round(z.statica_neve, 3))
     if key not in _cache:
         if len(_cache) > 20:
             _cache.clear()
@@ -1196,6 +2092,10 @@ def _model_for(z):
                 mod["scheletro"] = {"cutlist": cutlist(bl), "summary": beams_summary(bl, z.TT / 100.0, z.TW / 100.0)}
             _cache[key] = mod
         except ValueError:
+            _cache[key] = None
+        except Exception as exc:
+            # un errore del modello non deve interrompere il draw: se no spariscono Forma, Ricostruisci e Risultati
+            print("zome modello:", exc)
             _cache[key] = None
     return _cache[key]
 
@@ -1382,14 +2282,88 @@ def _copia_loader():
         shutil.copyfile(sorgente, arrivo)
 
 
+_MODULI_PANNELLO = ("blenderzome", "zome_core", "zome_pavimento", "zome_viste", "zome_statica",
+                    "zome_foglio", "zome_scena", "zome_planimetria", "zome_percorsi")
+
+
+def _firma_codice():
+    """Date di modifica dei .py del pannello."""
+    firma = []
+    for nome in _MODULI_PANNELLO:
+        try:
+            firma.append(os.path.getmtime(os.path.join(_CODICE, nome + ".py")))
+        except OSError:
+            firma.append(None)
+    return tuple(firma)
+
+
+_FIRMA = _firma_codice()
+_in_attesa = None
+_ultimo_ricarico = ""
+
+
+def _sync_firma_codice():
+    global _FIRMA, _in_attesa
+    _FIRMA = _firma_codice()
+    _in_attesa = None
+
+
+def _etichetta_sorgente():
+    try:
+        t = max(os.path.getmtime(os.path.join(_CODICE, n + ".py")) for n in _MODULI_PANNELLO)
+        import time
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+    except OSError:
+        return "?"
+
+
+def _si_compila():
+    """Un .py salvato a metà o con un errore non deve far sparire il pannello: si ricarica solo se tutti si compilano."""
+    for nome in _MODULI_PANNELLO:
+        percorso = os.path.join(_CODICE, nome + ".py")
+        try:
+            with open(percorso, encoding="utf-8") as f:
+                compile(f.read(), percorso, "exec")
+        except (OSError, SyntaxError, ValueError) as e:
+            print("Zome: non ricarico, " + str(e))
+            return False
+    return True
+
+
+def _sorveglia():
+    """Ogni 2 s: se i .py del pannello sono cambiati sul disco, ricarica il pannello (dopo un giro fermo, a salvataggio finito)."""
+    global _in_attesa
+    firma = _firma_codice()
+    if firma == _FIRMA:
+        _in_attesa = None
+        return 2.0
+    if firma != _in_attesa:
+        _in_attesa = firma
+        return 1.0
+    if not _si_compila():
+        return 2.0
+    try:
+        _ricarica_pannello()
+    except Exception as e:
+        print("Zome: ricarica non riuscita, " + str(e))
+        return 2.0
+    import time
+    global _ultimo_ricarico
+    _ultimo_ricarico = time.strftime("%H:%M:%S")
+    print("Zome: pannello ricaricato dal disco")
+    return None    # il modulo nuovo ha già il suo controllo
+
+
 def _ricarica_pannello():
     unregister()
     for nome in list(sys.modules):
-        if nome in ("blenderzome", "zome_core", "zome_pavimento", "zome_viste", "zome_statica", "zome_foglio", "zome_scena"):
+        if nome in _MODULI_PANNELLO:
             del sys.modules[nome]
     import blenderzome as nuovo
     importlib.reload(nuovo)
     nuovo.register()
+    if hasattr(nuovo, "_sync_firma_codice"):
+        nuovo._sync_firma_codice()
     loader = sys.modules.get("zome_loader")
     if loader is not None:
         loader._mod = nuovo
@@ -1474,39 +2448,86 @@ class ZOME_PT_panel(bpy.types.Panel):
             avviso.alert = True
             avviso.label(text="C'è una versione nuova: " + _aggiornamento.get("remota", ""), icon="FILE_REFRESH")
             avviso.operator("zome.aggiorna", icon="IMPORT")
-        box = lay.box()
-        box.label(text="Istanza", icon='BOOKMARKS')
-        row = box.row(align=True)
-        row.prop(z, "preset_scelta", text="")
-        row.operator("zome.preset_carica", text="Carica", icon='IMPORT')
-        row.operator("zome.preset_elimina", text="", icon='TRASH')
-        row = box.row(align=True)
-        row.prop(z, "preset_nome", text="")
-        row.operator("zome.preset_salva", text="Salva", icon='EXPORT')
+        # 0. tipologia e modello (richiudibili: da chiusi resta il nome del modello)
+        head, body = lay.panel("zome_salvataggio", default_closed=False)
+        head.label(text=f"Salvataggio  ·  {z.nome}", icon='FILE_TICK')
+        if body is not None:
+            box = body.box()
+            box.label(text="Tipologia", icon='BOOKMARKS')
+            row = box.row(align=True)
+            row.prop(z, "preset_scelta", text="")
+            row.operator("zome.preset_carica", text="Carica", icon='IMPORT')
+            row.operator("zome.preset_elimina", text="", icon='TRASH')
+            row = box.row(align=True)
+            row.prop(z, "preset_nome", text="")
+            row.operator("zome.preset_salva", text="Salva", icon='EXPORT')
+            box = body.box()
+            box.label(text="Modello", icon='OUTLINER_COLLECTION')
+            row = box.row(align=True)
+            row.prop(z, "modello_scelta", text="")
+            row.operator("zome.modello_nuovo", text="Nuovo", icon='ADD')
+            box.prop(z, "nome", text="Rinomina", icon='GREASEPENCIL')
         m = _model_for(z)
         if z.errore:
             lay.label(text=z.errore, icon='ERROR')
-        # 1. risultati: le cose da guardare sempre
-        box = lay.box()
-        box.label(text="Risultati", icon='SOLO_ON')
-        if m:
+        row = lay.row(align=True)
+        row.operator("zome.crea", text="Ricostruisci", icon='FILE_REFRESH')
+        row.prop(z, "live", text="Automatico", toggle=True)
+        row.operator("zome.reimposta", text="", icon='LOOP_BACK')
+        rinfo = lay.column(align=True)
+        rinfo.scale_y = 0.75
+        if _ultimo_ricarico:
+            rinfo.label(text=f"Python ricaricato alle {_ultimo_ricarico}", icon='CHECKMARK')
+        # 1. risultati (richiudibili)
+        head, body = lay.panel("zome_risultati", default_closed=False)
+        head.label(text="Risultati", icon='SOLO_ON')
+        if m and body is not None:
             s = m["summary"]
-            col = box.column(align=True)
-            col.scale_y = 1.2
-            h_terra = s.get("altezza_esterna", s["quota_max"])
-            h_tot = s.get("altezza_esterna_su_pavimento", h_terra)      # il limite dei 3 m e' dal pavimento finito (tavolato) al punto piu' alto
-            r = col.row(); r.alert = h_tot > 3.0
-            r.label(text=f"Altezza dal pavimento, con tetto: {h_tot:.2f} m" + ("  oltre 3 m!" if h_tot > 3.0 else ""), icon='EMPTY_SINGLE_ARROW')
-            col.label(text=f"(da terra: {h_terra:.2f} m)")
-            ix, iy = s.get("ingombro_x_esterno", s["ingombro_x"]), s.get("ingombro_y_esterno", s["ingombro_y"])
-            col.label(text=f"Ingombro, con tetto: {ix:.2f} (E-O) × {iy:.2f} (N-S) m", icon='ARROW_LEFTRIGHT')
-            col.label(text=f"Pavimento: {s['area_pavimento']:.2f} m²  (a {s['quota_pavimento']:.2f} m)", icon='MESH_GRID')
-            col.label(text=f"A 1,80 m dal pavimento: {s['area_180']:.2f} m²", icon='FIXED_SIZE')
+            col = body.column(align=True)
+            col.scale_y = 1.15
+            h_terra = s.get("altezza_esterna", s.get("quota_max", s.get("altezza_totale", 0.0)))
+            h_ee = s.get("altezza_esterna_su_pavimento", h_terra)
+            h_int = s.get("altezza_interna")
+            if h_int is None:
+                h_int = h_ee
+            ix = s.get("ingombro_x_esterno", s.get("ingombro_x", 0.0))
+            iy = s.get("ingombro_y_esterno", s.get("ingombro_y", 0.0))
+            # le spiegazioni stanno nel tooltip di ogni riga, non come testo nel pannello
+            pav = ""
+            if z.floor:
+                zfin = (s.get("pavimento") or {}).get("z_finito", s.get("quota_pavimento", 0.0))
+                pav = f" Pavimento finito a {zfin:.2f} m."
+            aiuto_ee = "Dal pavimento finito alla copertura" + (": supera i 3 m." if h_ee > 3.0 else ".") + pav
+            if abs(h_terra - h_ee) > 0.01:
+                aiuto_ee += f" Da terra, con il tetto: {h_terra:.2f} m."
+            r = _scritta(col, f"Altezza estradosso–estradosso: {h_ee:.2f} m", aiuto_ee)
+            r.alert = h_ee > 3.0
+            _scritta(col, f"Altezza interna: {h_int:.2f} m", "Dal calpestio all'intradosso: quanto è abitabile")
+            _scritta(col, f"Superficie: {s.get('area_pavimento', 0.0):.2f} m² (pavimento)",
+                     "Sezione dello zome all'altezza del pavimento." + pav)
+            _scritta(col, f"Superficie utile: {s.get('area_180', 0.0):.2f} m²", "Area a 1,80 m dal pavimento")
+            if s.get("diametro_inscritto"):
+                _scritta(col, f"Diametro: {s['diametro_circoscritto']:.2f} m circoscritto, {s['diametro_inscritto']:.2f} inscritto",
+                         "Cerchi della sezione al pavimento finito, attorno al suo centro. Sulla dritta l'inscritto è "
+                         "la distanza tra due lati paralleli opposti, il circoscritto quella tra due spigoli opposti")
+            if s.get("sedime"):
+                _scritta(col, f"Sedime: {s['sedime']:.2f} m²", "Superficie massima occupata in pianta dalla zome finita, gronda "
+                         f"e corridoio compresi (contorno convesso). Il rettangolo che la contiene è {ix:.2f} × {iy:.2f} m")
+            else:
+                _scritta(col, f"Ingombro: {ix * iy:.2f} m²", f"Rettangolo in pianta {ix:.2f} × {iy:.2f} m, senza esterno")
+            if z.floor:
+                geo = col.column(align=True)
+                geo.scale_y = 0.9
+                a_sotto = s.get("area_sottopavimento")
+                h_geo = s.get("altezza_geometrica")
+                if a_sotto is not None:
+                    _scritta(geo, f"Sottopavimento: {a_sotto:.2f} m²", "Tavolato di chiusura sotto i travetti, all'affettatura")
+                if h_geo is not None:
+                    _scritta(geo, f"Altezza geometrica: {h_geo:.2f} m", "Dalla fetta all'intradosso del poliedro")
         # 2. forma (richiudibile)
         head, body = lay.panel("zome_forma", default_closed=False)
         head.label(text="Forma", icon='MESH_ICOSPHERE')
         if body is not None:
-            body.prop(z, "nome")
             row = body.row(align=True); row.prop(z, "N"); row.prop(z, "M")
             row = body.row(align=True); row.prop(z, "theta"); row.prop(z, "ZH")
             body.operator("zome.zh_altezza", icon='EMPTY_SINGLE_ARROW')
@@ -1517,30 +2538,36 @@ class ZOME_PT_panel(bpy.types.Panel):
                 row = sub.row(align=True); row.prop(z, "M2"); row.prop(z, "theta2")
 
 
-class ZOME_PT_comandi(bpy.types.Panel):
-    """Ricostruisci / Automatico / reimposta: in fondo al pannello (ultimo figlio, senza intestazione)."""
-    bl_label = "Comandi"
-    bl_idname = "ZOME_PT_comandi"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Zome"
-    bl_parent_id = "ZOME_PT_panel"
-    bl_options = {'HIDE_HEADER'}
+class ZOME_OT_info(bpy.types.Operator):
+    """Scritta del pannello con la spiegazione nel tooltip: un clic non fa nulla"""
+    bl_idname = "zome.info"
+    bl_label = ""
+    bl_options = {'INTERNAL'}
+    testo: StringProperty(default="")
 
-    def draw(self, context):
-        z = context.scene.zome
-        row = self.layout.row(align=True)
-        row.operator("zome.crea", text="Ricostruisci", icon='FILE_REFRESH')
-        row.prop(z, "live", text="Automatico", toggle=True)
-        row.operator("zome.reimposta", text="", icon='LOOP_BACK')
+    @classmethod
+    def description(cls, context, props):
+        return props.testo
+
+    def execute(self, context):
+        return {'CANCELLED'}
+
+
+def _scritta(layout, testo, aiuto, icon='NONE'):
+    """Una scritta come layout.label, ma con la spiegazione nel tooltip. Le spiegazioni non vanno come righe di testo nel pannello."""
+    r = layout.row(align=True)
+    r.alignment = 'LEFT'
+    r.operator("zome.info", text=testo, icon=icon, emboss=False).testo = aiuto
+    return r
 
 
 class _SottoPannello(bpy.types.Panel):
-    """Sezione richiudibile, chiusa di partenza, figlia del pannello Zome."""
+    """Capitolo richiudibile, chiuso di partenza. E' un pannello di primo livello (senza bl_parent_id): Blender rientra e assottiglia
+    i sottopannelli e non si puo' togliere, mentre un pannello di primo livello ha il titolo a tutta larghezza, piu' forte dei riquadri
+    dentro. L'ordine e' quello di _classes, col pannello principale per primo."""
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Zome"
-    bl_parent_id = "ZOME_PT_panel"
     bl_options = {'DEFAULT_CLOSED'}
     bl_icon = 'DOT'
 
@@ -1563,15 +2590,15 @@ class ZOME_OT_vista(bpy.types.Operator):
         z = context.scene.zome
         R = m["summary"]["diametro_base"] / 2 if m else 2.0
         H = m["summary"].get("altezza_esterna", m["summary"]["altezza_totale"]) if m else 3.0
-        cx, cy = z.px, z.py
+        cx, cy, cz = z.pos_x, z.pos_y, z.pos_z
         r3.view_perspective = 'PERSP'
         if self.modo == 'interno':
-            r3.view_location = (cx, cy + 0.6 * R, (m["summary"].get("quota_pavimento", 0.0) if (m and z.floor) else 0.0) + 1.5)      # occhi a nord, guardando verso sud (dove c'e' l'entrata)
+            r3.view_location = (cx, cy + 0.6 * R, (m["summary"].get("quota_pavimento", 0.0) if (m and z.floor) else 0.0) + 1.5 + cz)      # occhi a nord, guardando verso sud (dove c'e' l'entrata)
             r3.view_rotation = mathutils.Euler((math.radians(88), 0, math.radians(180))).to_quaternion()
             r3.view_distance = 0.01
             sp.lens, sp.clip_start = 18.0, 0.02
         else:
-            r3.view_location = (cx, cy, H / 2)
+            r3.view_location = (cx, cy, H / 2 + cz)
             r3.view_rotation = mathutils.Euler((math.radians(75), 0, 0)).to_quaternion()   # da sud, un po' dall'alto
             r3.view_distance = max(2.5 * R, 1.5 * H) * 1.6
             sp.lens, sp.clip_start = 35.0, 0.1
@@ -1591,6 +2618,7 @@ class ZOME_OT_anim_crea(bpy.types.Operator):
             self.report({'ERROR'}, "La zome non e' valida")
             return {'CANCELLED'}
         F = zome_viste.crea_animazione(context.scene, z, m, z.anim_secondi, z.anim_sole)
+        _posa_visita(z.nome or "zome", _posa_modello(z.nome or "zome", z))
         sp = context.space_data
         if sp is not None and sp.type == 'VIEW_3D':
             sp.region_3d.view_perspective = 'CAMERA'
@@ -1614,21 +2642,64 @@ class ZOME_OT_anteprima(bpy.types.Operator):
         return {'FINISHED'}
 
 
+_MOTORI = {'EEVEE': 'BLENDER_EEVEE', 'SOLID': 'BLENDER_WORKBENCH', 'CYCLES': 'CYCLES'}
+_CYCLES_CAMPIONI = 128       # con il denoise basta; i 4096 di default sul processore vogliono ore per fotogramma
+_CYCLES_VISTA = 32           # vista Rendered: poi si ferma, e col denoise è già pulita
+
+
+def _colori_solid():
+    """Il Solid usa il colore della vista del materiale, che resta grigio di default: alberi, terreno e oggetti fatti a mano
+    hanno il colore solo nel nodo Principled.  Lo si copia dove il colore della vista è ancora quello di default.  Cambia solo
+    la vista Solid, non il render."""
+    for mat in bpy.data.materials:
+        if not mat.use_nodes or tuple(round(c, 3) for c in mat.diffuse_color) != (0.8, 0.8, 0.8, 1.0):
+            continue
+        bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+        if bsdf is None or bsdf.inputs["Base Color"].is_linked:
+            continue
+        mat.diffuse_color = tuple(bsdf.inputs["Base Color"].default_value)
+
+
+def _prepara_motore(sc, motore):
+    """Mette il motore scelto nella scena, appena lo si sceglie e prima di ogni render: lo usano anche la vista Rendered e F12."""
+    sc.render.engine = _MOTORI[motore]
+    if motore == 'SOLID':
+        sh = sc.display.shading
+        sh.light, sh.color_type = 'STUDIO', 'TEXTURE'        # le texture del legno; senza texture il colore del materiale
+        sh.show_shadows = sh.show_cavity = True
+        sc.display.render_aa = '8'
+        _colori_solid()
+    elif motore == 'CYCLES':
+        sc.cycles.device = 'CPU'
+        sc.cycles.samples = min(sc.cycles.samples, _CYCLES_CAMPIONI)
+        sc.cycles.use_denoising = True
+        if hasattr(sc.cycles, "denoising_use_gpu"):
+            sc.cycles.denoising_use_gpu = False
+        sc.cycles.preview_samples = min(sc.cycles.preview_samples or _CYCLES_VISTA, _CYCLES_VISTA)     # 0 = senza fine
+        sc.cycles.use_preview_denoising = True
+        if hasattr(sc.cycles, "preview_denoising_use_gpu"):
+            sc.cycles.preview_denoising_use_gpu = False
+
+
 class ZOME_OT_render(bpy.types.Operator):
     bl_idname = "zome.render"
     bl_label = "Render"
-    bl_description = ("Render vero con la camera della scena (EEVEE). Fotogramma: finestra di render, poi Immagine > Salva. "
-                      "Animazione: video MP4 1920x1080 in BlenderZome/Render (puo' richiedere molti minuti)")
+    bl_description = ("Render vero con la camera della scena, col motore scelto sopra. Fotogramma: finestra di render, poi Immagine > Salva. "
+                      "Animazione: video MP4 1920x1080 nella cartella Render accanto al blend (puo' richiedere molti minuti)")
     animazione: BoolProperty(default=False)
 
     def execute(self, context):
         sc = context.scene
+        _prepara_motore(sc, sc.zome.render_motore)
         sc.render.resolution_x, sc.render.resolution_y, sc.render.resolution_percentage = 1920, 1080, 100
         if self.animazione:
             if not zome_viste.animazione_esiste(sc.zome):
                 self.report({'ERROR'}, "Crea prima l'animazione")
                 return {'CANCELLED'}
-            d = os.path.join(_HERE or os.path.dirname(bpy.data.filepath) or bpy.app.tempdir, "Render")
+            d = zome_percorsi.cartella_render(bpy.data.filepath)
+            if d is None:
+                self.report({'ERROR'}, "Salva prima il blend: il video va nella cartella Render accanto al file.")
+                return {'CANCELLED'}
             os.makedirs(d, exist_ok=True)
             if hasattr(sc.render.image_settings, "media_type"):          # Blender 5: il video e' un tipo di supporto a parte
                 sc.render.image_settings.media_type = 'VIDEO'
@@ -1654,51 +2725,44 @@ class ZOME_OT_anim_rimuovi(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class ZOME_PT_vista(_SottoPannello):
-    bl_label = "Vista"
-    bl_idname = "ZOME_PT_vista"
-    bl_icon = 'CAMERA_DATA'
+class ZOME_PT_posizione(_SottoPannello):
+    bl_label = "Posizione"
+    bl_idname = "ZOME_PT_posizione"
+    bl_icon = 'ORIENTATION_GLOBAL'
+    bl_order = 6
 
     def draw(self, context):
-        row = self.layout.row(align=True)
-        row.operator("zome.vista", text="Esterno (da sud)", icon='HIDE_OFF').modo = 'esterno'
-        row.operator("zome.vista", text="Interno", icon='CAMERA_DATA').modo = 'interno'
+        z = context.scene.zome
+        col = self.layout.column(align=True)
+        col.prop(z, "pos_x")
+        col.prop(z, "pos_y")
+        col.prop(z, "pos_z")
+        col.prop(z, "pos_angolo")
+        col.separator()
+        col.prop(z, "pos_terreno")
+        col.prop(z, "pos_soglia")
+        if z.pos_avviso:
+            col.label(text=z.pos_avviso, icon='CHECKMARK' if z.pos_avviso_ok else 'ERROR')
+            if not z.pos_avviso_ok:
+                col.label(text="Oltre la soglia: controlla le quote")
 
 
-class ZOME_PT_viste(_SottoPannello):
-    bl_label = "Visualizzazioni"
-    bl_idname = "ZOME_PT_viste"
-    bl_icon = 'LIGHT_SUN'
+class ZOME_PT_vista_modello(_SottoPannello):
+    bl_label = "Spaccato e animazione"
+    bl_idname = "ZOME_PT_vista_modello"
+    bl_icon = 'MOD_BOOLEAN'
+    bl_order = 7
 
     def draw(self, context):
         z = context.scene.zome
         lay = self.layout
+        _scritta(lay, f"Solo «{z.nome}»", "Spaccato e animazione valgono solo per questo modello: non entrano nella tipologia",
+                 icon='OUTLINER_COLLECTION')
         box = lay.box()
-        box.label(text="Spaccato verticale", icon='MOD_BOOLEAN')
+        _scritta(box, "Spaccato verticale", "Solo vista: non toglie pezzi e non cambia pesi né il calcolo. "
+                 "0% = intera, 50% = a metà, 100% = sparita", icon='MOD_BOOLEAN')
         box.prop(z, "spaccato", slider=True, text="Fetta tolta")
         box.prop(z, "spaccato_dir", slider=True)
-        box.label(text="Solo vista: non toglie pezzi e non cambia pesi né il calcolo")
-        box.label(text="0% = intera · 50% = a metà · 100% = sparita")
-        box = lay.box()
-        box.label(text="Sole (Neirone)", icon='LIGHT_SUN')
-        row = box.row(align=True); row.prop(z, "sole_giorno", text="Giorno"); row.prop(z, "sole_mese", text="Mese")
-        box.prop(z, "sole_ora", slider=True)
-        az, el = zome_viste.posizione_sole(z.sole_mese, z.sole_giorno, z.sole_ora)
-        al, tr = zome_viste.alba_tramonto(z.sole_mese, z.sole_giorno)
-        def hm(o):
-            return "-" if o is None else f"{int(o):02d}:{int(round((o - int(o)) * 60)) % 60:02d}"
-        box.label(text=f"Altezza {math.degrees(el):.0f}°  azimut {math.degrees(az):.0f}°   alba {hm(al)}  tramonto {hm(tr)}")
-        if zome_viste.animazione_esiste(z):
-            box.label(text="C'e' un'animazione: il sole segue i suoi tasti", icon='INFO')
-        box = lay.box()
-        box.label(text="Arredo", icon='OUTLINER_OB_GROUP_INSTANCE')
-        row = box.row(align=True); row.prop(z, "arredo_mobili", toggle=True); row.prop(z, "arredo_persone", toggle=True)
-        m = _model_for(z)
-        if m and (z.arredo_mobili or z.arredo_persone):
-            a = m["summary"].get("area_pavimento", 0.0)
-            r = box.row()
-            r.alert = a < 15.0
-            r.label(text=f"Pavimento {a:.1f} m²" + ("  (l'arredo e' pensato per 15 m² o piu')" if a < 15.0 else ""))
         box = lay.box()
         box.label(text="Animazione", icon='RENDER_ANIMATION')
         row = box.row(align=True); row.prop(z, "anim_secondi"); row.prop(z, "anim_sole", text="Sole")
@@ -1708,30 +2772,144 @@ class ZOME_PT_viste(_SottoPannello):
         row.operator("zome.anim_rimuovi", icon='X')
         row = box.row(align=True)
         row.operator("zome.anteprima", icon='CAMERA_DATA')
+        box.row().prop(z, "render_motore", expand=True)
         row = box.row(align=True)
         row.operator("zome.render", text="Render fotogramma", icon='RENDER_STILL').animazione = False
         row.operator("zome.render", text="Render animazione", icon='RENDER_ANIMATION').animazione = True
-        box.label(text="Riquadro tratteggiato = inquadratura del render")
+        cam = context.scene.camera
+        suff = "_camera_visita"
+        if cam is not None and cam.name.endswith(suff) and cam.name != (z.nome or "zome") + suff:
+            box.label(text=f"La camera della scena è di «{cam.name[:-len(suff)]}»", icon='ERROR')
+
+
+class ZOME_PT_vista(_SottoPannello):
+    bl_label = "Vista e sole"
+    bl_idname = "ZOME_PT_vista"
+    bl_icon = 'CAMERA_DATA'
+    bl_order = 8
+
+    def draw(self, context):
+        row = self.layout.row(align=True)
+        row.operator("zome.vista", text="Esterno (da sud)", icon='HIDE_OFF').modo = 'esterno'
+        row.operator("zome.vista", text="Interno", icon='CAMERA_DATA').modo = 'interno'
+        z = context.scene.zome
+        box = self.layout.box()
+        box.label(text="Sole (Neirone)", icon='LIGHT_SUN')
+        row = box.row(align=True); row.prop(z, "sole_giorno", text="Giorno"); row.prop(z, "sole_mese", text="Mese")
+        box.prop(z, "sole_ora", slider=True)
+        az, el = zome_viste.posizione_sole(z.sole_mese, z.sole_giorno, z.sole_ora)
+        al, tr = zome_viste.alba_tramonto(z.sole_mese, z.sole_giorno)
+        def hm(o):
+            return "-" if o is None else f"{int(o):02d}:{int(round((o - int(o)) * 60)) % 60:02d}"
+        box.label(text=f"Altezza {math.degrees(el):.0f}°  azimut {math.degrees(az):.0f}°   alba {hm(al)}  tramonto {hm(tr)}")
+        if zome_viste.sole_animato():
+            _scritta(box, "Il sole ha i tasti della visita", "L'ora qui vale fino al cambio di fotogramma", icon='INFO')
 
 
 # Solo queste sotto-collection entrano nel foglio. La porta, l'arredo, i sanitari e la statica non ci sono.
 _RUOLI_CONTO = (
-    "Struttura", "Pavimento",
+    "Struttura", "Pavimento", "Solaio", "Basamento",
     "Esterno · legno", "Esterno · vetro", "Interno · perline",
     "Tetto", "Isolante",
 )
 
 
-def _oggetti_foglio(z):
-    """Solidi delle mesh nelle collection dei materiali della zome."""
-    nome = z.nome or "zome"
+def _mesh_intera(ob):
+    """La mesh vera di un pezzo: con lo spaccato acceso ob.data è quella tagliata, che vale solo per la vista."""
+    return bpy.data.meshes.get(ob.get("spaccato_intero", "")) or ob.data
+
+
+def _accese(context):
+    """I nomi delle collection accese nel view layer, in ordine: non escluse e non nascoste, con tutte quelle sopra."""
+    accese = []
+
+    def accendi(lc):
+        if lc.exclude or lc.hide_viewport or lc.collection.hide_viewport:
+            return
+        accese.append(lc.collection.name)
+        for ch in lc.children:
+            accendi(ch)
+
+    for ch in context.view_layer.layer_collection.children:
+        accendi(ch)
+    return accese
+
+
+def _componenti_del_file(context):
+    """Zome e spazi accessori visibili nel file, per il menu del report (zome_core.componenti_file)."""
+    sotto = {c.name for a in bpy.data.collections if e_spazi_accessori(a.name) for c in a.children_recursive}
+    return componenti_file(_accese(context), sotto)
+
+
+_report_voci = []          # Blender vuole che le voci di un menu dinamico restino vive finché il menu c'è
+
+
+def _items_report(self, context):
+    global _report_voci
+    try:
+        comp = _componenti_del_file(context or bpy.context)
+    except Exception as exc:                       # il menu non deve rompere il draw del pannello
+        print("zome menu report:", exc)
+        comp = []
+    _report_voci = voci_report(comp)
+    return _report_voci
+
+
+def _scelta_report(context, z):
+    """(titolo, componenti scelti, tutti i componenti del file) per la voce del menu del report."""
+    comp = _componenti_del_file(context)
+    try:
+        scelta = z.report_scelta
+    except (TypeError, AttributeError):
+        scelta = ""
+    nomi = componenti_scelti(scelta, comp)
+    titolo = "Tutto" if scelta == TUTTO else (nomi[0] if nomi else "")
+    return titolo, nomi, comp
+
+
+def _pannello_di(nome, z):
+    """I valori del pannello con cui è stata fatta la zome `nome`: il pannello stesso se è la sua, se no i parametri salvati
+    sulla collection (zome_parametri) sopra quelli del pannello.  None se la zome non ne ha."""
+    if nome == (z.nome or "zome"):
+        return z
     coll = bpy.data.collections.get(nome)
+    try:
+        salvati = json.loads(coll.get(_PROP_PARAMETRI, "") or "{}") if coll is not None else {}
+    except ValueError:
+        salvati = {}
+    if not salvati:
+        return None
+    from types import SimpleNamespace
+    base = {p.identifier: getattr(z, p.identifier) for p in z.bl_rna.properties if p.identifier != "rna_type"}
+    return SimpleNamespace(**{**base, **salvati})
+
+
+def _oggetti_foglio(z, scelti, titolo="", tipi=None, rif_nome=None):
+    """Solidi delle mesh nelle collection dei materiali dei componenti `scelti` (zome o spazi accessori, il prefisso delle
+    collection «nome · ruolo»): uno solo, o tutti per «Tutto».  Si guarda tutto il file, e ogni oggetto porta il suo componente:
+    il preventivo si divide così.  `z` sono i valori del pannello della zome `rif_nome` (riepilogo, complessità, spessori);
+    per uno spazio accessorio `rif_nome` è None.  `tipi` è {componente: "zome" | "accessorio"}."""
+    tipi = tipi or {}
+    scelti = list(scelti)
+    nome = rif_nome or ""
     oggetti, visti = [], set()
     ferramenta = 0
 
     def ruolo_di(coll_name):
-        pref = nome + " · "
-        return coll_name[len(pref):] if coll_name.startswith(pref) else ""
+        return parti_collection(coll_name)[1]
+
+    pannello = bpy.context.scene.zome
+    isolanti = {}
+
+    def isolante_di(comp):
+        """L'isolante di un componente: della sua zome (parametri salvati); per uno spazio accessorio quello della prima zome
+        del file, così il report non cambia con la zome aperta nel pannello."""
+        if comp not in isolanti:
+            prima = next((c for c, t in tipi.items() if t == "zome"), None)
+            chi = comp if tipi.get(comp) == "zome" else prima
+            pz = _pannello_di(chi, pannello) if chi else None
+            isolanti[comp] = _nome_isolante(getattr(pz or pannello, "isolante", pannello.isolante))
+        return isolanti[comp]
 
     def leggi_attr(me, attr):
         a = me.attributes.get(attr) if hasattr(me, "attributes") else None
@@ -1742,7 +2920,7 @@ def _oggetti_foglio(z):
         except (AttributeError, RuntimeError):
             return None
 
-    def visita(coll, ruolo):
+    def visita(coll, ruolo, comp):
         nonlocal ferramenta
         for ob in list(coll.objects):
             chiave = ob.as_pointer()
@@ -1752,13 +2930,18 @@ def _oggetti_foglio(z):
             if not materiale and ruolo not in _RUOLI_CONTO:
                 continue
             visti.add(chiave)
+            if comp not in scelti:
+                continue
+            if not materiale and ruolo.startswith("Isolante"):
+                materiale = isolante_di(comp)       # quello con cui è stata fatta la sua zome, non quello di un'altra
             basso = ob.name.lower()
             if "maniglia" in basso or "cernier" in basso:
                 ferramenta += 1
                 continue
-            if ob.type != "MESH" or ob.data is None or not ob.data.polygons:
+            me = _mesh_intera(ob) if ob.type == "MESH" else None
+            if me is None or not me.polygons:
                 continue
-            me, mw = ob.data, ob.matrix_world
+            mw = ob.matrix_world
             verts = [tuple((mw @ v.co)[i] for i in range(3)) for v in me.vertices]
             faces = [list(p.vertices) for p in me.polygons]
             cut = None
@@ -1767,23 +2950,30 @@ def _oggetti_foglio(z):
                     cut = json.loads(ob["scheletro_cutlist"])
                 except (TypeError, json.JSONDecodeError, ValueError):
                     cut = None
-            oggetti.append({"nome": ob.name, "ruolo": ruolo, "materiale": materiale or "",
+            faccia = None                  # rombo o triangolo a cui appartiene un pezzo dello scheletro generato
+            if ob.get("zome_pezzo") == "scheletro" and "zome_strato" in ob.keys() and "zome_faccia" in ob.keys():
+                faccia = (int(ob["zome_strato"]), int(ob["zome_faccia"]))
+            oggetti.append({"nome": ob.name, "ruolo": ruolo, "materiale": materiale or "", "componente": comp,
                             "verts": verts, "faces": faces,
                             "strati": leggi_attr(me, "strato"), "classi": leggi_attr(me, "classe"),
-                            "cutlist": cut})
+                            "cutlist": cut, "faccia": faccia, "forma": str(ob.get("zome_tipo", "") or "")})
         for ch in coll.children:
-            visita(ch, ruolo_di(ch.name))
+            visita(ch, ruolo_di(ch.name), componente_di(ch.name, comp))
 
-    if coll is not None:
-        visita(coll, "")
-    porta = bpy.data.collections.get(f"{nome} · Porta")
-    if porta is not None:
-        for ob in porta.objects:
+    radici = list(bpy.context.scene.collection.children)
+    albero = [c for r in radici for c in (r, *r.children_recursive)]
+    for r in radici:
+        visita(r, "", componente_di(r.name, ""))
+    componenti = list(scelti)
+    accessori_ = [c for c in scelti if tipi.get(c) == "accessorio"]
+    porte = [c for c in albero if parti_collection(c.name)[1] == "Porta" and parti_collection(c.name)[0] in scelti]
+    for porta_c in porte:
+        for ob in porta_c.objects:
             basso = ob.name.lower()
             if "maniglia" in basso or "cernier" in basso:
                 ferramenta += 1
     summary, params = {}, {}
-    rif = bpy.data.objects.get(nome + "_interno")
+    rif = bpy.data.objects.get(nome + "_interno") if nome else None
     if rif is not None:
         try:
             if "zome_summary" in rif.keys():
@@ -1793,96 +2983,233 @@ def _oggetti_foglio(z):
                 params = {k: tutto.get(k) for k in ("N", "M", "theta", "ZH", "cut", "M2", "theta2")}
         except (TypeError, json.JSONDecodeError, ValueError):
             summary, params = {}, {}
+    varianti = []
+    if rif is not None and "zome_params" in rif.keys():
+        try:                                       # complessità a gradini: dai parametri con cui è stata fatta la zome
+            tutto_ = json.loads(rif["zome_params"])
+            varianti = _carica_modulo("zome_complessita").varianti(Params(**tutto_), z.giunto)
+        except Exception as exc:                   # il report si fa lo stesso, con la sola riga della collection
+            print("zome_complessita:", exc)
+            varianti = []
     formula = None
-    trav = bpy.data.objects.get(nome + "_pav_travetti")
+    trav = bpy.data.objects.get(nome + "_pav_travetti") if nome else None
     if trav is not None and "travetti_formula" in trav.keys():
         try:
             formula = json.loads(trav["travetti_formula"])
         except (TypeError, json.JSONDecodeError, ValueError):
             formula = None
-    porta_esclusa = porta is not None and any(
-        ob.type == "MESH" and ob.data and ob.data.polygons for ob in porta.objects)
-    meta = {"nome": nome, "summary": summary, "params": params, "ferramenta": ferramenta,
+    porta_esclusa = any(ob.type == "MESH" and ob.data and ob.data.polygons for c in porte for ob in c.objects)
+    meta = {"nome": titolo or nome or "report", "zome_pannello": rif_nome, "componenti": componenti,
+            "accessori": accessori_,
+            "summary": summary, "params": params, "ferramenta": ferramenta,
             "porta_esclusa": porta_esclusa,
-            "pav_tipo": z.pav_tipo, "pav_carico": z.pav_carico, "pav_interasse": z.pav_interasse,
+            "pav_tipo": z.pav_tipo, "pav_carico": z.pav_carico, "pav_sezione": z.pav_sezione,
             "travetti_formula": formula,
             "t_legno_mm": z.t_legno * 10.0, "t_tetto_mm": z.t_tetto * 10.0,
             "t_int_mm": z.t_int_legno * 10.0, "t_isolante_mm": z.TW * 10.0,
-            "isolante_nome": _nome_isolante(z.isolante), "t_tavolato_mm": 25.0}
+            "isolante_nome": _nome_isolante(z.isolante), "t_tavolato_mm": 25.0,
+            "complessita_varianti": varianti,
+            "larghezza_assi_m": z.larghezza_assi / 100.0, "larghezza_perline_m": z.larghezza_perline / 100.0}
     return oggetti, meta
 
 
-_RUOLI_GUSCIO = ("Esterno", "Tetto", "Porta", "Pavimento")
-_PAROLE_IGIENICO = ("sanitari", "bidet", "doccia", "lavandino", "lavabo", "water", "igien")
-
-
-def _ruolo_collection(nome):
-    return nome.split(" · ", 1)[1] if " · " in nome else ""
-
-
-def _centro_mondo(ob):
-    mw = ob.matrix_world
-    pts = [mw @ mathutils.Vector(c) for c in ob.bound_box]
-    return tuple(sum(p[i] for p in pts) / len(pts) for i in range(3))
-
-
-def _e_igienico(ob):
-    if ob.type != "MESH":
-        return False
-    nomi = " ".join([ob.name.lower()] + [c.name.lower() for c in ob.users_collection])
-    if "etichett" in nomi:
-        return False
-    if any(p in nomi for p in _PAROLE_IGIENICO):
-        return True
-    return "wc" in ob.name.lower()
-
-
-def _manufatti_file():
-    """Guscio di ogni manufatto nel file, e i punti dei sanitari. Il bagno è una collection a parte, se c'è."""
-    figli = set()
-    for coll in bpy.data.collections:
-        for ch in coll.children:
-            figli.add(ch.name)
-    manufatti, punti = [], []
-    visti = set()
-
-    def pezzi_di(coll):
-        fuori = []
-        for nodo in [coll, *coll.children_recursive]:
-            ruolo = _ruolo_collection(nodo.name)
-            if not any(ruolo == voce or ruolo.startswith(voce + " ") or ruolo.startswith(voce + " · ")
-                       for voce in _RUOLI_GUSCIO):
-                continue
-            chiave = "vetro" if "vetro" in ruolo.lower() else (
-                "tetto" if ruolo.startswith("Tetto") else
-                "porta" if ruolo.startswith("Porta") else
-                "pavimento" if ruolo.startswith("Pavimento") else "legno")
-            for ob in nodo.objects:
-                if ob.type != "MESH" or ob.data is None or not ob.data.polygons:
-                    continue
-                if ob.as_pointer() in visti:
-                    continue
-                visti.add(ob.as_pointer())
-                mw = ob.matrix_world
-                verts = [tuple((mw @ v.co)[i] for i in range(3)) for v in ob.data.vertices]
-                faces = [list(p.vertices) for p in ob.data.polygons]
-                fuori.append({"ruolo": chiave, "verts": verts, "faces": faces})
-        return fuori
-
-    for coll in bpy.data.collections:
-        if coll.name in figli or coll.name in ("Collection", "Scene Collection", "environment"):
+def _componenti_viste(scelti=None):
+    """Il guscio di ogni componente, per le viste e gli ingombri e per la superficie coperta della planimetria.  Un componente è
+    il prefisso delle sotto-collection «nome · Esterno», «· Tetto», «· Porta», «· Pavimento»…: una zome o uno spazio accessorio.
+    `scelti` limita ai componenti del report; None vuol dire tutti quelli visibili nel file."""
+    # Solo le collection accese: una copia nascosta o esclusa sarebbe un secondo componente sopra il primo.
+    accese = _accese(bpy.context)
+    per_comp, visti = {}, set()
+    # i componenti: le collection che hanno sotto-collection «nome · …» (gli oggetti messi lì sono arredo)
+    componenti_nomi = {parti_collection(n)[0] for n in accese if " · " in n}
+    for nodo in [bpy.data.collections[n] for n in accese if bpy.data.collections.get(n) is not None]:
+        comp, ruolo = parti_collection(nodo.name)
+        if scelti is not None and comp not in scelti:
             continue
-        pezzi = pezzi_di(coll)
-        if pezzi:
-            manufatti.append({"nome": coll.name, "pezzi": pezzi})
-    for ob in bpy.data.objects:
-        if _e_igienico(ob):
-            punti.append(_centro_mondo(ob))
-    return manufatti, punti
+        chiave = zome_scena.chiave_ingombro(ruolo) if ruolo else None
+        solo_sezione = False
+        if chiave is None:
+            # perline, isolante, scheletro e arredo: solo nelle sezioni, e solo se si vedono
+            chiave = zome_scena.chiave_sezione(ruolo) if (ruolo or comp in componenti_nomi) else None
+            solo_sezione = True
+        if chiave is None:
+            continue
+        for ob in nodo.objects:
+            me = _mesh_intera(ob) if ob.type == "MESH" else None
+            if me is None or not me.polygons or ob.as_pointer() in visti:
+                continue
+            if solo_sezione and not ob.visible_get():
+                continue
+            visti.add(ob.as_pointer())
+            mw = ob.matrix_world
+            verts = [tuple((mw @ v.co)[i] for i in range(3)) for v in me.vertices]
+            faces = [list(p.vertices) for p in me.polygons]
+            pz = {"ruolo": chiave, "nome": ob.name, "verts": verts, "faces": faces}
+            if solo_sezione:
+                pz["solo_sezione"] = True
+                if chiave == "arredo":
+                    pz["colore"] = _colore_oggetto(ob)
+            per_comp.setdefault(comp, []).append(pz)
+    return [{"nome": c, "pezzi": pz} for c, pz in per_comp.items()]
+
+
+PASSO_PERCORSO = 0.5       # m: il percorso si ricampiona e si appoggia sul terreno a questo passo
+
+
+def _colore_oggetto(ob):
+    mat = ob.active_material
+    if mat is None:
+        return None
+    r, g, b = (max(0.0, min(1.0, c)) ** (1 / 2.2) for c in mat.diffuse_color[:3])
+    return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+
+
+def _sito_planimetria(context, componenti, z):
+    """Gli elementi della planimetria, in coordinate del mondo.  Dalla collection «Planimetria» (o che comincia così,
+    anche nascosta) l'immobile, il sedime, la piazzola e il percorso, col ruolo dal nome dell'oggetto o della
+    sotto-collection; intorno, solo per orientarsi, gli oggetti visibili del file e le scritte."""
+    zp = zome_scena.zome_planimetria
+    dg = context.evaluated_depsgraph_get()
+
+    def mesh_mondo(ob):
+        if ob.type not in {'MESH', 'CURVE', 'SURFACE', 'META'}:
+            return None
+        ev = ob.evaluated_get(dg)
+        try:
+            me = ev.to_mesh()
+        except RuntimeError:
+            return None
+        if me is None:
+            return None
+        mw = ev.matrix_world
+        vs = [tuple(mw @ v.co) for v in me.vertices]
+        fs = [list(p.vertices) for p in me.polygons]
+        es = [tuple(e.vertices) for e in me.edges]
+        ev.to_mesh_clear()
+        return vs, fs, es
+
+    radici = [c for c in bpy.data.collections if c.name.lower().startswith("planimetria")]
+    percorsi_coll = {}                                    # oggetto -> nomi delle collection, dalla più vicina
+
+    def scendi(c, catena):
+        catena = [c.name] + catena
+        for ob in c.objects:
+            percorsi_coll.setdefault(ob.as_pointer(), (ob, catena))
+        for ch in c.children:
+            scendi(ch, catena)
+
+    for r in radici:
+        scendi(r, [])
+    ter = z.pos_terreno
+    oggetti = []
+    for ob, catena in percorsi_coll.values():
+        ruolo = zp.ruolo(ob.name, catena, ob.get("planimetria"))
+        if ruolo is None:
+            continue
+        m = mesh_mondo(ob)
+        if m is None:
+            continue
+        vs, fs, es = m
+        voce = {"nome": ob.name, "ruolo": ruolo, "poligoni": [], "segmenti": []}
+        if ruolo == "percorso":
+            if ob.type == 'CURVE':
+                # i punti della curva, non la mesh: con lo spessore (bevel) la mesh sarebbe un tubo
+                mw = ob.matrix_world
+                vs, es = [], []
+                for sp in ob.data.splines:
+                    pts = [p.co for p in sp.bezier_points] if sp.type == 'BEZIER' else [p.co.xyz for p in sp.points]
+                    base = len(vs)
+                    vs.extend(tuple(mw @ Vector(p[:3])) for p in pts)
+                    es.extend((base + i, base + i + 1) for i in range(len(pts) - 1))
+                    if sp.use_cyclic_u and len(pts) > 2:
+                        es.append((base + len(pts) - 1, base))
+            for a, b in es:
+                pa, pb = vs[a], vs[b]
+                n = max(1, math.ceil(math.hypot(pb[0] - pa[0], pb[1] - pa[1]) / PASSO_PERCORSO))
+                punti = [tuple(pa[i] + (pb[i] - pa[i]) * t / n for i in range(3)) for t in range(n + 1)]
+                if ter is not None:
+                    punti = [_sul_terreno(ter, dg, p) for p in punti]
+                voce["segmenti"].extend(zip(punti[:-1], punti[1:]))
+        else:
+            voce["poligoni"] = zp.poligoni_pianta(vs, fs, es)
+        oggetti.append(voce)
+
+    # il contesto: solo gli oggetti visibili sotto la collection «Sito» (costruzioni, strade, alberi, acqua, scritte),
+    # non le zome, non la rosa dei venti o il resto della scena; fuori dalla planimetria, non più grandi di 150 m
+    sotto_sito = {ob.as_pointer() for c in bpy.data.collections if c.name.lower().startswith("sito")
+                  for ob in c.all_objects}
+    # gli oggetti della proposta (tutte le zome e gli spazi accessori del file) non sono contesto
+    proposta = [ob for c in bpy.data.collections if parti_collection(c.name)[0] in set(componenti) or c.name in set(componenti)
+                for ob in c.objects]
+    dentro_report = {ob.as_pointer() for ob in proposta}
+    centro = None
+    pts = [ob.matrix_world.translation for ob in proposta]
+    if pts:
+        centro = sum(pts, Vector()) / len(pts)
+    contesto, etichette = [], []
+    for ob in context.view_layer.objects:
+        if (ob.as_pointer() in dentro_report or ob.as_pointer() in percorsi_coll or not ob.visible_get()
+                or ob.as_pointer() not in sotto_sito):
+            continue
+        if ob.type == 'FONT':
+            body = (ob.data.body or "").strip()
+            if body:
+                p = ob.matrix_world.translation
+                etichette.append((p.x, p.y, body))
+            continue
+        if ob.type not in {'MESH', 'CURVE'} or ob == ter:
+            continue
+        bb = [ob.matrix_world @ Vector(c) for c in ob.bound_box]
+        xs, ys = [p.x for p in bb], [p.y for p in bb]
+        if max(xs) - min(xs) > 150 or max(ys) - min(ys) > 150:
+            continue
+        if centro is not None and math.hypot((min(xs) + max(xs)) / 2 - centro.x, (min(ys) + max(ys)) / 2 - centro.y) > 250:
+            continue
+        m = mesh_mondo(ob)
+        if m is None:
+            continue
+        vs, fs, _es = m
+        if len(fs) > 4000:                     # un terreno o una sua copia: non è contesto
+            continue
+        poli = zp.poligoni_pianta(vs, fs)
+        if poli:
+            materiali = [s.material.name for s in ob.material_slots if s.material]
+            contesto.append({"nome": ob.name, "colore": _colore_oggetto(ob), "poligoni": poli, "materiali": materiali})
+    # intestazione della tavola: le proprietà di testo della collection «Planimetria» (Struttura, Comune, Oggetto, Catasto, Tavola)
+    intestazione = {}
+    for r in radici:
+        for k in r.keys():
+            if isinstance(r[k], str) and not k.startswith("_"):
+                intestazione.setdefault(k, r[k])
+    # la superficie coperta è delle zome e costruzioni della proposta: tutti i modelli visibili del file
+    # (le sotto-collection «nome · Esterno», «· Tetto», «· Porta»…), qualunque sia la collection del report
+    costruzioni, visti = [], set()
+    for comp in _componenti_viste():
+        if comp["nome"] not in visti:
+            visti.add(comp["nome"])
+            costruzioni.append(comp)
+    return {"oggetti": oggetti, "contesto": contesto, "etichette": etichette,
+            "terreno": ter.name if ter is not None else None, "intestazione": intestazione,
+            "costruzioni": costruzioni}
+
+
+def _sul_terreno(ter, dg, p):
+    """Il punto portato sul terreno, con un raggio dall'alto; se non lo colpisce resta dov'è."""
+    mi = ter.matrix_world.inverted()
+    o = mi @ Vector((p[0], p[1], p[2] + 1000.0))
+    d = (mi.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    try:
+        ok, loc, _n, _i = ter.ray_cast(o, d, depsgraph=dg)
+    except (RuntimeError, TypeError):
+        return p
+    if not ok:
+        return p
+    w = ter.matrix_world @ loc
+    return (p[0], p[1], w.z)
 
 
 class ZOME_OT_foglio(bpy.types.Operator):
-    """Scrive indice, preventivo, statica, termico, costruttivi e manufatti, e apre l'indice"""
+    """Scrive indice, preventivo, statica, termico, costruttivi e viste nella cartella report/, e apre l'indice (o il PDF, se chiesto). Il report è di ciò che si sceglie nel menu sopra: una zome, uno spazio accessorio, oppure Tutto, cioè tutte le zome e gli spazi accessori visibili, sommati e divisi per componente"""
     bl_idname = "zome.foglio"
     bl_label = "Crea report"
     bl_options = {'REGISTER'}
@@ -1890,78 +3217,126 @@ class ZOME_OT_foglio(bpy.types.Operator):
     def execute(self, context):
         import webbrowser
         global zome_foglio, zome_scena
+        if _firma_codice() != _FIRMA:
+            # Il pannello in memoria è quello letto all'avvio: se i .py sono cambiati si ricarica e si rifà il report,
+            # altrimenti i pezzi verrebbero raccolti dal codice vecchio.
+            def _dopo():
+                _ricarica_pannello()
+                with bpy.context.temp_override(window=bpy.context.window_manager.windows[0]):
+                    bpy.ops.zome.foglio()
+                return None
+
+            bpy.app.timers.register(_dopo, first_interval=0.1)
+            self.report({'INFO'}, "Codice cambiato: ricarico il pannello e rifaccio il report")
+            return {'FINISHED'}
         z = context.scene.zome
-        nome = z.nome or "zome"
-        if bpy.data.collections.get(nome) is None:
-            self.report({'ERROR'}, f"Non trovo la collection {nome}.")
-            return {'CANCELLED'}
         context.view_layer.update()
-        opz = {"nome": nome, "esterno": z.foglio_esterno, "perline": z.foglio_perline,
-               "vetro": z.foglio_vetro, "travi": z.foglio_travi}
-        istanza = z.preset_scelta if z.preset_scelta and z.preset_scelta != "_nessuno_" else ""
-        cartella_ist = _cartella_istanza(istanza) if istanza else ""
-        if cartella_ist and os.path.isdir(cartella_ist):
-            percorso = os.path.join(cartella_ist, "report.html")
-        else:
-            sicuro = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in nome)
-            cartella = os.path.join(_ROOT, "reports", sicuro)
-            os.makedirs(cartella, exist_ok=True)
-            percorso = os.path.join(cartella, "report.html")
+        titolo, scelti, comp = _scelta_report(context, z)
+        if not scelti:
+            self.report({'ERROR'}, "Scegli nel menu del report una zome, uno spazio accessorio o Tutto.")
+            return {'CANCELLED'}
+        tipi = {c["nome"]: c["tipo"] for c in comp}
+        zome_scelte = [c for c in scelti if tipi.get(c) == "zome"]
+        # la zome di cui si fanno statica, riepilogo e complessità: quella scelta; con Tutto quella del pannello, se c'è
+        rif = (z.nome if z.nome in zome_scelte else zome_scelte[0]) if zome_scelte else None
+        zz = (_pannello_di(rif, z) if rif else None) or z
+        opz = {"nome": titolo, "esterno": z.foglio_esterno, "perline": z.foglio_perline,
+               "vetro": z.foglio_vetro, "travi": z.foglio_travi, "approssimativi": z.foglio_approssimativi}
+        # il report è di un componente o di Tutto, non della tipologia: due modelli della stessa tipologia si confrontano
+        # accanto al blend: <cartella del blend>/Report/<modello> o Report/Tutto, tutti gli HTML insieme, link relativi
+        cartella = zome_percorsi.cartella_report(bpy.data.filepath, titolo)
+        if cartella is None:
+            self.report({'ERROR'}, "Salva prima il blend: il report va nella cartella Report accanto al file.")
+            return {'CANCELLED'}
+        os.makedirs(cartella, exist_ok=True)
+        percorso = os.path.join(cartella, "report.html")
         try:
             zome_foglio = _carica_modulo("zome_foglio")
+            _carica_modulo("zome_planimetria")          # prima della scena, che la importa
             zome_scena = _carica_modulo("zome_scena")
-            oggetti, meta = _oggetti_foglio(z)
+            oggetti, meta = _oggetti_foglio(zz, scelti, titolo, tipi, rif)
             prezzi = zome_foglio.carica_prezzi(_foglio_prezzi())
-            statica = ""
+            statica, esito = "", None
+            if rif is None:
+                statica = "Spazio accessorio fatto a mano: la statica non si calcola."
+            elif zz is z and rif != (z.nome or "zome"):
+                statica = f"«{rif}» non ha i parametri salvati: la statica non si calcola. Ricostruiscila dal pannello."
+            else:
+                try:
+                    modello = _model_for(zz)
+                    if modello is None:
+                        statica = (z.errore if zz is z else "") or "Modello non disponibile per la statica."
+                    else:
+                        esito = zome_statica.analizza(
+                            modello, TT=zz.TT / 100.0, TW=zz.TW / 100.0, density=zz.densita,
+                            snow_kN_m2=zz.statica_neve, pelli=_pelli_statica(zz))
+                        statica = esito.get("testo") or ""
+                        if statica and zz is z:
+                            z.statica_testo = statica
+                except Exception as exc:
+                    statica = "Analisi non riuscita: " + str(exc)
+            manufatti = _componenti_viste(scelti)
             try:
-                modello = _model_for(z)
-                if modello is None:
-                    statica = z.errore or "Modello non disponibile per la statica."
-                else:
-                    esito = zome_statica.analizza(
-                        modello, TT=z.TT / 100.0, TW=z.TW / 100.0, density=z.densita,
-                        snow_kN_m2=z.statica_neve, pelli=_pelli_statica(z))
-                    statica = esito.get("testo") or ""
-                    if statica:
-                        z.statica_testo = statica
+                sito = _sito_planimetria(context, [c["nome"] for c in comp], z)
             except Exception as exc:
-                statica = "Analisi non riuscita: " + str(exc)
-            manufatti, punti_igienico = _manufatti_file()
+                print("zome planimetria:", exc)
+                sito = None
             dati = zome_scena.scrivi_scena(percorso, oggetti, meta, opz, prezzi, statica=statica,
-                                           manufatti=manufatti, punti_igienico=punti_igienico)
+                                           manufatti=manufatti, sito=sito,
+                                           sezioni={"principale": rif or z.nome, "rot": z.spaccato_sezione_rot,
+                                                    "spost": z.spaccato_sezione_spost, "h": z.spaccato_orizz_h},
+                                           statica_esito=esito if esito and esito.get("ok") else None)
         except Exception as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
+        if z.foglio_pdf:
+            # Due PDF: il report interno e la planimetria per la Regione, a parte.  L'indice ha i link a tutti e due.
+            _fatti, errori = zome_scena.scrivi_pdf_tutti(os.path.dirname(percorso), dati)
+            for e in errori:
+                # Gli HTML sono scritti comunque: si apre l'indice e si dice perché un PDF manca.
+                self.report({'WARNING'}, "PDF non scritto: " + e)
+        for a in (dati.get("planimetria_dati") or {}).get("avvisi") or []:
+            self.report({'WARNING'}, "Planimetria: " + a)
         webbrowser.open(percorso)
         self.report({'INFO'}, f"Report: {dati['totale']:.2f} €  ({os.path.dirname(percorso)})")
         return {'FINISHED'}
 
 
 class ZOME_PT_dati(_SottoPannello):
-    bl_label = "Dati e elenchi"
+    bl_label = "Report"
     bl_idname = "ZOME_PT_dati"
     bl_icon = 'SPREADSHEET'
+    bl_order = 9
 
     def draw(self, context):
         z = context.scene.zome
         lay = self.layout
-        lay.label(text="Un clic scrive i sei file e apre l'indice")
         box = lay.box()
-        box.label(text="Preventivo, statica, termico,")
-        box.label(text="costruttivi, manufatti")
         row = box.row(align=True)
         row.prop(z, "foglio_esterno", toggle=True)
         row.prop(z, "foglio_perline", toggle=True)
         row = box.row(align=True)
         row.prop(z, "foglio_vetro", toggle=True)
         row.prop(z, "foglio_travi", toggle=True)
-        box.operator("zome.foglio", icon='FILE')
+        box.prop(z, "foglio_approssimativi")
+        box.prop(z, "foglio_pdf")
+        col = box.column(align=True)
+        col.label(text="Sezione verticale", icon='MOD_BOOLEAN')
+        row = col.row(align=True)
+        row.prop(z, "spaccato_sezione_rot")
+        row.prop(z, "spaccato_sezione_spost")
+        col.label(text="Sezione orizzontale", icon='VIEW_ORTHO')
+        col.prop(z, "spaccato_orizz_h")
+        box.prop(z, "report_scelta", text="")
+        titolo, scelti, _comp = _scelta_report(context, z)
+        box.operator("zome.foglio", icon='FILE', text=f"Crea report: {titolo}" if scelti else "Crea report")
 
 
 class ZOME_PT_posa(_SottoPannello):
     bl_label = "Posa e tagli"
     bl_idname = "ZOME_PT_posa"
     bl_icon = 'EMPTY_ARROWS'
+    bl_order = 1
 
     def draw(self, context):
         z = context.scene.zome
@@ -1971,40 +3346,274 @@ class ZOME_PT_posa(_SottoPannello):
         r.prop(z, "pav_taglio", slider=True)
         if z.posa == "CORICATA" and not z.floor:
             col.label(text="Accendi il pavimento: il taglio lo usa", icon='INFO')
-        col.prop(z, "orient")
-        row = col.row(align=True); row.prop(z, "px"); row.prop(z, "py"); row.prop(z, "pz")
         col.separator()
         col.prop(z, "caps")
 
 
+_USO_NOME = {"wood_external": "legno", "glass_external": "vetro", "roof_external": "tetto", APERTO: ""}
+
+
+def _attivo(context, pezzo):
+    """Oggetto attivo, se è un pezzo di quel tipo; altrimenti il primo selezionato."""
+    ob = context.active_object
+    if ob is not None and ob.get("zome_pezzo") == pezzo:
+        return ob
+    for ob in context.selected_objects:
+        if ob.get("zome_pezzo") == pezzo:
+            return ob
+    return None
+
+
+def _tipo_faccia_zome(z, strato, faccia):
+    m = _model_for(z)
+    if not m:
+        return ""
+    st, fa = int(strato), int(faccia)
+    for s in m["strata"]:
+        if s["strato"] == st and 0 <= fa < len(s["facce"]):
+            return str(s["facce"][fa][0])
+    return ""
+
+
+def _rombi_rinforzo_selezionati(context):
+    """Facce uniche (strato, faccia) da pannelli/scheletro/buco selezionati, per i pulsanti traversa."""
+    _fonte, scelte, _og = _facce_selezionate(context)
+    visti, out = set(), []
+    for st, fa, _lato in scelte:
+        if (st, fa) in visti:
+            continue
+        visti.add((st, fa))
+        out.append((st, fa))
+    return out
+
+
+def _trova_pezzi_rinforzo(context, nome, fonte, scelte):
+    """Dopo Ricostruisci: ripristina la selezione usata per i rinforzi."""
+    if not scelte:
+        return []
+    if fonte == "scheletro":
+        coll = bpy.data.collections.get(nome or "zome")
+        if coll is None:
+            return []
+        trovati = []
+        for st, fa, _lato in scelte:
+            for ob in coll.all_objects:
+                if (ob.get("zome_pezzo") == "scheletro"
+                        and int(ob.get("zome_strato", -1)) == st
+                        and int(ob.get("zome_faccia", -1)) == fa):
+                    trovati.append(ob)
+                    break
+        return trovati
+    return _trova_pannelli(context, nome, scelte, "") or _trova_buchi(context, nome, scelte)
+
+
+def _rinforzi_rombo_da_context(context, z):
+    """Per il box «Rinforzi del rombo»: accetta un pezzo di scheletro o un pannello/buco (stesso strato/faccia)."""
+    ob = _attivo(context, "scheletro")
+    if ob is not None:
+        st, fa = int(ob["zome_strato"]), int(ob["zome_faccia"])
+        tipo = str(ob.get("zome_tipo") or "") or _tipo_faccia_zome(z, st, fa)
+        return st, fa, tipo
+    for pezzo in ("pannello", "buco"):
+        ob = _attivo(context, pezzo)
+        if ob is not None:
+            st, fa = int(ob["zome_strato"]), int(ob["zome_faccia"])
+            return st, fa, _tipo_faccia_zome(z, st, fa)
+    return None
+
+
+def _pezzi_in_ordine(context):
+    """Attivo per primo, poi gli altri selezionati, senza doppioni."""
+    visti, out = set(), []
+    candidati = []
+    if context.active_object is not None:
+        candidati.append(context.active_object)
+    candidati.extend(context.selected_objects)
+    for ob in candidati:
+        if ob is None or ob.as_pointer() in visti:
+            continue
+        visti.add(ob.as_pointer())
+        out.append(ob)
+    return out
+
+
+def _pannelli_scelti(context):
+    return [ob for ob in _pezzi_in_ordine(context) if ob.get("zome_pezzo") == "pannello"]
+
+
+def _facce_selezionate(context):
+    """Pannello, bordo dello scheletro o contorno di un buco: (fonte, [(strato, faccia, lato)], oggetti)."""
+    pezzi = [ob for ob in _pezzi_in_ordine(context) if ob.get("zome_pezzo") in ("pannello", "scheletro", "buco")]
+    if not pezzi:
+        return "", [], []
+    fonte = pezzi[0].get("zome_pezzo")
+    stessi = [ob for ob in pezzi if ob.get("zome_pezzo") == fonte]
+    viste, scelte = set(), []
+    for ob in stessi:
+        try:
+            chiave = (int(ob["zome_strato"]), int(ob["zome_faccia"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if chiave in viste:
+            continue
+        viste.add(chiave)
+        scelte.append((chiave[0], chiave[1], ob.get("zome_lato") or "esterno"))
+    return fonte, scelte, stessi
+
+
+_NOME_USO = {"legno": "legno", "vetro": "vetro", "tetto": "tetto", "aperto": "buco"}
+
+
+def _n_facce_strato(z, strato):
+    m = _model_for(z)
+    if not m:
+        return 0
+    for st in m["strata"]:
+        if st["strato"] == int(strato):
+            return len(st["facce"])
+    return 0
+
+
+def _riseleziona(context, nome, trovati):
+    if not trovati:
+        return
+    if context.mode != 'OBJECT':
+        try:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        except RuntimeError:
+            return
+    try:
+        context.view_layer.update()
+    except RuntimeError:
+        pass
+    for ob in list(context.view_layer.objects):
+        try:
+            ob.select_set(False)
+        except RuntimeError:
+            pass
+    for ob in trovati:
+        try:
+            ob.select_set(True)
+        except RuntimeError:
+            pass
+    try:
+        context.view_layer.objects.active = trovati[0]
+    except RuntimeError:
+        pass
+
+
+def _trova_pannelli(context, nome, scelte, uso):
+    """Dopo la ricostruzione riprende i pannelli delle facce toccate. `uso` è legno, vetro o tetto."""
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return []
+    trovati = []
+    for st, fa, lato in scelte:
+        stessi = [ob for ob in coll.all_objects
+                  if ob.get("zome_pezzo") == "pannello"
+                  and int(ob.get("zome_strato", -1)) == st
+                  and int(ob.get("zome_faccia", -1)) == fa]
+        if uso:
+            per_uso = [ob for ob in stessi if ob.get("zome_uso") == uso]
+            if per_uso:
+                stessi = per_uso
+        if lato:
+            per_lato = [ob for ob in stessi if ob.get("zome_lato") == lato]
+            if per_lato:
+                stessi = per_lato
+        if stessi:
+            trovati.append(stessi[0])
+    return trovati
+
+
+def _trova_buchi(context, nome, scelte):
+    coll = bpy.data.collections.get(nome)
+    if coll is None:
+        return []
+    trovati = []
+    for st, fa, _lato in scelte:
+        for ob in coll.all_objects:
+            if ob.get("zome_pezzo") == "buco" and int(ob.get("zome_strato", -1)) == st and int(ob.get("zome_faccia", -1)) == fa:
+                trovati.append(ob)
+                break
+    return trovati
+
+
+def _trova_trave(context, nome, ricorda):
+    """`ricorda` è (id, strato, faccia). Se quel pezzo non c'è più, ne prende un altro dello stesso rombo."""
+    coll = bpy.data.collections.get(nome or "zome")
+    if coll is None or not ricorda:
+        return []
+    zome_id, st, fa = ricorda
+    stesso, fratello = None, None
+    for ob in coll.all_objects:
+        if ob.get("zome_pezzo") != "scheletro":
+            continue
+        if zome_id and str(ob.get("zome_id") or "") == zome_id:
+            stesso = ob
+            break
+        if fratello is None and int(ob.get("zome_strato", -1)) == st and int(ob.get("zome_faccia", -1)) == fa:
+            fratello = ob
+    trovato = stesso or fratello
+    return [trovato] if trovato is not None else []
+
+
 class ZOME_OT_uso(bpy.types.Operator):
-    """Assegna un rivestimento alle facce selezionate (in Modifica, sull'oggetto _interno, _legno, _vetro o _tetto)"""
+    """Legno, vetro o buco sul pannello selezionato, sul suo bordo o sul contorno del buco."""
     bl_idname = "zome.uso"
     bl_label = "Imposta rivestimento"
     bl_options = {'REGISTER', 'UNDO'}
     voce: StringProperty(default="glass_external")     # chiave del catalogo, "aperto", "regola" (torna alla regola) o "tutte" (azzera)
+
+    @classmethod
+    def description(cls, context, props):
+        regola = "La regola: tetto sulle falde, vetri previsti, legno nel resto"
+        resta = "La scelta resta dopo Ricostruisci, anche con misure nuove"
+        if props.voce == "regola":
+            return "Solo le facce selezionate tornano alla regola. " + regola
+        if props.voce == "tutte":
+            return "Tutte le facce tornano alla regola: si perdono le scelte a mano. " + regola
+        if props.voce == APERTO:
+            return ("Toglie il pannello selezionato e lascia il buco. Un buco si riprende selezionando il suo bordo "
+                    "o il contorno nel vuoto. " + resta)
+        nome = {"wood_external": "Legno", "glass_external": "Vetro", "roof_external": "Tetto"}.get(props.voce, props.voce)
+        return f"{nome} sul pannello selezionato, sul suo bordo o sul contorno del buco. " + resta
 
     def execute(self, context):
         import bmesh
         import json
         z = context.scene.zome
         man = _usi_manuali(z)
+        nome = z.nome or "zome"
         if self.voce == "tutte":
             z.usi_manuali = ""
             costruisci(context, z)
             return {'FINISHED'}
-        ob = context.active_object
-        if ob is None or ob.type != 'MESH' or context.mode != 'EDIT_MESH':
-            self.report({'ERROR'}, "Entra in Modifica sull'oggetto _interno, _legno, _vetro o _tetto e seleziona le facce")
+        fonte, ricorda = "", None
+        if context.mode == 'EDIT_MESH':
+            ob = context.active_object
+            if ob is None or ob.type != 'MESH':
+                self.report({'ERROR'}, "Seleziona un pannello o un bordo")
+                return {'CANCELLED'}
+            bm = bmesh.from_edit_mesh(ob.data)
+            ls, lf = bm.faces.layers.int.get("strato"), bm.faces.layers.int.get("faccia")
+            if ls is None or lf is None:
+                self.report({'ERROR'}, "L'oggetto non e' una zome (mancano gli attributi strato/faccia)")
+                return {'CANCELLED'}
+            viste = {(f[ls], f[lf]) for f in bm.faces if f.select}
+            lato = ob.get("zome_lato") or ""
+            scelte = [(st, fa, lato) for st, fa in viste]
+            fonte = ob.get("zome_pezzo") or "pannello"
+            bpy.ops.object.mode_set(mode='OBJECT')
+        else:
+            fonte, scelte, oggetti = _facce_selezionate(context)
+            if fonte == "scheletro" and oggetti:
+                ob = oggetti[0]
+                ricorda = (str(ob.get("zome_id") or ""), int(ob["zome_strato"]), int(ob["zome_faccia"]))
+        if not scelte:
+            self.report({'ERROR'}, "Seleziona un pannello, un bordo dello scheletro o il contorno di un buco")
             return {'CANCELLED'}
-        bm = bmesh.from_edit_mesh(ob.data)
-        ls, lf = bm.faces.layers.int.get("strato"), bm.faces.layers.int.get("faccia")
-        if ls is None or lf is None:
-            self.report({'ERROR'}, "L'oggetto non e' una zome (mancano gli attributi strato/faccia)")
-            return {'CANCELLED'}
-        scelte = [(f[ls], f[lf]) for f in bm.faces if f.select]
-        bpy.ops.object.mode_set(mode='OBJECT')
-        for st, fa in scelte:
+        for st, fa, _lato in scelte:
             key = f"{st}.{fa}"
             if self.voce == "regola":
                 man.pop(key, None)
@@ -2012,6 +3621,14 @@ class ZOME_OT_uso(bpy.types.Operator):
                 man[key] = self.voce
         z.usi_manuali = json.dumps(man) if man else ""
         costruisci(context, z)
+        uso = _USO_NOME.get(self.voce, "")
+        if fonte == "scheletro" and ricorda:
+            trovati = _trova_trave(context, nome, ricorda)
+        elif uso and uso != "aperto":
+            trovati = _trova_pannelli(context, nome, scelte, uso) or _trova_buchi(context, nome, scelte)
+        else:
+            trovati = _trova_buchi(context, nome, scelte) or _trova_pannelli(context, nome, scelte, "")
+        _riseleziona(context, nome, trovati)
         self.report({'INFO'}, f"{len(scelte)} facce: {self.voce}")
         return {'FINISHED'}
 
@@ -2035,39 +3652,88 @@ class ZOME_OT_porta_max(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class ZOME_OT_porta_auto(bpy.types.Operator):
+    """Sceglie la distanza della porta a parete: il piano per dei nodi con meno triangolini (pezzi con un lato sotto 8 cm)
+    in cui il vano entra; a parita', il piu' lontano dall'asse"""
+    bl_idname = "zome.porta_auto"
+    bl_label = "Automatica"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        z = context.scene.zome
+        r = _porta_auto(z)
+        if not r:
+            self.report({'ERROR'}, "Il vano non entra su nessun piano per i nodi: riduci le misure o cambia direzione")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Distanza {r['dist']:.3f} m: {r['nodi']} nodi sul piano, {r['triangolini']} triangolini")
+        return {'FINISHED'}
+
+
+class ZOME_OT_porta_passo(bpy.types.Operator):
+    """Porta il piano della porta al nodo precedente (più vicino all'asse) o successivo"""
+    bl_idname = "zome.porta_passo"
+    bl_label = "Nodo vicino"
+    bl_options = {'REGISTER', 'UNDO'}
+    verso: IntProperty(default=1)
+
+    def execute(self, context):
+        z = context.scene.zome
+        pos = porta_posizioni(_params(z))
+        if self.verso > 0:
+            scelte = [r for r in pos if r["dist"] > z.porta_dist + 1e-3]
+            r = scelte[0] if scelte else None
+        else:
+            scelte = [r for r in pos if r["dist"] < z.porta_dist - 1e-3]
+            r = scelte[-1] if scelte else None
+        if not r:
+            self.report({'INFO'}, "Nessun altro nodo in quella direzione")
+            return {'CANCELLED'}
+        z.porta_dist_scelta = True
+        z.porta_dist = r["dist"]
+        self.report({'INFO'}, f"Distanza {r['dist']:.3f} m: {r['nodi']} nodi sul piano, {r['triangolini']} triangolini"
+                              + ("" if r["entra"] else ", il vano NON entra"))
+        return {'FINISHED'}
+
+
 class ZOME_PT_pavimento(_SottoPannello):
-    bl_label = "Pavimento e fondazione"
+    bl_label = "Basamento e solaio"
     bl_idname = "ZOME_PT_pavimento"
     bl_icon = 'MESH_GRID'
+    bl_order = 3
 
     def draw(self, context):
         z = context.scene.zome
         col = self.layout.column(align=True)
-        col.prop(z, "floor")
+        col.prop(z, "floor", text="Costruisci basamento e solaio", toggle=True, icon='MESH_GRID')
+        col.separator()
+        box = col.box()
+        box.active = z.floor
+        box.label(text="Basamento (pietre e travi)")
+        box.prop(z, "pav_tipo", text="")
+        box.prop(z, "zfloor")
+        box.prop(z, "pav_seme")
+        col.separator()
         sub = col.column(align=True)
         sub.active = z.floor
-        sub.prop(z, "zfloor")
-        sub.prop(z, "pav_tipo", text="")
+        sub.label(text="Solaio (travetti e tavolato, dentro lo zome)")
         sub.prop(z, "pav_carico")
-        sub.prop(z, "pav_seme")
+        sub.prop(z, "pav_sezione")
         m = _model_for(z) if z.floor else None
         pv = m["summary"].get("pavimento") if m else None
         if pv:
-            box = col.box()
-            box.label(text=f"Travetti: {pv['travetti']} di {pv['travetto_b']*100:.0f}×{pv['travetto_h']*100:.0f} cm, "
-                           f"luce {pv['luce']:.2f} m, interasse {pv['interasse']*100:.0f} cm")
-            box.label(text=f"Volume {pv['volume_travetti']*1000:.0f} dm³   massa {pv['massa_travetti']:.0f} kg")
-            box.label(text=f"Dormienti/pali: {pv['volume_dormienti']*1000:.0f} dm³   massa {pv['massa_dormienti']:.0f} kg")
-            box.label(text=f"Tavolato 2,5 cm: {pv['area_tavolato']:.2f} m²   {pv['volume_tavolato']*1000:.0f} dm³")
-            box.label(text=f"Pietre: {pv['pietre']}   Pavimento finito a {pv['z_finito']:.2f} m")
-            box.label(text=f"Altezza libera sotto i travetti: {pv['altezza_libera']*100:.0f} cm", icon='INFO')
-            box.label(text=f"Interasse dalla freccia L/300, C24, carico {pv['carico']*100:.0f} kg/m²", icon='INFO')
+            sub.label(text=f"{pv.get('travetti', 0)} travetti {pv.get('travetto_b', 0)*100:.0f}×{pv.get('travetto_h', 0)*100:.0f} cm, "
+                           f"interasse {pv.get('interasse', 0)*100:.0f} cm, luce {pv.get('luce', 0):.2f} m")
+        if pv and not pv.get("travetti_ok", True):
+            col.label(text="I travetti così non tengono: aumenta la sezione o riduci il carico", icon='ERROR')
+        if pv and not pv.get("travi_ok", True):
+            col.label(text="I travi così non tengono: luce o carico troppo alti", icon='ERROR')
 
 
 class ZOME_PT_porta(_SottoPannello):
     bl_label = "Porta"
     bl_idname = "ZOME_PT_porta"
     bl_icon = 'MOD_BUILD'
+    bl_order = 5
 
     def draw(self, context):
         z = context.scene.zome
@@ -2076,21 +3742,47 @@ class ZOME_PT_porta(_SottoPannello):
         sub = col.column(align=True)
         sub.active = z.porta
         sub.prop(z, "porta_modo", expand=True)
-        row = sub.row(align=True); row.prop(z, "porta_dir"); row.prop(z, "porta_dist")
-        sub.operator("zome.porta_max")
+        m = _model_for(z) if z.porta else None
+        info = m["summary"].get("porta") if m else None
+        polo = bool(info and info.get("su_parete"))     # sul tappo la Direzione non conta, e la Distanza vale solo per il corridoio
+        row = sub.row(align=True)
+        d_ = row.row(align=True); d_.active = not polo; d_.prop(z, "porta_dir")
+        d_ = row.row(align=True); d_.active = not (polo and z.porta_modo == "parete")
+        if polo and z.porta_modo != "parete":
+            d_.prop(z, "porta_dist", text="Lunghezza (m)")
+        else:
+            d_.prop(z, "porta_dist")
+        if polo:
+            pass
+        elif z.porta_modo == "parete":
+            row = sub.row(align=True)
+            row.operator("zome.porta_passo", text="", icon='TRIA_LEFT').verso = -1
+            row.operator("zome.porta_auto")
+            row.operator("zome.porta_passo", text="", icon='TRIA_RIGHT').verso = 1
+        else:
+            sub.operator("zome.porta_max")
         row = sub.row(align=True); row.prop(z, "porta_w"); row.prop(z, "porta_h")
         row = sub.row(align=True); row.prop(z, "porta_anta"); row.prop(z, "porta_apertura")
         if z.porta_modo != "parete":
             sub.prop(z, "porta_falda")
-        m = _model_for(z) if z.porta else None
-        if m and m["summary"].get("porta"):
-            info = m["summary"]["porta"]
-            if info.get("fuori"):
+        if info:
+            if polo and not info["entra"]:
+                col.label(text=("Vano troppo grande per il tappo" if z.porta_modo == "parete" else "Vano troppo grande per la zome")
+                          + ": riduci le misure", icon='ERROR')
+            elif info.get("sopra"):
+                col.label(text="Porta più alta della zome: il tetto del corridoio prosegue sopra", icon='INFO')
+            elif polo and z.porta_modo == "parete":
+                col.label(text="Porta sul tappo del polo", icon='CHECKMARK')
+            elif polo:
+                col.label(text="Porta in fondo al passaggio, fuori dal tappo", icon='CHECKMARK')
+            elif info.get("fuori"):
                 col.label(text="Piano fuori dalla zome: il passaggio va verso la zome", icon='CHECKMARK')
             elif info["entra"]:
                 col.label(text="Il vano entra nella sezione", icon='CHECKMARK')
             else:
                 col.label(text="Il vano NON entra: avvicina il piano o riduci le misure", icon='ERROR')
+            if z.porta_modo == "corridoio" and info.get("vano"):
+                col.label(text=f"Porta nel fondo: {info['vano'][0] * 100:.0f} × {info['vano'][1] * 100:.0f} cm di luce")
             ar = sum(a for k, a in m["summary"]["tappi"].items() if k.startswith(("porta", "corridoio")))
             col.label(text=f"Parete con il vano tolto: {ar:.2f} m²")
 
@@ -2099,6 +3791,7 @@ class ZOME_PT_esterno(_SottoPannello):
     bl_label = "Esterno e rivestimenti"
     bl_idname = "ZOME_PT_esterno"
     bl_icon = 'MATERIAL'
+    bl_order = 4
 
     def draw(self, context):
         z = context.scene.zome
@@ -2118,17 +3811,46 @@ class ZOME_PT_esterno(_SottoPannello):
         row = box.row(align=True); row.prop(z, "scala_legno"); row.prop(z, "seme_legno")
         box = col.box()
         box.label(text="Vetri", icon='MOD_WIREFRAME')
-        row = box.row(align=True); row.prop(z, "t_vetro"); row.prop(z, "stella_vetri")
+        box.prop(z, "t_vetro")
         row = box.row(align=True); row.prop(z, "finestre"); row.prop(z, "strato_finestre")
         box = col.box()
         box.label(text="Interno a perline", icon='SNAP_EDGE')
         row = box.row(align=True); row.prop(z, "t_int_legno"); row.prop(z, "larghezza_perline")
         box.prop(z, "isolante")
         box = col.box()
-        box.label(text="Scelta a mano (in Modifica, facce selezionate)", icon='RESTRICT_SELECT_OFF')
+        box.label(text="Pannello selezionato", icon='RESTRICT_SELECT_OFF')
+        fonte, facce, oggetti = _facce_selezionate(context)
+        if not z.esterno:
+            _scritta(box, "Accendi Esterno", "Con l'esterno acceso ogni pannello è un pezzo a sé, e qui si sceglie legno, vetro, tetto o buco")
+        elif not facce:
+            box.label(text="Seleziona un pannello, un bordo o il contorno di un buco")
+        else:
+            ob = oggetti[0]
+            uso = _NOME_USO.get(ob.get("zome_uso"), ob.get("zome_uso") or "")
+            if fonte == "scheletro":
+                dove = "bordo"
+            elif fonte == "buco":
+                dove = "buco"
+            else:
+                dove = "interno" if ob.get("zome_lato") == "interno" else "esterno"
+            if ob.get("zome_sotto_tetto"):
+                uso = "legno sotto il tetto"
+            if len(facce) == 1:
+                box.label(text=f"Strato {int(ob['zome_strato'])}, faccia {int(ob['zome_faccia'])} · {dove}" + (f", {uso}" if uso else ""))
+            else:
+                box.label(text=f"{len(facce)} facce selezionate")
         row = box.row(align=True)
-        for etichetta, voce in (("Tetto", "roof_external"), ("Legno", "wood_external"), ("Vetro", "glass_external"), ("Buco", APERTO)):
-            row.operator("zome.uso", text=etichetta).voce = voce
+        uso_attivo = oggetti[0].get("zome_uso") if len(oggetti) == 1 else ""
+        if len(oggetti) == 1 and oggetti[0].get("zome_sotto_tetto"):
+            uso_attivo = "tetto"
+        op = row.operator("zome.uso", text="Legno", depress=(uso_attivo == "legno"))
+        op.voce = "wood_external"
+        op = row.operator("zome.uso", text="Vetro", depress=(uso_attivo == "vetro"))
+        op.voce = "glass_external"
+        row = box.row(align=True)
+        row.operator("zome.uso", text="Tetto").voce = "roof_external"
+        op = row.operator("zome.uso", text="Buco", depress=(uso_attivo == "aperto"))
+        op.voce = APERTO
         row = box.row(align=True)
         row.operator("zome.uso", text="Torna alla regola").voce = "regola"
         row.operator("zome.uso", text="Azzera tutto").voce = "tutte"
@@ -2567,7 +4289,8 @@ def _pelli_statica(z):
 
 
 class ZOME_OT_statica(bpy.types.Operator):
-    """Telaio dello scheletro: peso del legno, dei rivestimenti, dell'isolante e neve"""
+    """Telaio dello scheletro: peso del legno, dei rivestimenti, dell'isolante e neve. Qui le prime righe; i numeri per asta
+    sono nell'outliner, in Statica → Sforzo oppure Momento"""
     bl_idname = "zome.statica"
     bl_label = "Calcola sollecitazioni"
     bl_options = {'REGISTER'}
@@ -2583,7 +4306,7 @@ class ZOME_OT_statica(bpy.types.Operator):
         if esito.get("ok"):
             _STATICA_CACHE["esito"] = esito
             try:
-                _statica_disegna(context, z.nome or "zome", esito, fuori_m=z.TW / 100.0 + 0.04)
+                _con_posa(z.nome or "zome", z, lambda: _statica_disegna(context, z.nome or "zome", esito, fuori_m=z.TW / 100.0 + 0.04))
             except Exception as e:
                 esito["testo"] += "\nVista 3D non disegnata: " + str(e)
             try:
@@ -2596,7 +4319,7 @@ class ZOME_OT_statica(bpy.types.Operator):
 
 
 class ZOME_OT_statica_copia(bpy.types.Operator):
-    """Copia l'ultimo rapporto negli appunti, senza ricalcolare"""
+    """Copia l'ultimo rapporto intero negli appunti (nel pannello ci sono solo le prime righe), senza ricalcolare"""
     bl_idname = "zome.statica_copia"
     bl_label = "Copia negli appunti"
 
@@ -2616,25 +4339,56 @@ class ZOME_OT_statica_copia(bpy.types.Operator):
 
 
 class ZOME_OT_traversa(bpy.types.Operator):
-    """Accende o spegne la traversa su questo strato"""
+    """Accende o spegne un rinforzo sul rombo selezionato, oppure lo copia su tutto lo strato"""
     bl_idname = "zome.traversa"
     bl_label = "Traversa"
-    bl_description = "Tra anelli: da un anello all'altro (nello zome dritto è verticale). Sull'anello: i due vertici dello stesso anello (nello zome dritto è orizzontale)"
     bl_options = {'REGISTER', 'UNDO'}
 
     strato: IntProperty(default=1)
+    faccia: IntProperty(default=-1)
     quale: StringProperty(default="t")
+    tutto: BoolProperty(default=False)
+
+    @classmethod
+    def description(cls, context, props):
+        if props.tutto:
+            return "Copia Tra anelli e Sull'anello di questo rombo su tutti gli altri dello strato"
+        acceso = ("Acceso = traversa disegnata su questo rombo; con più facce selezionate vale per tutte. "
+                  "Se sono accese tutte e due, nel rombo si incrociano (è normale)")
+        if props.quale == "a":
+            return "Sull'anello: fra i due vertici dello stesso anello (nello zome dritto è orizzontale). " + acceso
+        return "Tra anelli: da un anello all'altro (nello zome dritto è verticale). " + acceso
 
     def execute(self, context):
         z = context.scene.zome
-        z.traverse = toggle_traverse(z.traverse, self.strato, self.quale)
+        nome = z.nome or "zome"
+        fonte, scelte, _og = _facce_selezionate(context)
+        if self.tutto:
+            z.traverse = traversa_tutto_strato(z.traverse, self.strato, lettere_traversa(z.traverse, self.strato, self.faccia))
+        elif self.faccia >= 0:
+            coppie = _rombi_rinforzo_selezionati(context)
+            if not coppie:
+                coppie = [(self.strato, self.faccia)]
+            n_f = len(coppie)
+            for st, fa in coppie:
+                n = _n_facce_strato(z, st)
+                z.traverse = toggle_traversa_faccia(z.traverse, st, fa, self.quale, n)
+        else:
+            z.traverse = toggle_traverse(z.traverse, self.strato, self.quale)
+            n_f = 1
+        if not z.live:
+            costruisci(context, z)
+        _riseleziona(context, nome, _trova_pezzi_rinforzo(context, nome, fonte, scelte))
+        if self.faccia >= 0 and not self.tutto and n_f > 1:
+            self.report({'INFO'}, f"Traversa {self.quale}: {n_f} facce")
         return {'FINISHED'}
 
 
 class ZOME_PT_scheletro(_SottoPannello):
-    bl_label = "Scheletro (struttura)"
+    bl_label = "Scheletro"
     bl_idname = "ZOME_PT_scheletro"
     bl_icon = 'MOD_WIREFRAME'
+    bl_order = 2
 
     def draw(self, context):
         z = context.scene.zome
@@ -2646,36 +4400,35 @@ class ZOME_PT_scheletro(_SottoPannello):
         sub.prop(z, "giunto", text="Giunto")
         sub.prop(z, "densita", text="Densità (kg/m³)")
         box = sub.box()
-        box.label(text="Traverse, una riga per strato")
-        box.label(text="Tra anelli: fra due anelli (dritta = verticale)")
-        box.label(text="Sull'anello: stesso anello (dritta = orizzontale)")
-        box.label(text="Sui triangoli «sull'anello» non si mette")
-        mtab = _model_for(z)
-        flags = parse_traverse(z.traverse)
-        if mtab:
-            for st in mtab["strata"]:
-                rombi = any(k == "rombo" and len(pt) == 4 for k, pt in st["facce"])
-                tri = any(str(k).startswith("triangolo") and len(pt) == 3 for k, pt in st["facce"])
-                nome = "misto" if rombi and tri else ("triangoli" if tri else "rombi")
-                row = box.row(align=True)
-                row.label(text=f"{st['strato']} {nome}")
-                acc = flags.get(st["strato"], ())
-                op = row.operator("zome.traversa", text="Tra anelli", depress=("t" in acc))
-                op.strato = st["strato"]
-                op.quale = "t"
-                if rombi:
-                    op = row.operator("zome.traversa", text="Sull'anello", depress=("a" in acc))
-                    op.strato = st["strato"]
-                    op.quale = "a"
-                else:
-                    row.label(text="—")
-        box.label(text="Stessa sezione. Il calcolo del telaio le include.")
+        _scritta(box, "Rinforzi del rombo", "Si sceglie il rombo selezionando un pannello (Esterno) o un pezzo di scheletro: "
+                 "basta un clic sul legno o sul vetro, non serve la modalità Modifica", icon='RESTRICT_SELECT_OFF')
+        sel = _rinforzi_rombo_da_context(context, z) if z.scheletro else None
+        if sel is None:
+            box.label(text="Seleziona un pannello (Esterno) o un pezzo di scheletro")
+        else:
+            st, fa, tipo = sel
+            rombo = tipo == "rombo"
+            etichetta = { "rombo": "rombo", "triangolo": "triangolo", "triangolo_giu": "triangolo (parte bassa)" }.get(tipo, tipo or "?")
+            n_sel = len(_rombi_rinforzo_selezionati(context))
+            if n_sel > 1:
+                box.label(text=f"{n_sel} facce selezionate")
+            box.label(text=f"Strato {st}, faccia {fa} · {etichetta}")
+            acc = lettere_traversa(z.traverse, st, fa)
+            row = box.row(align=True)
+            op = row.operator("zome.traversa", text="Tra anelli", depress=("t" in acc))
+            op.strato, op.faccia, op.quale, op.tutto = st, fa, "t", False
+            if rombo:
+                op = row.operator("zome.traversa", text="Sull'anello", depress=("a" in acc))
+                op.strato, op.faccia, op.quale, op.tutto = st, fa, "a", False
+            op = box.operator("zome.traversa", text="Su tutto lo strato")
+            op.strato, op.faccia, op.quale, op.tutto = st, fa, "t", True
+        if z.traverse:
+            box.label(text="Preset: " + z.traverse, icon='PRESET')
         sub.separator()
         sub.prop(z, "statica_neve")
         sub.prop(z, "statica_momento", text="Momento")
         sub.operator("zome.statica", icon='FORCE_FORCE')
         sub.operator("zome.statica_copia", icon='COPYDOWN', text="Copia negli appunti")
-        sub.label(text="Numeri nell'outliner: Statica → Sforzo, oppure Momento")
         ob = context.active_object
         scheda = ob.get("scheda") if ob else ""
         if scheda:
@@ -2687,12 +4440,11 @@ class ZOME_PT_scheletro(_SottoPannello):
             prime = [r for r in z.statica_testo.split("\n") if r][:4]
             for riga in prime:
                 box.label(text=riga)
-            box.label(text="Il resto: «Copia negli appunti». Per asta, i numeri sono nell'outliner.")
 
 
-_classes = (ZomeProps, ZOME_OT_crea, ZOME_OT_reimposta, ZOME_OT_zh_altezza, ZOME_OT_preset_salva, ZOME_OT_preset_carica, ZOME_OT_preset_elimina, ZOME_OT_aggiorna, ZOME_PT_panel, ZOME_OT_uso, ZOME_OT_porta_max, ZOME_OT_statica, ZOME_OT_statica_copia, ZOME_OT_traversa, ZOME_OT_vista, ZOME_OT_anim_crea, ZOME_OT_anim_rimuovi, ZOME_OT_anteprima, ZOME_OT_render, ZOME_OT_foglio,
-            ZOME_PT_posa, ZOME_PT_pavimento, ZOME_PT_porta, ZOME_PT_esterno, ZOME_PT_scheletro, ZOME_PT_vista, ZOME_PT_viste,
-            ZOME_PT_dati, ZOME_PT_comandi)
+_classes = (ZomeProps, ZOME_OT_info, ZOME_OT_crea,ZOME_OT_reimposta, ZOME_OT_zh_altezza, ZOME_OT_preset_salva, ZOME_OT_preset_carica, ZOME_OT_preset_elimina, ZOME_OT_modello_nuovo, ZOME_OT_aggiorna, ZOME_PT_panel, ZOME_OT_uso, ZOME_OT_porta_max, ZOME_OT_porta_auto, ZOME_OT_porta_passo, ZOME_OT_statica, ZOME_OT_statica_copia, ZOME_OT_traversa, ZOME_OT_vista, ZOME_OT_anim_crea, ZOME_OT_anim_rimuovi, ZOME_OT_anteprima, ZOME_OT_render, ZOME_OT_foglio,
+            ZOME_PT_posa, ZOME_PT_scheletro, ZOME_PT_pavimento, ZOME_PT_esterno, ZOME_PT_porta, ZOME_PT_posizione, ZOME_PT_vista_modello, ZOME_PT_vista,
+            ZOME_PT_dati)
 
 
 _CATALOGO_MATERIALI = (
@@ -2757,18 +4509,50 @@ def _assicura_materiali():
                 pass
 
 
+@bpy.app.handlers.persistent
+def _posa_all_apertura(_file=None):
+    """All'apertura di un file i campi di Posizione prendono i valori del modello."""
+    for scena in bpy.data.scenes:
+        try:
+            _ripara_modelli(scena.zome)
+            _sincronizza_posa(scena.zome)
+        except Exception as e:
+            print("zome posizione:", e)
+
+
+def _posa_dopo_ricarica():
+    _posa_all_apertura()
+    return None
+
+
 def register():
     unregister()
     for c in _classes:
         bpy.utils.register_class(c)
     bpy.types.Scene.zome = PointerProperty(type=ZomeProps)
     _assicura_materiali()
+    if _posa_all_apertura not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_posa_all_apertura)
+    if not bpy.app.timers.is_registered(_posa_dopo_ricarica):
+        bpy.app.timers.register(_posa_dopo_ricarica, first_interval=0.5)
     if not bpy.app.timers.is_registered(_avvia_controllo):
         bpy.app.timers.register(_avvia_controllo, first_interval=1.5)
+    if not bpy.app.timers.is_registered(_sorveglia):
+        bpy.app.timers.register(_sorveglia, first_interval=2.0, persistent=True)
+    _sync_firma_codice()
 
 
 def unregister():
-    for fn in (_avvia_controllo, _ridisegna_pannello):
+    for fn in [f for f in bpy.app.handlers.load_post if getattr(f, "__name__", "") == "_posa_all_apertura"]:
+        bpy.app.handlers.load_post.remove(fn)
+    for nome in ("ZOME_PT_viste", "ZOME_PT_comandi"):
+        vecchia = getattr(bpy.types, nome, None)
+        if vecchia is not None:
+            try:
+                bpy.utils.unregister_class(vecchia)
+            except RuntimeError:
+                pass
+    for fn in (_avvia_controllo, _ridisegna_pannello, _sorveglia):
         try:
             if bpy.app.timers.is_registered(fn):
                 bpy.app.timers.unregister(fn)

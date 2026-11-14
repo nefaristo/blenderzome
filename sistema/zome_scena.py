@@ -6,27 +6,27 @@ Per ogni tipo: isometrica, pianta, laterale, sezione.
 import math
 import os
 from collections import Counter
-from datetime import date
+from datetime import datetime
 
 from zome_foglio import (NOMI, TILT_NEVE, LUCE_GRANDE, _altitudini, _croce, _esc, _euro,
                          _iva, _leggibile, _n, _scala, _unita, blocco_termico, peso_di,
                          prezzo_spessore, scegli_vetro, svg_torta)
 from zome_core import _dist, _dot, _sub
+import zome_planimetria
 
 _PAL = ("#c0392b", "#2471a3", "#1e8449", "#b7950b", "#6c3483", "#d35400", "#148f77",
         "#1a5276", "#a04000", "#196f3d", "#4a235a", "#7d6608", "#1abc9c", "#7b241c",
         "#5d6d7e", "#b9770e")
 _LUCE = (0.35, 0.55, 0.76)
-_CAM = (0.72, 0.48, 0.50)
 _SUFFISSI = ("_scheletro", "_pareti_porta", "_anta_vetro", "_anta", "_porta", "_legno",
-             "_vetro", "_tetto", "_gronda", "_perline", "_pav_travetti", "_pav_dormienti",
+             "_vetro", "_tetto", "_gronda", "_perline", "_pav_travetti", "_pav_travi", "_pav_dormienti",
              "_pav_tavolato", "_pav_fondo", "_pav_isolante", "_isolante", "_pav_pietre", "_pav_gradino", "_tappi")
 _ORDINE = (
     ("scheletro", "Scheletro", "c24", "m³", "travi"),
-    ("dormienti", "Pali del pavimento", "c24", "m³", "travi"),
+    ("dormienti", "Travi", "c24", "m³", "travi"),
     ("travetti", "Travetti", "c24", "m³", "travi"),
     ("tavolato", "Pavimento", "perline", "m²", "travi"),
-    ("fondo", "Tavolato sotto i travetti", "perline", "m²", "travi"),
+    ("fondo", "Sottopavimento", "perline", "m²", "travi"),
     ("perline_est", "Esterno", "perline", "m²", "esterno"),
     ("pareti", "Pareti del corridoio", "perline", "m²", "esterno"),
     ("perline_int", "Interno", "perline", "m²", "perline"),
@@ -35,6 +35,11 @@ _ORDINE = (
     ("copertura", "Copertura", "tegole", "m²", "esterno"),
     ("aggiunto", "Solidi non assegnati", None, None, None),
 )
+_SOLO_SUPERFICIE = {"tavolato", "fondo", "perline_est", "perline_int"}     # si tagliano in opera: superficie e peso
+_LINEARI_APPROSSIMATI = {"travetti", "dormienti"}            # con i tagli approssimativi: lunghezze per classi e barre
+_SUPERFICIE_APPROSSIMATA = {"isolante", "copertura", "pareti"}   # con i tagli approssimativi: solo la superficie
+_ASSI = {"tavolato": "larghezza_assi_m", "perline_est": "larghezza_assi_m", "pareti": "larghezza_assi_m",
+         "fondo": "larghezza_perline_m", "perline_int": "larghezza_perline_m"}
 _FETTA = {
     "scheletro": ("c24", "C24"), "porta": ("c24", "C24"),
     "dormienti": ("c24", "C24"), "travetti": ("c24", "C24"),
@@ -217,7 +222,8 @@ def _tre_misure(verts, faces):
 
 def _chiave_tipo(sol):
     if sol.get("classe") is not None and sol["gruppo"] == "scheletro":
-        return ("classe", sol["nome"], sol.get("strato"), int(sol["classe"]))
+        # la classe vale dentro una zome: due zome nello stesso report hanno travi diverse con la stessa classe
+        return ("classe", sol.get("componente") or "", sol.get("strato"), int(sol["classe"]))
     if sol["gruppo"] in ("perline_est", "perline_int", "vetro", "copertura", "pareti", "tavolato"):
         return ("forma", sol["gruppo"], _chiave_pannello(sol))
     return ("firma", firma(sol["verts"], sol.get("strato")))
@@ -290,6 +296,7 @@ def _spezza(rec):
         out.append({"nome": rec["nome"], "ruolo": rec["ruolo"], "materiale": rec.get("materiale") or "",
                     "verts": usati, "faces": nuove,
                     "strato": st, "classe": cl, "cutlist": rec.get("cutlist"),
+                    "faccia": rec.get("faccia"), "forma": rec.get("forma") or "", "componente": rec.get("componente") or "",
                     "tilt": math.degrees(math.acos(min(1.0, abs(nrm[2]))))})
     return out
 
@@ -302,12 +309,12 @@ def _gruppo(sol):
         return "tappi"
     if ruolo == "Isolante":
         return "isolante"
-    if ruolo == "Pavimento":
+    if ruolo in ("Pavimento", "Solaio", "Basamento"):           # «Pavimento» nei blend di prima di ecac093
         if "fondo" in nome:
             return "fondo"
         if "travett" in nome:
             return "travetti"
-        if "dormient" in nome:
+        if "dormient" in nome or "_pav_travi" in nome:
             return "dormienti"
         if "tavolat" in nome:
             return "tavolato"
@@ -438,7 +445,8 @@ def svg_schema(pezzi, colore_di, w, h, azimut=0.0, bordo=0.8):
             if _dot(nrm, vista) <= 0.02:
                 continue
             k = 0.55 + 0.45 * abs(_dot(nrm, _unita(_LUCE)))
-            profondita = sum(_dot(p, _CAM) for p in pts) / len(pts)
+            # prima le facce lontane dalla camera, poi le vicine: così l'interno non copre il guscio
+            profondita = sum(_dot(p, vista) for p in pts) / len(pts)
             facce.append((profondita, [_iso(p) for p in pts], _tonalita(col, k), _tonalita(col, 0.32)))
     if not facce:
         return ""
@@ -597,6 +605,58 @@ def _viste_tipo(campione, colore):
             _disegna(sezione, et_s, 120, 100, False, vertici=vert_s), incroci)
 
 
+def _asse(sol):
+    """I due capi di un pezzo lungo: la media dei vertici da una parte e dall'altra della sua lunghezza."""
+    vs = sol["verts"]
+    a, b = max(((p, q) for p in vs for q in vs), key=lambda pq: _dot(_sub(pq[0], pq[1]), _sub(pq[0], pq[1])))
+    d = _sub(b, a)
+    t = [_dot(_sub(p, a), d) for p in vs]
+    mezzo = (min(t) + max(t)) / 2
+    lato0 = [p for p, ti in zip(vs, t) if ti < mezzo] or [a]
+    lato1 = [p for p, ti in zip(vs, t) if ti >= mezzo] or [b]
+    media = lambda ps: tuple(sum(p[i] for p in ps) / len(ps) for i in range(3))
+    return media(lato0), media(lato1)
+
+
+def _svg_posizione(chiave, tutti, scelti, scheletro, w=200, h=150):
+    """Dove sta il tipo nella zome. Travetti e travi: dall'alto, tutti in nero e quelli del tipo in rosso.
+    Gli altri: lo scheletro in isometrica a linee nere leggere; i pezzi del tipo in rosso (linee spesse se sono travi)."""
+    scelti_id = {id(s) for s in scelti}
+    parti = []
+    if chiave in ("travetti", "dormienti"):
+        poligoni = [(_inviluppo([(p[0], p[1]) for p in s["verts"]]), id(s) in scelti_id) for s in tutti]
+        punti = [q for poly, _ in poligoni for q in poly]
+        if not punti:
+            return ""
+        mappa, _s = _scala(punti, w, h, 8)
+        for poly, rosso in sorted(poligoni, key=lambda t: t[1]):
+            pts = " ".join(f"{mappa(q)[0]:.1f},{mappa(q)[1]:.1f}" for q in poly)
+            stile = 'fill="#c0392b" stroke="#7b1d14"' if rosso else 'fill="none" stroke="#222" stroke-opacity="0.55"'
+            parti.append(f'<polygon points="{pts}" {stile} stroke-width="0.8"/>')
+    else:
+        linee = [(_asse(s), False) for s in scheletro if id(s) not in scelti_id]
+        if chiave == "scheletro":
+            linee += [(_asse(s), True) for s in scelti]
+        punti = [_iso(p) for (a, b), _ in linee for p in (a, b)]
+        facce = []
+        if chiave != "scheletro":
+            for s in scelti:
+                f = s["faces"][_faccia_pianta(s["verts"], s["faces"])]
+                facce.append([_iso(s["verts"][i]) for i in f])
+            punti += [q for f in facce for q in f]
+        if not punti:
+            return ""
+        mappa, _s = _scala(punti, w, h, 8)
+        for (a, b), rosso in linee:
+            p, q = mappa(_iso(a)), mappa(_iso(b))
+            stile = 'stroke="#c0392b" stroke-width="2.4"' if rosso else 'stroke="#222" stroke-opacity="0.35" stroke-width="0.7"'
+            parti.append(f'<line x1="{p[0]:.1f}" y1="{p[1]:.1f}" x2="{q[0]:.1f}" y2="{q[1]:.1f}" {stile} stroke-linecap="round"/>')
+        for f in facce:
+            pts = " ".join(f"{mappa(q)[0]:.1f},{mappa(q)[1]:.1f}" for q in f)
+            parti.append(f'<polygon points="{pts}" fill="#c0392b" fill-opacity="0.85" stroke="#7b1d14" stroke-width="0.6"/>')
+    return f'<svg class="posizione" viewBox="0 0 {w} {h}" width="{w}" height="{h}">{"".join(parti)}</svg>'
+
+
 def _chiave_pannello(sol, passo=0.01):
     """Forma della faccia grande. passo in metri: 1 cm per dire se due pezzi sono lo stesso, 5 cm per il colore."""
     verts, faces = sol["verts"], sol["faces"]
@@ -689,7 +749,69 @@ def _testo_formula(f):
             f"darebbe {_n(f['i_flessione'] * 100, 0)} cm. {chiusura}")
 
 
+_GRIGIO_LAMINA = "#9a9a9a"        # le schegge sotto la soglia, che la lista dei pezzi non disegna
+_FORME = {"rombo": "rombo", "triangolo": "triangolo", "triangolo_giu": "triangolo rovesciato", "tappo": "chiusura",
+          "quadrilatero": "quadrilatero", "pentagono": "pentagono"}
+
+
+def _svg_faccia(pezzi, colore_di, w=200, h=150):
+    """I pezzi di una faccia visti di fronte, ognuno col colore del suo tipo e il numero della riga."""
+    tutti = [p for pz in pezzi for p in pz["verts"]]
+    if len(tutti) < 3:
+        return ""
+    c, assi = _pca(tutti)
+    piano = lambda p: (_dot(_sub(p, c), assi[0]), _dot(_sub(p, c), assi[1]))
+    poligoni = [(_inviluppo([piano(p) for p in pz["verts"]]), colore_di[id(pz)], k) for k, pz in enumerate(pezzi)]
+    mappa, _s = _scala([q for poly, _, _ in poligoni for q in poly], w, h, 10)
+    parti = []
+    for poly, col, k in poligoni:
+        pts = " ".join(f"{mappa(q)[0]:.1f},{mappa(q)[1]:.1f}" for q in poly)
+        parti.append(f'<polygon points="{pts}" fill="{col}" stroke="{_tonalita(col, 0.32)}" stroke-width="0.8"/>')
+    return f'<svg class="disegno" viewBox="0 0 {w} {h}" width="{w}" height="{h}">{"".join(parti)}</svg>'
+
+
+def _facce_scheletro(pezzi, gruppi, colori):
+    """Le facce dello scheletro (rombi, triangoli, chiusure) con gli stessi pezzi, una riga per gruppo: quante sono, i loro
+    pezzi e dove stanno.  `pezzi` comprende le schegge (in grigio): si tagliano anche loro.  Solo per i pezzi che sanno a che faccia appartengono (quelli generati); gli altri restano nella
+    lista dei pezzi.  Vale per dritta e coricata: i pezzi sono già nel mondo."""
+    import zome_complessita as zx
+    if not any(pz.get("faccia") is not None for pz in pezzi):
+        return None
+    tipo_di = {id(pz): t for t, membri in gruppi.items() for pz in membri}
+    colore_di = {id(pz): colori.get(tipo_di[id(pz)], _PAL[0]) if id(pz) in tipo_di else _GRIGIO_LAMINA for pz in pezzi}
+    facce = [tuple(pz["faccia"]) if pz.get("faccia") is not None else None for pz in pezzi]
+    tipi = zx.tipi_pezzi([zx.pezzo(pz["verts"], pz["faces"]) for pz in pezzi])
+    tipo_zx = {id(pz): ti for pz, ti in zip(pezzi, tipi)}
+    per_faccia = {}
+    for pz, f in zip(pezzi, facce):
+        if f is not None:
+            per_faccia.setdefault(f, []).append(pz)
+    righe = []
+    for g in zx.facce_uguali(tipi, facce):
+        campione = [pezzi[i] for i in g["pezzi"]]
+        membri = [pz for f in g["facce"] for pz in per_faccia[f]]
+        forma = _FORME.get(campione[0].get("forma") or "", campione[0].get("forma") or "faccia")
+        strati = sorted({f[0] for f in g["facce"] if f[0] < 900})
+        elenco, tipo_col = Counter(), {}
+        for pz in campione:
+            chiave = (colore_di[id(pz)], round(_tre_misure(pz["verts"], pz["faces"])[0], 3))
+            elenco[chiave] += 1
+            tipo_col[chiave] = tipo_zx[id(pz)]
+        voci, visti = [], set()
+        for (col, L), k in sorted(elenco.items(), key=lambda x: -x[0][1]):
+            ti = tipo_col[(col, L)]
+            voci.append((k, col, L, ti is not None and ti in visti))      # stesso taglio di una voce sopra: è il suo specchio
+            visti.add(ti)
+        righe.append({"n": len(g["facce"]), "forma": forma, "strati": strati, "n_pezzi": len(campione),
+                      "pezzi": voci,
+                      "disegno": _svg_faccia(campione, colore_di),
+                      "posizione": _svg_posizione("scheletro", pezzi, membri, pezzi)})
+    fuori = sum(1 for f in facce if f is None)
+    return {"righe": righe, "facce": len(per_faccia), "fuori": fuori}
+
+
 def componi(oggetti, meta, opz, prezzi):
+    import zome_complessita                        # qui, così vale il modulo appena ricaricato dal pannello
     meta = meta or {}
     solidi = espandi(oggetti)
     visibili = [s for s in solidi if s["gruppo"] not in ("pietre", "tappi")]
@@ -705,6 +827,10 @@ def componi(oggetti, meta, opz, prezzi):
         note.append(f"{len(lamine)} pezzi dello scheletro{nota_dove} sono lamine senza spessore: "
                     "il solido è collassato e la pianta non è una tavola. Non sono disegnati e non entrano nel conto.")
     visibili = [s for s in visibili if s not in lamine]
+    # L'isolante fra i travetti non si disegna a pezzi: si taglia grezzo, la quantità è la superficie più il 10%.
+    isol_pav = [s for s in visibili if s["gruppo"] == "isolante" and s["nome"].endswith("_pav_isolante")]
+    visibili = [s for s in visibili if s not in isol_pav]
+    scheletro = [s for s in visibili if s["gruppo"] == "scheletro"]
     note.append("Entra nel conto ogni solido con la proprietà materiale. L'algoritmo la compila da solo.")
     extra = [s for s in visibili if not any(s["nome"].endswith(suf) for suf in _SUFFISSI)]
     if extra:
@@ -727,6 +853,7 @@ def componi(oggetti, meta, opz, prezzi):
         note.append("Il vano della porta non entra nella sezione.")
 
     capitoli = []
+    isolante_scelto = None                         # il materiale dell'isolante, per i pezzi fatti a mano senza `materiale`
     superfici_senza_spessore = False
     colori_pannello = {}
     incroci = 0
@@ -734,10 +861,10 @@ def componi(oggetti, meta, opz, prezzi):
         if not _acceso(flag, opz):
             continue
         pezzi = [pz for pz in visibili if pz["gruppo"] == chiave]
-        if not pezzi:
+        if not pezzi and not (chiave == "isolante" and isol_pav):
             continue
-        if chiave == "dormienti" and meta.get("pav_tipo") != "pietroni":
-            titolo = "Dormienti"
+        if chiave == "dormienti":
+            titolo = "Travi"
         gruppi = {}
         for pz in pezzi:
             gruppi.setdefault(_chiave_tipo(pz), []).append(pz)
@@ -763,10 +890,10 @@ def componi(oggetti, meta, opz, prezzi):
                     "due tipi che non si toccano possono averne una uguale, due che si toccano no.")
             if stretto:
                 nota += " Qui un tipo tocca più forme diverse di quante tinte ci sono: in quel punto un colore si ripete."
-        elif chiave == "dormienti" and meta.get("pav_tipo") == "pietroni":
-            nota = ("Ogni palo va da un pietrone al successivo e supera il vertice di 10 cm, "
-                    "perciò in pianta gli estremi si sovrappongono. La sezione non è un rettangolo: "
-                    "il sotto è più stretto e il taglio è irregolare.")
+        elif chiave == "dormienti":
+            nota = ("Basamento: pietre e travi perimetro (luce pietra–pietra; sui lati lunghi pietre intermedie ogni 1,8 m al massimo). Lo zome poggia sulla cima dei travi; "
+                    "i travetti poggiano sopra, non sono incastrati. "
+                    "Il muretto, se c'è, non è portante.")
         elif chiave == "travetti":
             nota = _testo_formula(meta.get("travetti_formula"))
         colori = {}
@@ -778,13 +905,22 @@ def componi(oggetti, meta, opz, prezzi):
                 pz["_tipo"] = t
                 disegnati.append(pz)
                 colori[t] = col
-        schema = svg_due_viste(disegnati, colori)
+        approssimati = bool(opz.get("approssimativi"))
+        lineari = approssimati and chiave in _LINEARI_APPROSSIMATI
+        solo_superficie = chiave in _SOLO_SUPERFICIE or (approssimati and chiave in _SUPERFICIE_APPROSSIMATA)
+        schema = "" if solo_superficie or lineari or not disegnati else svg_due_viste(disegnati, colori)
         tipi = []
         for t in ordine_tipi:
             camp = gruppi[t][0]
             est, area, vol = _misure(camp)
             col = colori[t]
-            iso, pianta, laterale, sezione, inc = _viste_tipo(camp, col)
+            if solo_superficie or lineari:
+                # si taglia in opera: conta la superficie, i disegni dei pezzi non servono
+                iso = pianta = laterale = sezione = posizione = ""
+                inc = 0
+            else:
+                iso, pianta, laterale, sezione, inc = _viste_tipo(camp, col)
+                posizione = _svg_posizione(chiave, pezzi, gruppi[t], scheletro)
             incroci += inc
             nome = _nome_cutlist(camp, est[0]) or ("pezzo aggiunto" if not any(camp["nome"].endswith(suf) for suf in _SUFFISSI) else "pezzo")
             n_lati = len(camp["faces"][_faccia_pianta(camp["verts"], camp["faces"])]) if camp["faces"] else 0
@@ -794,6 +930,7 @@ def componi(oggetti, meta, opz, prezzi):
                 nome = "timpano"
             tipi.append({"n": len(gruppi[t]), "strato": camp.get("strato"), "nome": nome, "colore": col,
                          "est": est, "iso": iso, "pianta": pianta, "laterale": laterale, "sezione": sezione,
+                         "posizione": posizione,
                          "area": area * len(gruppi[t]), "volume": vol * len(gruppi[t]),
                          "anta": "anta" in camp["nome"] and "vetro" not in camp["nome"].replace("anta_vetro", ""),
                          "vetro_anta": "anta" in camp["nome"] and "vetro" in camp["nome"],
@@ -808,19 +945,46 @@ def componi(oggetti, meta, opz, prezzi):
                 frasi.append("Il timpano è la parete sopra l'architrave, fino al colmo.")
             if frasi:
                 nota = " ".join(frasi)
-        capitoli.append({"chiave": chiave, "titolo": titolo, "schema": schema, "tipi": tipi,
-                         "n": len(pezzi), "n_tipi": len(tipi), "nota": nota})
+        area_pav = 0.0
+        if chiave == "isolante" and isol_pav:
+            area_pav = sum(_misure(s)[1] for s in isol_pav)
+            nota = ((nota + " ") if nota else "") + (
+                f"Fra i travetti del pavimento l'isolante non è disegnato a pezzi: si taglia grezzo. "
+                f"Sono {_n(area_pav, 2)} m², contati abbondando del 10%: {_n(area_pav * 1.10, 2)} m².")
+        cap = {"chiave": chiave, "titolo": titolo, "schema": schema, "tipi": tipi,
+               "n": len(pezzi), "n_tipi": len(tipi), "nota": nota,
+               "solo_superficie": solo_superficie, "area_extra": area_pav * 1.10}
+        if lineari:
+            lung = [_tre_misure(pz["verts"], pz["faces"])[0] for pz in pezzi]
+            cap["classi"] = zome_complessita.classi(lung)
+            cap["barre"] = zome_complessita.barre(lung)
+        if chiave in _ASSI and meta.get(_ASSI[chiave]):
+            cap["larghezza_assi"] = meta[_ASSI[chiave]]
+        if chiave == "scheletro":
+            cap["facce"] = _facce_scheletro(pezzi + lamine, gruppi, colori)
+        capitoli.append(cap)
 
         # quantità per il preventivo
         if chiave == "isolante":
-            nome_mat = next((t["mm_sol"].get("materiale") for t in tipi if t["mm_sol"].get("materiale")), "") or "Canapa"
-            riga = (prezzi or {}).get(nome_mat)
+            # Un pezzo senza materiale prende quello degli altri isolanti del capitolo; se non ce n'è, quello del pannello.
+            # Le quantità si dividono per materiale: zome diverse nello stesso report possono avere isolanti diversi.
+            primo = next((s.get("materiale") for s in [t["mm_sol"] for t in tipi] + isol_pav if s.get("materiale")),
+                         "") or meta.get("isolante_default") or meta.get("isolante_nome") or "Canapa"
+            isolante_scelto = primo
             secchi = {}
             for t in tipi:
                 mm, _ = _mm_di(t["mm_sol"], meta, chiave)
-                secchi.setdefault(None if mm is None else round(mm), 0.0)
-                secchi[None if mm is None else round(mm)] += t["area"]
-            for mm, area in secchi.items():
+                k = (None if mm is None else round(mm), "", t["mm_sol"].get("materiale") or primo)
+                secchi[k] = secchi.get(k, 0.0) + t["area"]
+            spessore_pav = {}                      # come prima: lo spessore del primo pezzo vale per tutto il pavimento della zome
+            for sp in isol_pav:
+                if sp["nome"] not in spessore_pav:
+                    spessore_pav[sp["nome"]] = _mm_di(sp, meta, chiave)[0]
+                mm = spessore_pav[sp["nome"]]
+                k = (None if mm is None else round(mm), "pavimento", sp.get("materiale") or primo)
+                secchi[k] = secchi.get(k, 0.0) + _misure(sp)[1] * 1.10
+            for (mm, dove, nome_mat), area in secchi.items():
+                riga = (prezzi or {}).get(nome_mat)
                 if riga and ("m³" in str(riga.get("unita") or "") or "m3" in str(riga.get("unita") or "")) and mm:
                     qta, unita_q = area * mm / 1000.0, "m³"
                     euro, avviso = riga["prezzo"], ""
@@ -831,7 +995,8 @@ def componi(oggetti, meta, opz, prezzi):
                     note.append(f"Isolante: {avviso}")
                 kg, come = peso_di("isolante", area, "m²", mm, riga, None)
                 importo = None if euro is None else round(qta * euro + 1e-9, 2)
-                righe.append({"capitolo": "isolante", "chiave": "isolante", "voce": f"Isolante, {nome_mat}",
+                voce = f"Isolante del pavimento, {nome_mat} (+10%)" if dove == "pavimento" else f"Isolante, {nome_mat}"
+                righe.append({"capitolo": "isolante", "chiave": "isolante", "voce": voce,
                               "materiale": nome_mat, "qta": qta, "unita": unita_q, "prezzo": euro,
                               "unita_prezzo": (riga or {}).get("unita", ""), "importo": importo,
                               "iva": "non dichiarata", "kg": kg, "come": come})
@@ -848,10 +1013,8 @@ def componi(oggetti, meta, opz, prezzi):
             else:
                 vol = sum(t["volume"] for t in tipi)
                 voce = {"scheletro": "Scheletro", "travetti": f"Travetti, {len(pezzi)} pezzi"}.get(chiave, titolo.split("·")[-1].strip().capitalize())
-                if chiave == "dormienti" and meta.get("pav_tipo") == "pietroni":
-                    voce = "Pali del pavimento"
-                elif chiave == "dormienti":
-                    voce = "Dormienti"
+                if chiave == "dormienti":
+                    voce = "Travi"
                 _riga(righe, note, prezzi, "c24", "C24", voce, vol, "m³", None, False)
         elif chiave == "vetro":
             secchi = {}
@@ -903,7 +1066,7 @@ def componi(oggetti, meta, opz, prezzi):
     for cap in capitoli:
         rs = [r for r in righe if r["capitolo"] == cap["chiave"]]
         cap["kg"] = sum(r["kg"] or 0 for r in rs)
-        cap["area"] = sum(t["area"] for t in cap["tipi"])
+        cap["area"] = sum(t["area"] for t in cap["tipi"]) + cap.get("area_extra", 0.0)
         cap["volume"] = sum(t["volume"] for t in cap["tipi"])
         metri = []
         for r in rs:
@@ -920,18 +1083,65 @@ def componi(oggetti, meta, opz, prezzi):
         dal = f", {_n(h_pav, 2)} m dal pavimento finito" if h_pav is not None else ""
         testa = (f"N {par.get('N')} · M {par.get('M')} · θ {_n(par.get('theta') or 0, 2)}° · "
                  f"ZH {_n(par.get('ZH') or 0, 2)} m{sec} · altezza esterna {h_txt}{dal}")
+    # Per l'intestazione, che va anche a chi non legge il preventivo: parametri scritti per esteso.
+    parametri = ""
+    if par:
+        parametri = (f"N = {par.get('N')}, M = {par.get('M')}, θ = {_n(par.get('theta') or 0, 2)}°, "
+                     f"ZH = {_n(par.get('ZH') or 0, 2)} m")
+        if par.get("cut"):
+            parametri += f", secondario M = {par.get('M2')}, θ = {_n(par.get('theta2') or 0, 1)}°"
     termico_meta = dict(meta)
     termico_meta["area_opaca_m2"], termico_meta["area_vetro_m2"] = _aree_guscio(capitoli, meta)
-    return {"nome": meta.get("nome", "zome"), "testa": testa, "note": note, "capitoli": capitoli,
+    # Le schegge sotto la soglia delle lamine non si disegnano, ma si tagliano: nella complessità ci sono.  Un solido collassato
+    # davvero non è una tavola leggibile e lo dice la nota.
+    pezzi_tagli = scheletro + lamine
+    parziale = bool(meta.get("_parziale"))
+    complessita = {"varianti": list(meta.get("complessita_varianti") or []),
+                   "collezione": zome_complessita.indice_solidi(pezzi_tagli) if pezzi_tagli and not parziale else None}
+    return {"nome": meta.get("nome", "zome"), "testa": testa, "parametri": parametri,
+            "h_pavimento": h_pav if par else None, "h_interna": s.get("altezza_interna"),
+            "area_pavimento": s.get("area_pavimento"),
+            "note": note, "capitoli": capitoli,
             "righe": righe, "totale": totale, "fette": fette, "peso": peso,
             "ferramenta": int(meta.get("ferramenta") or 0),
             "porta_esclusa": bool(meta.get("porta_esclusa")),
-            "termico": blocco_termico(prezzi, termico_meta)}
+            "termico": blocco_termico(prezzi, termico_meta),
+            "pavimento": s.get("pavimento"),
+            "complessita": complessita,
+            "componenti": [str(c) for c in meta.get("componenti") or []],
+            "accessori": [str(c) for c in meta.get("accessori") or []],
+            "zome_pannello": (meta.get("zome_pannello") if "zome_pannello" in meta else meta.get("nome", "zome")),
+            "per_componente": [] if parziale else per_componente(
+                oggetti, dict(meta, isolante_default=isolante_scelto) if isolante_scelto else meta, opz, prezzi)}
+
+
+def per_componente(oggetti, meta, opz, prezzi):
+    """Il preventivo diviso per componente (zome, spazi accessori, ogni prefisso «nome · ruolo»): lo stesso conto fatto sui
+    soli oggetti di ognuno.  Vuoto se il report ha un componente solo.  Un pezzo fatto a mano senza `materiale` (uno spazio
+    accessorio) prende lo stesso isolante del conto insieme (`isolante_default`), così le parti fanno il totale."""
+    nomi = []
+    for o in oggetti:
+        c = o.get("componente") or ""
+        if c not in nomi:
+            nomi.append(c)
+    if len(nomi) < 2:
+        return []
+    accessori = set(meta.get("accessori") or [])
+    fuori = {"summary", "params", "travetti_formula", "complessita_varianti"}
+    voci = []
+    for c in nomi:
+        sotto = dict({k: v for k, v in meta.items() if k not in fuori}, _parziale=True, componenti=[c] if c else [])
+        if c == meta.get("zome_pannello"):                 # la zome del pannello tiene il suo riepilogo (altezze, porta)
+            sotto.update({k: meta[k] for k in fuori if k in meta})
+        d = componi([o for o in oggetti if (o.get("componente") or "") == c], sotto, opz, prezzi)
+        voci.append({"nome": c or "senza componente", "euro": d["totale"], "kg": d["peso"],
+                     "accessorio": c in accessori})
+    return voci
 
 
 def voce_capitolo(chiave, meta):
     return {"perline_est": "Esterno", "perline_int": "Interno", "pareti": "Pareti del corridoio",
-            "tavolato": "Pavimento", "fondo": "Tavolato sotto i travetti", "copertura": "Copertura"}.get(chiave, chiave)
+            "tavolato": "Pavimento", "fondo": "Sottopavimento", "copertura": "Copertura"}.get(chiave, chiave)
 
 
 def _riga(righe, note, prezzi, chiave, materiale, voce, qta, unita, mm, dalla_nota):
@@ -962,12 +1172,12 @@ def _capitolo_da_voce(voce):
         return "porta"
     if "telaio" in v:
         return "porta"
-    if "pali" in v or "dormient" in v:
+    if "pali" in v or "dormient" in v or v.startswith("travi"):
         return "dormienti"
+    if "sotto i travetti" in v:          # prima di «travett»: è il tavolato, non un travetto
+        return "fondo"
     if "travett" in v:
         return "travetti"
-    if "sotto i travetti" in v:
-        return "fondo"
     if "tavolato" in v or v.startswith("pavimento"):
         return "tavolato"
     if v.startswith("esterno") or "esterne" in v:
@@ -987,13 +1197,28 @@ def _capitolo_da_voce(voce):
 
 def _corpo_costruttivi(dati):
     blocchi = []
-    dida = ("<p class='meta'>Pianta, laterale e sezione sono in proporzione vera. I centimetri stanno sul lato. "
+    dida = ("<p class='meta'>I pezzi uguali stanno in una riga sola, con quanti sono (×). "
+            "Pianta, laterale e sezione sono in proporzione vera. I centimetri stanno sul lato. "
             "Il grado sta sul vertice: è l'angolo interno, e tra parentesi c'è quanto manca a 90. "
-            "L'isometrica del pezzo ha i bordi del suo colore e nasconde il retro. "
-            "Lo schema è il pezzo montato, due volte: un lato e, girato di 180° attorno alla verticale, l'altra parte. "
-            "Vale per una zome dritta e per una coricata.</p>")
+            "Sotto il nome c'è il pezzo in isometrica. "
+            "Posizione: lo scheletro della zome in nero leggero e i pezzi di quella riga in rosso; "
+            "travetti e travi si vedono dall'alto. "
+            "Lo schema in cima al capitolo è il pezzo montato, due volte: un lato e, girato di 180° attorno alla verticale, "
+            "l'altra parte. Vale per una zome dritta e per una coricata.</p>")
+    testata = ("<thead><tr><th>Pezzo</th><th>Posizione</th><th>Pianta</th><th>Laterale</th><th>Sezione</th>"
+               "</tr></thead>")
     prima = True
     for cap in dati["capitoli"]:
+        nota_cap = f"<p class='meta'>{_esc(cap['nota'])}</p>" if cap.get("nota") else ""
+        if cap.get("solo_superficie"):
+            blocchi.append(
+                f"<h2>{_esc(cap['titolo'])}</h2>"
+                "<p class='meta'>Si taglia in opera: qui contano la superficie, il peso e il costo, non i pezzi.</p>"
+                f"{nota_cap}" + _somma_capitolo(cap) + _assi_capitolo(cap))
+            continue
+        if cap.get("classi") is not None:
+            blocchi.append(f"<h2>{_esc(cap['titolo'])}</h2>{nota_cap}" + _blocco_classi(cap) + _somma_capitolo(cap))
+            continue
         righe = []
         for t in cap["tipi"]:
             dove = f"strato {t['strato']}" if t["strato"] is not None else ""
@@ -1001,22 +1226,76 @@ def _corpo_costruttivi(dati):
             righe.append(
                 "<tr>"
                 f"<td class='nome'><i style='background:{t['colore']}'></i><b>×{t['n']}</b>"
-                f"{(' · ' + dove) if dove else ''}<br>{_esc(t['nome'])}<br>{mis}</td>"
-                f"<td><div class='cap'>Isometrica</div>{t['iso']}</td>"
-                f"<td><div class='cap'>Pianta</div>{t['pianta']}</td>"
-                f"<td><div class='cap'>Laterale</div>{t['laterale']}</td>"
-                f"<td><div class='cap'>Sezione</div>{t['sezione']}</td></tr>")
-        nota_cap = f"<p class='meta'>{_esc(cap['nota'])}</p>" if cap.get("nota") else ""
+                f"{(' · ' + dove) if dove else ''}<br>{_esc(t['nome'])}<br>{mis}<br>{t['iso']}</td>"
+                f"<td>{t['posizione']}</td>"
+                f"<td>{t['pianta']}</td>"
+                f"<td>{t['laterale']}</td>"
+                f"<td>{t['sezione']}</td></tr>")
+        tabella = ("<table class='tipi'>" + testata + "<tbody>" + "".join(righe) + "</tbody></table>") if righe else ""
+        conta = (f"<p class='meta'>{cap['n']} pezzi, {cap['n_tipi']} tipi. "
+                 "Stesso colore, stesso pezzo: la riga ha la tinta dello schema.</p>") if righe else ""
+        per_faccia = _blocco_facce(cap.get("facce"))
         blocchi.append(
             f"<h2>{_esc(cap['titolo'])}</h2>"
-            f"<p class='meta'>{cap['n']} pezzi, {cap['n_tipi']} tipi. Stesso colore, stesso pezzo: la riga ha la tinta dello schema.</p>"
-            f"{nota_cap}"
-            f"<div class='schema'>{cap['schema']}</div>"
-            + (dida if prima else "")
-            + "<table class='tipi'><tbody>" + "".join(righe) + "</tbody></table>"
+            f"{conta}{nota_cap}"
+            + (f"<div class='schema'>{cap['schema']}</div>" if cap["schema"] else "")
+            + per_faccia
+            + ("<h3>Pezzo per pezzo</h3>" if per_faccia and righe else "")
+            + (dida if prima and righe else "")
+            + tabella
             + _somma_capitolo(cap))
-        prima = False
+        prima = prima and not righe
     return "".join(blocchi)
+
+
+def _blocco_facce(fc):
+    """Lo scheletro per faccia: una riga per ogni gruppo di rombi, triangoli o chiusure con gli stessi pezzi."""
+    if not fc or not fc.get("righe"):
+        return ""
+    righe = []
+    for r in fc["righe"]:
+        dove = ""
+        if r["strati"]:
+            dove = (" · strato " if len(r["strati"]) == 1 else " · strati ") + ", ".join(str(s) for s in r["strati"])
+        pezzi = "".join(f"<br><i style='background:{col}'></i>{k} × {_n(L * 100, 1)} cm{' speculare' if spec else ''}"
+                        for k, col, L, spec in r["pezzi"])
+        righe.append(f"<tr><td class='nome'><b>×{r['n']}</b> {_esc(r['forma'])}{dove}<br>{r['n_pezzi']} pezzi:{pezzi}</td>"
+                     f"<td>{r['disegno']}</td><td>{r['posizione']}</td></tr>")
+    fuori = (f" {fc['fuori']} pezzi non sanno a che faccia appartengono (aggiunti a mano): stanno solo nella lista sotto."
+             if fc.get("fuori") else "")
+    return ("<h3>Per faccia</h3>"
+            f"<p class='meta'>{fc['facce']} facce in {len(fc['righe'])} gruppi. Ogni riga è un rombo, un triangolo o una "
+            "chiusura con i suoi pezzi, nei colori della lista (in grigio le schegge, che la lista non disegna); "
+            "× dice quante facce uguali ci sono, anche speculari. "
+            f"Posizione: le facce del gruppo in rosso.{fuori}</p>"
+            "<table class='tipi'><thead><tr><th>Faccia</th><th>Di fronte</th><th>Posizione</th></tr></thead><tbody>"
+            + "".join(righe) + "</tbody></table>")
+
+
+def _blocco_classi(cap):
+    """Travetti e travi a tagli approssimativi: quanti pezzi per ogni lunghezza (per eccesso ai 10 cm) e quante barre."""
+    import zome_complessita as zx
+    righe = "".join(f"<tr><td class='n'>{_n(L * 100, 0)} cm</td><td class='n'>{k}</td></tr>" for L, k in cap["classi"].items())
+    b = cap["barre"]
+    oltre = ""
+    if b["oltre"]:
+        oltre = (f" Più lunghi di {_n(zx.BARRA_M, 0)} m, da comprare a parte: "
+                 + ", ".join(f"{_n(L * 100, 0)} cm" for L in b["oltre"]) + ".")
+    return (f"<p class='meta'>{cap['n']} pezzi, tagli approssimativi: lunghezze per eccesso ai {_n(zx.PASSO_CLASSI * 100, 0)} cm. "
+            f"In tutto {_n(b['metri'], 1)} m: {b['barre']} barre da {_n(zx.BARRA_M, 0)} m, sfrido {_n(b['sfrido'], 1)} m.{oltre}</p>"
+            "<table class='classi'><thead><tr><th class='n'>Lunghezza</th><th class='n'>Pezzi</th></tr></thead><tbody>"
+            + righe + "</tbody></table>")
+
+
+def _assi_capitolo(cap):
+    """Per le superfici di assi o perline: i metri lineari da comprare, con lo sfrido."""
+    import zome_complessita as zx
+    L = cap.get("larghezza_assi")
+    area = cap.get("area") or 0.0
+    if not L or area <= 0:
+        return ""
+    return (f"<p class='meta'>Con lo sfrido del {_n(zx.SFRIDO * 100, 0)}%: {_n(area * (1 + zx.SFRIDO), 2)} m², "
+            f"cioè {_n(zx.metri_assi(area, L), 0)} m di assi larghe {_n(L * 100, 1)} cm.</p>")
 
 
 def html_scena(dati):
@@ -1033,6 +1312,8 @@ table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ border-bottom: 1px solid #e2e2e2; padding: 4px 6px; text-align: left; vertical-align: top; }}
 td.n, th.n {{ text-align: right; font-variant-numeric: tabular-nums; }}
 table.tipi td.nome {{ width: 150px; font-size: 13px; }}
+table.classi {{ width: auto; }}
+h3 {{ font-size: 14px; margin: 16px 0 6px; }}
 table.tipi i {{ display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; }}
 .cap {{ color: #666; font-size: 11px; margin-bottom: 2px; }}
 .schema {{ margin: 4px 0 10px; }}
@@ -1057,8 +1338,7 @@ svg.termico text.ora {{ text-anchor: middle; }}
 .doppio figure figcaption {{ font-weight: 650; text-align: left; }}
 </style></head><body>
 <h1>Report — {_esc(dati['nome'])}</h1>
-<p class="sottotitolo">{_esc(dati['testa'])}</p>
-<p class="meta">{date.today().isoformat()} · sola materia prima · solidi della collection</p>
+{_intestazione(dati)}
 <h2>Preventivo di massima</h2>
 {_tabella(dati['righe'])}
 <p class="totale">Totale {_euro(dati['totale'])} €</p>
@@ -1128,33 +1408,30 @@ _PAGINE = (
     ("statica.html", "Valutazione statica"),
     ("termico.html", "Valutazione termica"),
     ("costruttivi.html", "Dettagli costruttivi"),
-    ("manufatti.html", "Manufatti e servizio igienico"),
+    ("viste.html", "Viste e ingombri"),
+    ("planimetria.html", "Planimetria"),
 )
+
+# Sottocartella con tutti gli HTML (link solo nomi file, portabili se si copia la cartella intera).
+CARTELLA_REPORT = "report"
 
 _COLORI_GUSCIO = {
     "legno": "#c4b49a", "vetro": "#9bb8c4", "tetto": "#3e6b4f",
     "porta": "#8d6e4a", "pavimento": "#a07850",
 }
 _VISTE_MANUFATTO = (
-    ("iso", "Isometrica", "I manufatti insieme, stessa scala."),
+    ("iso", "Isometrica", "I componenti insieme, stessa scala."),
     ("pianta", "Pianta", "Nord in alto, est a destra."),
     ("fronte", "Fronte", "Da sud. Est a destra, altezza in verticale."),
     ("laterale", "Laterale", "Da est. Nord a destra, altezza in verticale."),
+    ("sezione_v", "Sezione verticale", ""),
+    ("sezione_o", "Sezione orizzontale", ""),
 )
 
 
 def _bbox_punti(verts):
     xs, ys, zs = zip(*verts)
     return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
-
-
-def _volume_bbox(b):
-    return max(b[1] - b[0], 0.0) * max(b[3] - b[2], 0.0) * max(b[5] - b[4], 0.0)
-
-
-def _dentro_bbox(p, b, tol=0.05):
-    return (b[0] - tol <= p[0] <= b[1] + tol and b[2] - tol <= p[1] <= b[3] + tol
-            and b[4] - tol <= p[2] <= b[5] + tol)
 
 
 def _misure_assi(b):
@@ -1187,69 +1464,93 @@ def _gap_firmato(a, b):
     return uno(a[0], a[1], b[0], b[1]), uno(a[2], a[3], b[2], b[3])
 
 
-def _prepara_manufatti(manufatti, punti):
-    """Ingombro, servizio igienico e frasi di ubicazione. Un sanitario dentro due ingombri va al più piccolo."""
+_FUORI_MISURA = ("_pav_pietre", "_pav_gradino")
+
+
+# Ruoli delle sotto-collection che fanno l'ingombro di un componente, e il colore con cui si disegnano.
+RUOLI_INGOMBRO = ("Esterno", "Tetto", "Porta", "Pavimento", "Solaio", "Basamento")
+
+
+def chiave_ingombro(ruolo):
+    """Colore del pezzo nelle viste, dal ruolo della sotto-collection; None se il ruolo non fa ingombro."""
+    if not any(ruolo == v or ruolo.startswith(v + " ") for v in RUOLI_INGOMBRO):
+        return None
+    if "vetro" in ruolo.lower():
+        return "vetro"
+    if ruolo.startswith("Tetto"):
+        return "tetto"
+    if ruolo.startswith("Porta"):
+        return "porta"
+    if ruolo.startswith(("Pavimento", "Solaio", "Basamento")):
+        return "pavimento"
+    return "legno"
+
+
+def _prepara_manufatti(manufatti):
+    """Ingombro di ogni componente: lati in pianta e altezza fra gli estradossi."""
     voci = []
     for m in manufatti or []:
-        verts = [p for pz in m.get("pezzi") or [] for p in pz.get("verts") or []]
+        pezzi = m.get("pezzi") or []
+
+        def z_di(suffisso):
+            return [p[2] for pz in pezzi if (pz.get("nome") or "").endswith(suffisso) for p in pz.get("verts") or []]
+
+        tutti = pezzi
+        pezzi = [pz for pz in pezzi if not pz.get("solo_sezione")]      # perline, scheletro, arredo: solo nelle sezioni
+        # Pietre e gradino si disegnano ma non entrano nelle misure.
+        verts = [p for pz in pezzi if not (pz.get("nome") or "").endswith(_FUORI_MISURA)
+                 for p in pz.get("verts") or []]
         if len(verts) < 2:
             continue
         b = _bbox_punti(verts)
+        fondo = min(p[2] for pz in pezzi for p in pz.get("verts") or [])    # anche le pietre: la quota passa sotto il disegno
+        # L'altezza è fra gli estradossi: dalla faccia di sopra del tavolato al punto più alto del guscio.
+        # Si misura dal tavolato (pavimento finito); senza tavolato resta l'ingombro intero.
+        tavolato = z_di("_pav_tavolato")
+        guscio = [p[2] for pz in pezzi if pz.get("ruolo") != "pavimento" for p in pz.get("verts") or []]
+        if tavolato and guscio:
+            b = (b[0], b[1], b[2], b[3], max(tavolato), max(guscio))
         lung, dlung, larg, dlarg, h = _misure_assi(b)
         voci.append({
-            "nome": m.get("nome") or "manufatto",
-            "pezzi": m.get("pezzi") or [],
+            "nome": m.get("nome") or "componente",
+            "pezzi": pezzi,
+            "pezzi_sezione": tutti,
             "bbox": b,
             "centro": ((b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2),
             "lung": lung, "dlung": dlung, "larg": larg, "dlarg": dlarg, "h": h,
-            "igienico": False,
+            "dal_pavimento": bool(tavolato and guscio),
+            "fondo": fondo,
         })
-    fuori = []
-    for p in punti or []:
-        contenitori = [v for v in voci if _dentro_bbox(p, v["bbox"])]
-        if not contenitori:
-            fuori.append(p)
-            continue
-        min(contenitori, key=lambda v: _volume_bbox(v["bbox"]))["igienico"] = True
-    return voci, fuori
+    return voci
 
 
-def _frasi_igienico(voci, fuori):
-    if not voci:
-        return ["Nel file non ho trovato manufatti da misurare."]
+def _ingombro_insieme(voci):
+    """Rettangolo e altezza di tutti i componenti insieme; None con un componente solo."""
+    if len(voci) < 2:
+        return None
+    b = (min(v["bbox"][0] for v in voci), max(v["bbox"][1] for v in voci),
+         min(v["bbox"][2] for v in voci), max(v["bbox"][3] for v in voci),
+         min(v["bbox"][4] for v in voci), max(v["bbox"][5] for v in voci))
+    lung, dlung, larg, dlarg, h = _misure_assi(b)
+    return {"lung": lung, "dlung": dlung, "larg": larg, "dlarg": dlarg, "h": h}
+
+
+def _frasi_posizione(voci):
+    """Dove sta ogni componente rispetto al primo: centro e distanza netta fra gli ingombri in pianta."""
+    if len(voci) < 2:
+        return []
+    primo = voci[0]
     frasi = []
-    con = [v for v in voci if v["igienico"]]
-    for v in voci:
-        nome = v["nome"]
-        if v["igienico"]:
-            frasi.append(f"«{nome}»: il servizio igienico è presente all'interno.")
-            continue
-        if con:
-            altro = min(con, key=lambda a: _dist(v["centro"], a["centro"]))
-            dx = altro["centro"][0] - v["centro"][0]
-            dy = altro["centro"][1] - v["centro"][1]
-            gx, gy = _gap_firmato(v["bbox"], altro["bbox"])
-            netta = math.hypot(gx, gy)
-            dove = _verso_plan(dx, dy)
-            if netta < 0.05:
-                coda = "Gli ingombri si toccano o uno rientra nell'altro."
-            else:
-                coda = f"Fra i due ingombri restano {_n(netta, 2)} m{_direzione_gap(gx, gy)}."
-            frasi.append(
-                f"«{nome}»: il servizio igienico non è presente all'interno. "
-                f"Sta in «{altro['nome']}»: il centro di «{altro['nome']}» è {dove} "
-                f"rispetto al centro di «{nome}». {coda}")
-            continue
-        if fuori:
-            p = min(fuori, key=lambda q: (q[0] - v["centro"][0]) ** 2 + (q[1] - v["centro"][1]) ** 2)
-            dove = _verso_plan(p[0] - v["centro"][0], p[1] - v["centro"][1])
-            frasi.append(
-                f"«{nome}»: il servizio igienico non è presente all'interno. "
-                f"Un sanitario nel file sta {dove} dal centro del manufatto.")
-            continue
-        frasi.append(
-            f"«{nome}»: il servizio igienico non è presente all'interno. "
-            "Nel file non c'è un altro manufatto né un sanitario, quindi l'ubicazione non risulta dal modello.")
+    for v in voci[1:]:
+        dx = v["centro"][0] - primo["centro"][0]
+        dy = v["centro"][1] - primo["centro"][1]
+        gx, gy = _gap_firmato(primo["bbox"], v["bbox"])
+        netta = math.hypot(gx, gy)
+        if netta < 0.05:
+            coda = "Gli ingombri si toccano o uno rientra nell'altro."
+        else:
+            coda = f"Fra i due ingombri restano {_n(netta, 2)} m{_direzione_gap(gx, gy)}."
+        frasi.append(f"«{v['nome']}»: il centro è {_verso_plan(dx, dy)} rispetto al centro di «{primo['nome']}». {coda}")
     return frasi
 
 
@@ -1288,14 +1589,17 @@ def _linea_quota(p, q, testo, ox, oy):
     return corpo
 
 
-def _quote_rettangolo(mappa, rect, testo_x, testo_y, passo):
-    """rect in metri della vista, y verso l'alto. Le quote stanno fuori, in basso e a sinistra."""
+def _quote_rettangolo(mappa, rect, testo_x, testo_y, passo, y_base=None):
+    """rect in metri della vista, y verso l'alto. Le quote stanno fuori, in basso e a sinistra.
+    y_base: dove appoggiare la quota orizzontale, se il disegno scende sotto il rettangolo (i pali sotto il pavimento)."""
     x0, x1, y0, y1 = rect
+    yb = min(y0, y_base) if y_base is not None else y0
     so = mappa((x0, y0))
     se = mappa((x1, y0))
+    sob, seb = mappa((x0, yb)), mappa((x1, yb))
     no = mappa((x0, y1))
     extra = 26 + passo * 16
-    return (_linea_quota(so, se, testo_x, 0, extra) + _linea_quota(so, no, testo_y, -extra, 0))
+    return (_linea_quota(sob, seb, testo_x, 0, extra) + _linea_quota(so, no, testo_y, -extra, 0))
 
 
 def _vista_ortografica(voci, modo, w, h):
@@ -1355,10 +1659,8 @@ def _vista_ortografica(voci, modo, w, h):
         d = mappa((r[0], r[3]))
         contorno = " ".join(f"{p[0]:.1f},{p[1]:.1f}" for p in (a, b, c, d))
         parti.append(f'<polygon points="{contorno}" fill="none" stroke="#222" stroke-width="1.1" stroke-dasharray="5 3"/>')
-        cx = (a[0] + c[0]) / 2
-        cy = (a[1] + c[1]) / 2
-        parti.append(_testo_quota(cx, cy, v["nome"]))
-        parti.append(_quote_rettangolo(mappa, r, misura_x(v), misura_y(v), i))
+        parti.append(_quote_rettangolo(mappa, r, misura_x(v), misura_y(v), i,
+                                       None if modo == "pianta" else v.get("fondo")))
     if modo == "pianta" and len(voci) >= 2:
         a, b = voci[0], voci[1]
         gx, gy = _gap_firmato(a["bbox"], b["bbox"])
@@ -1396,49 +1698,335 @@ def _vista_iso(voci, w, h):
     return svg_schema(pezzi, colori, w, h, bordo=1.1)
 
 
+# ---------------------------------------------------------------- sezioni (quinta e sesta vista)
+# Si taglia faccia per faccia, con un semispazio: vale per ogni poligono, anche non convesso, e per ogni zome
+# (la ridotta in punta non è convessa, la coricata ha il pavimento storto rispetto all'asse). Niente solido convesso.
+
+_COLORI_SEZIONE = dict(_COLORI_GUSCIO, interno="#e6d6b4", isolante="#ece4ae", struttura="#9a7b55", arredo="#d0d0d0")
+RUOLI_SEZIONE = ("Interno", "Isolante", "Struttura", "Arredo", "Pareti")   # in più del guscio, solo nelle sezioni
+SEZIONE_AREA_MIN = 1e-4         # m²: una faccia più piccola, vista nel piano, non si disegna (non si vedrebbe)
+SEZIONE_H_DEFAULT = 1.0         # m dal pavimento: la sezione orizzontale
+FIGURA_H = 1.75                 # m: la persona per la scala
+FIGURA_DAL_MURO = 0.45          # m: dal muro interno al centro della persona
+
+
+def chiave_sezione(ruolo):
+    """Colore di un pezzo che si vede solo nelle sezioni (perline, isolante, scheletro, arredo); None se non c'entra."""
+    if not ruolo:
+        return "arredo"                 # oggetti messi direttamente nella collection del modello
+    for r in RUOLI_SEZIONE:
+        if ruolo == r or ruolo.startswith(r + " "):
+            return {"Interno": "interno", "Pareti": "interno", "Isolante": "isolante", "Struttura": "struttura"}.get(r, "arredo")
+    return None
+
+
+def _clip_semispazio(pts, f):
+    """La parte del poligono dove f(p) >= 0 (Sutherland-Hodgman su un piano solo: va bene anche non convesso)."""
+    out = []
+    n = len(pts)
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        fa, fb = f(a), f(b)
+        if fa >= 0:
+            out.append(a)
+        if (fa >= 0) != (fb >= 0):
+            t = fa / (fa - fb)
+            out.append(tuple(a[k] + (b[k] - a[k]) * t for k in range(3)))
+    return out
+
+
+def _segmenti_taglio(pts, f, chiave):
+    """Dove il piano f = 0 taglia il poligono: segmenti 3D.  I punti di attraversamento, in ordine lungo la retta del
+    taglio (chiave), si prendono a due a due: pari-dispari, giusto anche per un poligono non convesso."""
+    croci = []
+    n = len(pts)
+    for i in range(n):
+        a, b = pts[i], pts[(i + 1) % n]
+        fa, fb = f(a), f(b)
+        if (fa >= 0) != (fb >= 0):
+            t = fa / (fa - fb)
+            croci.append(tuple(a[k] + (b[k] - a[k]) * t for k in range(3)))
+    if len(croci) < 2:
+        return []
+    croci.sort(key=chiave)
+    return [(croci[i], croci[i + 1]) for i in range(0, len(croci) - 1, 2)]
+
+
+def _area2(q):
+    return abs(sum(q[i][0] * q[(i + 1) % len(q)][1] - q[(i + 1) % len(q)][0] * q[i][1] for i in range(len(q)))) / 2
+
+
+def _pezzi_sezione(v):
+    return v.get("pezzi_sezione") or v.get("pezzi") or []
+
+
+def quota_pavimento(v):
+    """Quota del pavimento finito di un componente: la faccia di sopra del tavolato, se c'è; se no il fondo dell'ingombro."""
+    tav = [p[2] for pz in _pezzi_sezione(v) if (pz.get("nome") or "").endswith("_pav_tavolato") for p in pz.get("verts") or []]
+    return max(tav) if tav else v["bbox"][4]
+
+
+def _zome_delle_voci(voci, accessori=()):
+    acc = set(accessori or ())
+    return [v for v in voci if v["nome"] not in acc] or list(voci)
+
+
+def piano_sezione(voci, principale=None, rot=0.0, spost=0.0, accessori=()):
+    """Piano verticale della quinta vista: (origine (x, y), direzione t del taglio, normale n, nomi).  Con due zome o più
+    passa per il centro della principale (quella del pannello, o la prima) e della zome più vicina; con una sola, per il
+    suo centro, da ovest a est.  rot: gradi attorno alla verticale, sul centro della principale; spost: metri lungo n.
+    Si guarda lungo n (n verso nord, se il taglio è da ovest a est): t va a destra, la quota in alto."""
+    zome = _zome_delle_voci(voci, accessori)
+    if not zome:
+        return None
+    p = next((v for v in zome if v["nome"] == principale), zome[0])
+    c1 = p["centro"][:2]
+    altre = [v for v in zome if v is not p]
+    nomi = [p["nome"]]
+    t = (1.0, 0.0)
+    if altre:
+        q = min(altre, key=lambda v: math.hypot(v["centro"][0] - c1[0], v["centro"][1] - c1[1]))
+        dx, dy = q["centro"][0] - c1[0], q["centro"][1] - c1[1]
+        L = math.hypot(dx, dy)
+        if L > 1e-6:
+            t = (dx / L, dy / L)
+            nomi.append(q["nome"])
+    if t[0] < -1e-9 or (abs(t[0]) <= 1e-9 and t[1] < 0):   # est a destra, come nel fronte
+        t = (-t[0], -t[1])
+    a = math.radians(rot or 0.0)
+    t = (t[0] * math.cos(a) - t[1] * math.sin(a), t[0] * math.sin(a) + t[1] * math.cos(a))
+    n = (-t[1], t[0])
+    o = (c1[0] + n[0] * (spost or 0.0), c1[1] + n[1] * (spost or 0.0))
+    return {"origine": o, "t": t, "n": n, "nomi": nomi, "rot": rot or 0.0, "spost": spost or 0.0}
+
+
+def sezione_verticale(voci, piano):
+    """Facce oltre il piano proiettate su di lui, i segmenti del taglio e una persona in ogni zome tagliata.
+    Coordinate del disegno: u lungo t (m), quota z (m)."""
+    o, t, n = piano["origine"], piano["t"], piano["n"]
+
+    def f(p):
+        return (p[0] - o[0]) * n[0] + (p[1] - o[1]) * n[1]
+
+    def uv(p):
+        return ((p[0] - o[0]) * t[0] + (p[1] - o[1]) * t[1], p[2])
+
+    facce, tagli, figure = [], [], []
+    for v in voci:
+        tagli_v = []
+        for pz in _pezzi_sezione(v):
+            ruolo = pz.get("ruolo")
+            col = pz.get("colore") or _COLORI_SEZIONE.get(ruolo, "#b0b0b0")
+            verts = pz["verts"]
+            for fc in pz["faces"]:
+                if len(fc) < 3 or any(i >= len(verts) for i in fc):
+                    continue
+                pts = [verts[i] for i in fc]
+                oltre = _clip_semispazio(pts, f)
+                if len(oltre) >= 3:
+                    q = [uv(p) for p in oltre]
+                    if _area2(q) >= SEZIONE_AREA_MIN:
+                        prof = sum(f(p) for p in oltre) / len(oltre)
+                        facce.append((-prof, q, col, ' fill-opacity="0.5"' if ruolo == "vetro" else ""))
+                for a, b in _segmenti_taglio(pts, f, lambda p: (p[0] * t[0] + p[1] * t[1], p[2])):
+                    seg = (uv(a), uv(b), ruolo)
+                    tagli.append(seg)
+                    tagli_v.append(seg)
+        fig = _figura_nel_taglio(v, tagli_v, piano)
+        if fig:
+            figure.append(fig)
+    facce.sort(key=lambda x: x[0])
+    return {"facce": facce, "tagli": tagli, "figure": figure, "piano": piano}
+
+
+def _figura_nel_taglio(v, tagli_v, piano):
+    """Una persona alta FIGURA_H in piedi sul pavimento, vicino alla parete di destra del taglio, dentro la zome.
+    La parete si cerca a 1,2 m dal pavimento fra i segmenti del guscio tagliato; None se il piano non taglia il componente."""
+    zf = quota_pavimento(v)
+    zq = zf + 1.2
+    us = []
+    for (a, b, ruolo) in tagli_v:
+        if ruolo not in ("legno", "vetro", "interno", "porta"):
+            continue
+        if (a[1] - zq) * (b[1] - zq) <= 0 and abs(b[1] - a[1]) > 1e-9:
+            s = (zq - a[1]) / (b[1] - a[1])
+            us.append(a[0] + (b[0] - a[0]) * s)
+    if len(us) < 2:
+        return None
+    o, t = piano["origine"], piano["t"]
+    uc = (v["centro"][0] - o[0]) * t[0] + (v["centro"][1] - o[1]) * t[1]
+    destra = [u for u in us if u > uc + 0.3]
+    sinistra = [u for u in us if u < uc - 0.3]
+    if not destra or not sinistra:
+        return None
+    muro = min(destra)
+    u = muro - FIGURA_DAL_MURO
+    if u - 0.25 <= max(sinistra):
+        u = (muro + max(sinistra)) / 2
+    return {"nome": v["nome"], "u": u, "z": zf, "h": FIGURA_H}
+
+
+def _poligoni_figura(fig):
+    """La persona come sagoma: testa e corpo, in metri del disegno (u, z)."""
+    u, z, h = fig["u"], fig["z"], fig["h"]
+    k = h / 1.75
+    testa_r = 0.11 * k
+    cz = z + h - testa_r
+    testa = [(u + testa_r * math.cos(a * math.pi / 8), cz + testa_r * math.sin(a * math.pi / 8)) for a in range(16)]
+    collo = z + h - 2 * testa_r - 0.03 * k
+    corpo = [(u - 0.08 * k, z), (u - 0.03 * k, z), (u - 0.01 * k, z + 0.82 * k), (u + 0.01 * k, z + 0.82 * k),
+             (u + 0.03 * k, z), (u + 0.08 * k, z), (u + 0.12 * k, z + 0.85 * k), (u + 0.20 * k, z + 0.80 * k),
+             (u + 0.22 * k, z + 0.84 * k), (u + 0.20 * k, collo - 0.04 * k), (u - 0.20 * k, collo - 0.04 * k),
+             (u - 0.22 * k, z + 0.84 * k), (u - 0.20 * k, z + 0.80 * k), (u - 0.12 * k, z + 0.85 * k)]
+    return [corpo, testa]
+
+
+def sezione_orizzontale(voci, h=SEZIONE_H_DEFAULT):
+    """Ogni componente tagliato a h metri dal suo pavimento finito e visto dall'alto: le facce sotto il taglio e i
+    segmenti del taglio.  Coordinate del disegno: x est, y nord (m)."""
+    facce, tagli, quote = [], [], []
+    for v in voci:
+        zc = quota_pavimento(v) + h
+        quote.append((v["nome"], zc))
+
+        def f(p, zc=zc):
+            return zc - p[2]
+
+        for pz in _pezzi_sezione(v):
+            ruolo = pz.get("ruolo")
+            col = pz.get("colore") or _COLORI_SEZIONE.get(ruolo, "#b0b0b0")
+            verts = pz["verts"]
+            for fc in pz["faces"]:
+                if len(fc) < 3 or any(i >= len(verts) for i in fc):
+                    continue
+                pts = [verts[i] for i in fc]
+                sotto = _clip_semispazio(pts, f)
+                if len(sotto) >= 3:
+                    q = [(p[0], p[1]) for p in sotto]
+                    if _area2(q) >= SEZIONE_AREA_MIN:
+                        facce.append((sum(p[2] for p in sotto) / len(sotto), q, col,
+                                      ' fill-opacity="0.5"' if ruolo == "vetro" else ""))
+                for a, b in _segmenti_taglio(pts, f, lambda p: (p[0], p[1])):
+                    tagli.append(((a[0], a[1]), (b[0], b[1]), ruolo))
+    facce.sort(key=lambda x: x[0])
+    return {"facce": facce, "tagli": tagli, "quote": quote, "h": h}
+
+
+def _svg_sezione(sez, w, h, nord=False):
+    punti = [p for _z, q, _c, _o in sez["facce"] for p in q] + [p for a, b, _r in sez["tagli"] for p in (a, b)]
+    figure = [_poligoni_figura(fg) for fg in sez.get("figure") or []]
+    punti += [p for poli in figure for pg in poli for p in pg]
+    if not punti:
+        return ""
+    mappa, _s = _scala(punti, w, h, 40)
+    parti = []
+    for _z, q, col, opac in sez["facce"]:
+        pts = " ".join(f"{mappa(p)[0]:.1f},{mappa(p)[1]:.1f}" for p in q)
+        parti.append(f'<polygon points="{pts}" fill="{col}"{opac} stroke="{_tonalita(col, 0.45)}" stroke-width="0.3" stroke-linejoin="round"/>')
+    for poli in figure:
+        for pg in poli:
+            pts = " ".join(f"{mappa(p)[0]:.1f},{mappa(p)[1]:.1f}" for p in pg)
+            parti.append(f'<polygon points="{pts}" fill="#2e4053" fill-opacity="0.85" stroke="#1b2631" stroke-width="0.6"/>')
+    for a, b, _r in sez["tagli"]:
+        pa, pb = mappa(a), mappa(b)
+        parti.append(f'<line x1="{pa[0]:.1f}" y1="{pa[1]:.1f}" x2="{pb[0]:.1f}" y2="{pb[1]:.1f}" stroke="#111" stroke-width="1.8" stroke-linecap="round"/>')
+    if nord:
+        xn = w - 30
+        parti.append(f'<line x1="{xn:.0f}" y1="30" x2="{xn:.0f}" y2="16" stroke="#222" stroke-width="1.2"/>')
+        parti.append(f'<polygon points="{xn:.0f},8 {xn - 4:.0f},16 {xn + 4:.0f},16" fill="#222"/>')
+        parti.append(f'<text x="{xn + 10:.0f}" y="16" stroke="#fafafa" stroke-width="3" paint-order="stroke">N</text>')
+    return f'<svg class="manufatto" viewBox="0 0 {w} {h}" width="{w}" height="{h}">{"".join(parti)}</svg>'
+
+
+def _verso_bussola(n):
+    """Da che parte si guarda, a parole: la direzione di n."""
+    a = math.degrees(math.atan2(n[1], n[0])) % 360          # 0 = est, 90 = nord
+    nomi = ("est", "nord-est", "nord", "nord-ovest", "ovest", "sud-ovest", "sud", "sud-est")
+    return nomi[int(((a + 22.5) % 360) // 45)]
+
+
+def _dida_sezione_verticale(piano):
+    nomi = piano["nomi"]
+    dove = (f"per i centri di «{nomi[0]}» e «{nomi[1]}»" if len(nomi) > 1 else f"per il centro di «{nomi[0]}»")
+    extra = []
+    if abs(piano["rot"]) > 1e-6:
+        extra.append(f"ruotato di {_n(piano['rot'], 0)}°")
+    if abs(piano["spost"]) > 1e-6:
+        extra.append(f"spostato di {_n(piano['spost'], 2)} m")
+    return (f"Piano verticale {dove}" + (", " + " e ".join(extra) if extra else "") +
+            f"; si guarda verso {_verso_bussola(piano['n'])}. Linea nera: il taglio. "
+            f"La sagoma è una persona di {_n(FIGURA_H, 2)} m.")
+
+
+def _dida_sezione_orizzontale(sez):
+    return (f"Taglio a {_n(sez['h'], 2)} m dal pavimento finito di ogni componente, visto dall'alto. "
+            "Nord in alto, est a destra. Linea nera: il taglio.")
+
+
 def _tabella_manufatti(voci):
     if not voci:
         return ""
-    corpo = []
-    for v in voci:
-        ig = "presente all'interno" if v["igienico"] else "non presente all'interno"
-        corpo.append(
-            "<tr>"
-            f"<td>{_esc(v['nome'])}</td>"
-            f"<td class='n'>{_n(v['lung'], 2)} m ({_esc(v['dlung'])})</td>"
-            f"<td class='n'>{_n(v['larg'], 2)} m ({_esc(v['dlarg'])})</td>"
-            f"<td class='n'>{_n(v['h'], 2)} m</td>"
-            f"<td>{ig}</td></tr>")
-    return ("<table><thead><tr><th>Manufatto</th><th class='n'>Lunghezza</th>"
-            "<th class='n'>Larghezza</th><th class='n'>Altezza</th><th>Servizio igienico</th>"
+
+    def riga(nome, v, forte=False):
+        b, bb = ("<b>", "</b>") if forte else ("", "")
+        alt = "" if v.get("dal_pavimento", True) else " (ingombro)"
+        return ("<tr>"
+                f"<td>{b}{_esc(nome)}{bb}</td>"
+                f"<td class='n'>{b}{_n(v['lung'], 2)} m ({_esc(v['dlung'])}){bb}</td>"
+                f"<td class='n'>{b}{_n(v['larg'], 2)} m ({_esc(v['dlarg'])}){bb}</td>"
+                f"<td class='n'>{b}{_n(v['h'], 2)} m{alt}{bb}</td></tr>")
+
+    corpo = [riga(v["nome"], v) for v in voci]
+    insieme = _ingombro_insieme(voci)
+    if insieme:
+        corpo.append(riga("Insieme", dict(insieme, dal_pavimento=all(v["dal_pavimento"] for v in voci)), forte=True))
+    return ("<table><thead><tr><th>Componente</th><th class='n'>Lunghezza</th>"
+            "<th class='n'>Larghezza</th><th class='n'>Altezza pavimento–punta</th>"
             "</tr></thead><tbody>" + "".join(corpo) + "</tbody></table>")
 
 
 def _corpo_manufatti(dati):
-    voci, fuori = _prepara_manufatti(dati.get("manufatti"), dati.get("punti_igienico"))
-    frasi = "".join(f"<li>{_esc(t)}</li>" for t in _frasi_igienico(voci, fuori))
+    voci = _prepara_manufatti(dati.get("manufatti"))
     if not voci:
-        return ("<h2>Manufatti e servizio igienico</h2>"
-                "<p>Nel file non ho trovato manufatti da misurare.</p>")
+        return ("<h2>Viste e ingombri</h2>"
+                "<p>Nella collection non ho trovato pezzi da misurare.</p>")
     figure = []
+    sz = dati.get("sezioni") or {}
     for chiave, titolo, dida in _VISTE_MANUFATTO:
-        if chiave == "iso":
+        if chiave == "sezione_v":
+            piano = piano_sezione(voci, sz.get("principale") or dati.get("zome_pannello"), sz.get("rot", 0.0),
+                                  sz.get("spost", 0.0), dati.get("accessori") or ())
+            if piano is None:
+                continue
+            disegno = _svg_sezione(sezione_verticale(voci, piano), 640, 460)
+            dida = _dida_sezione_verticale(piano)
+        elif chiave == "sezione_o":
+            so = sezione_orizzontale(voci, sz.get("h", SEZIONE_H_DEFAULT))
+            disegno = _svg_sezione(so, 640, 460, nord=True)
+            dida = _dida_sezione_orizzontale(so)
+        elif chiave == "iso":
             disegno = _vista_iso(voci, 560, 400)
-            nomi = "; ".join(
+            dida = "; ".join(
                 f"{v['nome']}: {_n(v['lung'], 2)} × {_n(v['larg'], 2)} × {_n(v['h'], 2)} m" for v in voci)
-            dida = nomi
         else:
             disegno = _vista_ortografica(voci, chiave, 640, 460)
         figure.append(f"<figure>{disegno}<figcaption>{_esc(titolo)}<br><span class='dida'>{_esc(dida)}</span></figcaption></figure>")
+    posizione = _frasi_posizione(voci)
+    blocco_pos = ("<h2>Posizione</h2><ul>" + "".join(f"<li>{_esc(t)}</li>" for t in posizione) + "</ul>") if posizione else ""
     return (
-        "<h2>Manufatti e servizio igienico</h2>"
-        "<p class='meta'>Lunghezza è il lato maggiore in pianta, larghezza il minore; "
+        "<h2>Viste e ingombri</h2>"
+        "<p class='meta'>Un componente è una zome, o un pezzo fatto a parte, con le sue sotto-collection "
+        "«nome · Esterno», «· Tetto», «· Porta», «· Pavimento». "
+        "Lunghezza è il lato maggiore in pianta, larghezza il minore; "
         "fra parentesi la direzione. L'est è +X, il nord è +Y. "
-        "L'altezza va dal punto più basso dell'ingombro al più alto. "
-        "L'ingombro comprende legno esterno, vetro, tetto, porta e pavimento. "
+        "L'altezza è la distanza fra gli estradossi: dalla faccia di sopra del pavimento "
+        "al punto più alto del guscio, tetto compreso; i travetti stanno nel solaio, dentro la zome. "
+        "Senza pavimento è l'altezza dell'ingombro. Per l'insieme va dal pavimento più basso al punto più alto. "
+        "L'ingombro in pianta comprende legno esterno, vetro, tetto, porta e pavimento; "
+        "le pietre e il gradino si vedono nei disegni ma non entrano nelle misure. "
         "Il tratteggio è il rettangolo di quell'ingombro; le quote sono in metri.</p>"
         + _tabella_manufatti(voci)
-        + f"<h2>Servizio igienico</h2><ul>{frasi}</ul>"
+        + blocco_pos
         + "<div class='quadri'>" + "".join(figure) + "</div>"
     )
 
@@ -1453,7 +2041,15 @@ ul { margin: 8px 0; padding-left: 18px; }
 table { border-collapse: collapse; width: 100%; }
 th, td { border-bottom: 1px solid #e2e2e2; padding: 4px 6px; text-align: left; vertical-align: top; }
 td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
-table.tipi td.nome { width: 150px; font-size: 13px; }
+table.tipi td.nome { width: 170px; font-size: 13px; }
+table.classi { width: auto; }
+table.tipi thead th { font-size: 12px; color: #444; }
+svg.posizione { background: #fafafa; }
+.affianco { display: flex; gap: 16px; align-items: flex-start; }
+.affianco pre { flex: 1; margin: 0; }
+.affianco figure { margin: 0; flex: 0 0 auto; }
+svg.statica { background: #fafafa; max-width: 100%; height: auto; }
+h3 { font-size: 14px; margin: 18px 0 6px; }
 table.tipi i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; }
 .cap { color: #666; font-size: 11px; margin-bottom: 2px; }
 .schema { margin: 4px 0 10px; }
@@ -1496,16 +2092,108 @@ def _nav(corrente):
     return "<p class='nav'>" + " · ".join(voci) + "</p>"
 
 
+def _insieme(dati):
+    """Le zome della collection, se sono più di una."""
+    comp = dati.get("componenti") or []
+    return comp if len(comp) > 1 else []
+
+
+def nota_accessori(dati):
+    """Avviso per un report di soli spazi accessori: fatti a mano, non hanno statica, solaio, gradini né strati calcolati."""
+    acc = dati.get("accessori") or []
+    if dati.get("zome_pannello") or not acc:
+        return ""
+    elenco = ", ".join(f"«{c}»" for c in acc)
+    chi = f"Spazi accessori {elenco}, fatti" if len(acc) > 1 else f"Spazio accessorio {elenco}, fatto"
+    return (f"<p class='meta'><b>{_esc(chi)} a mano.</b> Statica, solaio, complessità a gradini e strati del termico "
+            "non si calcolano: si contano preventivo, costruttivi, aree e ingombri.</p>")
+
+
+def nota_insieme(dati, cosa):
+    """Avviso per un report di più componenti (Tutto): `cosa` vale solo per la zome di riferimento, quella del pannello."""
+    zp = dati.get("zome_pannello")
+    if not zp:
+        return nota_accessori(dati)
+    comp = _insieme(dati)
+    if not comp:
+        return ""
+    acc = [c for c in dati.get("accessori") or [] if c != zp]
+    altre = [c for c in comp if c != zp and c not in acc]
+    parti = []
+    if altre:
+        parti.append(", ".join(f"«{c}»" for c in altre))
+    if acc:
+        parti.append(("gli spazi accessori " if len(acc) > 1 else "lo spazio accessorio ") + ", ".join(f"«{c}»" for c in acc))
+    elenco = " e ".join(parti)
+    tante = len(altre) + len(acc) > 1
+    titolo = "Report con più zome" if altre else "Report con spazi accessori"
+    return (f"<p class='meta'><b>{titolo}.</b> {_esc(cosa)} di «{_esc(zp)}», la zome del pannello. "
+            f"Non {'sono calcolati' if tante else 'è calcolato'} {_esc(elenco)}, "
+            "e nemmeno le unioni fra i componenti.</p>")
+
+
+def _elenco_componenti(dati):
+    """«Componenti: zome stefano, zome_bagno · Spazi accessori: Legnaia»."""
+    acc = dati.get("accessori") or []
+    zome = [c for c in dati.get("componenti") or [] if c not in acc]
+    testo = "Componenti: " + ", ".join(zome) if zome else ""
+    if acc:
+        testo += (" · " if testo else "") + "Spazi accessori: " + ", ".join(acc)
+    return testo
+
+
+def adesso():
+    return datetime.now().strftime("%Y-%m-%d, ore %H:%M:%S")
+
+
+def _intestazione(dati):
+    """Le tre righe in testa a ogni pagina del report: data, parametri, altezza e superficie (in neretto)."""
+    # Un solo istante per tutto il report: le pagine e il PDF dicono la stessa ora, e si vede se sono state rifatte.
+    righe = [_esc(f"Data: {dati.get('creato') or adesso()}")]
+    if _insieme(dati) or dati.get("accessori"):
+        righe.append(_esc(_elenco_componenti(dati)))
+    if dati.get("parametri"):
+        di = f"di «{dati.get('zome_pannello')}»" if _insieme(dati) else "della zome"
+        righe.append(_esc(f"Parametri {di}: {dati['parametri']}"))
+    misure = []
+    if dati.get("h_pavimento") is not None:
+        misure.append(f"<b>Altezza</b> estradosso–estradosso (pavimento–punta): <b>{_n(dati['h_pavimento'], 2)} m</b>")
+    if dati.get("h_interna") is not None:
+        misure.append(f"<b>Altezza interna</b> (calpestio–intradosso): <b>{_n(dati['h_interna'], 2)} m</b>")
+    if dati.get("area_pavimento"):
+        misure.append(f"<b>Superficie</b> del pavimento: <b>{_n(dati['area_pavimento'], 2)} m²</b>")
+    if misure:
+        righe.append(" · ".join(misure))
+    return '<p class="sottotitolo">' + "<br>".join(righe) + "</p>"
+
+
 def _pagina(dati, titolo, corrente, corpo):
+    testa = _intestazione(dati)
     return f"""<!DOCTYPE html>
 <html lang="it"><head><meta charset="utf-8"><title>{_esc(titolo)} — {_esc(dati['nome'])}</title>
-<style>{_STILE_PAGINA}</style></head><body>
+<style>{_STILE_PAGINA}{zome_planimetria.STILE + _STAMPA_SENZA_INTERNO if corrente == "planimetria.html" else ""}</style></head><body>
 <h1>{_esc(titolo)} — {_esc(dati['nome'])}</h1>
-<p class="sottotitolo">{_esc(dati['testa'])}</p>
-<p class="meta">{date.today().isoformat()} · sola materia prima · solidi della collection</p>
+{testa}
 {_nav(corrente)}
 {corpo}
 </body></html>"""
+
+
+def _tabella_componenti(dati):
+    """Il preventivo diviso per componente: le zome e gli spazi accessori, ognuno col suo totale e il suo peso."""
+    voci = dati.get("per_componente") or []
+    if not voci:
+        return ""
+    corpo = "".join(
+        f"<tr><td>{_esc(v['nome'])}</td><td>{'spazio accessorio' if v.get('accessorio') else 'zome'}</td>"
+        f"<td class='n'>{_euro(v['euro'])}</td><td class='n'>{_n(v['kg'], 0)}</td></tr>" for v in voci)
+    somma = sum(v["euro"] for v in voci)
+    scarto = ""
+    if abs(somma - dati["totale"]) > 0.5:
+        scarto = (f"<p class='meta'>La somma dei componenti ({_euro(somma)} €) non è il totale: barre e arrotondamenti "
+                  "si contano su ogni componente da solo.</p>")
+    return ("<h2 id='componenti'>Per componente</h2><table><thead><tr><th>Componente</th><th>Tipo</th>"
+            "<th class='n'>Importo (€)</th><th class='n'>kg</th></tr></thead><tbody>" + corpo + "</tbody></table>" + scarto)
 
 
 def _corpo_preventivo(dati):
@@ -1522,6 +2210,7 @@ def _corpo_preventivo(dati):
         + _tabella(dati["righe"])
         + f"<p class='totale'>Totale {_euro(dati['totale'])} €</p>"
         + f"<p class='totale' id='peso'>Peso {_n(dati['peso'], 0)} kg</p>"
+        + _tabella_componenti(dati)
         + _blocco(dati)
         + "<p class='meta'>Prezzi e densità da Riferimenti/proprieta_materiali.xlsx, foglio Materiali. "
         "Sono approssimati: il numero esatto si scrive in quel file. Una cella vuota non è stata riempita.</p>"
@@ -1530,18 +2219,115 @@ def _corpo_preventivo(dati):
     )
 
 
+_COLORI_STATICA = (("compr", "#c0392b", "più compresse"), ("traz", "#2471a3", "più tese"),
+                   ("mom", "#d68910", "più piegate (momento maggiore)"))
+
+
+def _svg_statica(esito, w=520, h=420, quante=3):
+    """Lo scheletro a linee leggere, in isometrica; le aste più compresse, tese e piegate colorate e spesse."""
+    aste = (esito or {}).get("aste_viste") or []
+    if not aste:
+        return ""
+    scelte = {}
+    for chiave, col, _ in _COLORI_STATICA:
+        for a in sorted(aste, key=lambda t: -t[chiave])[:quante]:
+            if a[chiave] > 0:
+                scelte.setdefault(a["n"], col)
+    mappa, _s = _scala([_iso(p) for a in aste for p in (a["a"], a["b"])], w, h, 12)
+    parti = []
+    for a in sorted(aste, key=lambda t: t["n"] in scelte):
+        p, q = mappa(_iso(a["a"])), mappa(_iso(a["b"]))
+        col = scelte.get(a["n"])
+        stile = f'stroke="{col}" stroke-width="3.2"' if col else 'stroke="#222" stroke-opacity="0.3" stroke-width="0.8"'
+        parti.append(f'<line x1="{p[0]:.1f}" y1="{p[1]:.1f}" x2="{q[0]:.1f}" y2="{q[1]:.1f}" {stile} stroke-linecap="round"/>')
+    return f'<svg class="statica" viewBox="0 0 {w} {h}" width="{w}" height="{h}">{"".join(parti)}</svg>'
+
+
+def _legenda_statica(esito):
+    voci = "".join(f'<li><i style="background:{col}"></i>Le 3 aste {_esc(testo)}</li>' for _, col, testo in _COLORI_STATICA)
+    rif = ""
+    TT, TW = (esito or {}).get("TT"), (esito or {}).get("TW")
+    if TT and TW:
+        # Valori caratteristici del C24 (EN 338): flessione 24 MPa, compressione 21 MPa. Senza coefficienti di sicurezza.
+        m_piatto = 24e6 * TT * TW * TW / 6 / 1000
+        m_costa = 24e6 * TW * TT * TT / 6 / 1000
+        n_compr = 21e6 * TT * TW / 1000
+        rif = (
+            "<h3>Quanto regge una trave dello scheletro</h3>"
+            f"<p>La trave è larga {_n(TT * 100, 1)} cm e spessa {_n(TW * 100, 1)} cm, in abete C24. "
+            "Sono i valori a cui le fibre sul bordo della <i>sezione</i> arrivano al catalogo, "
+            "senza margini: servono per confrontare i numeri qui sopra, non a dire che va bene. "
+            "Non è lo schema di una mensola fissata in basso: l'asta nella zome ha due estremità nella maglia. "
+            "γ<sub>M</sub> è il coefficiente di sicurezza sul materiale usato in progetto regolamentato "
+            "(per il legno, di solito circa 1,3): riduce il valore di catalogo perché i pezzi reali "
+            "non sono identici a quelli di prova. In questo rapporto non c'è.</p><ul>"
+            f"<li>Piegata verso l'esterno o l'interno della zome («fuori piano» nel rapporto): "
+            f"circa <b>{_n(m_piatto, 2)} kN·m</b>.</li>"
+            f"<li>Piegata di lato, nel piano del rombo («nel piano»): circa <b>{_n(m_costa, 2)} kN·m</b>.</li>"
+            f"<li>Schiacciata lungo l'asta: circa <b>{_n(n_compr, 0)} kN</b> prima che il legno si schiacci; "
+            "un'asta lunga e sottile però si imbarca prima.</li></ul>")
+    return (
+        "<h2>Legenda</h2>"
+        f"<ul class='legenda'>{voci}</ul>"
+        "<ul>"
+        "<li><b>Asta</b>: ogni trave dello scheletro, cioè un lato di un rombo o di un triangolo (e le traverse, se ci sono). "
+        "Il calcolo la tratta come una linea fra due nodi.</li>"
+        "<li><b>kN</b> (kilonewton): una forza. 1 kN è più o meno il peso di 100 kg.</li>"
+        "<li><b>Compressione</b>: l'asta viene schiacciata lungo la sua lunghezza, come la gamba di un tavolo.</li>"
+        "<li><b>Trazione</b>: l'asta viene tirata, come una corda che regge un peso.</li>"
+        "<li><b>Momento</b>: l'asta viene piegata. Si misura in kN·m, forza per distanza: "
+        "conta il peso e anche quanto lontano agisce. Un'asse lunga 1 m, fissata a un'estremità, con 100 kg appesi "
+        "all'altra, all'attacco subisce circa 1 kN·m; con gli stessi 100 kg a 50 cm, la metà.</li>"
+        "</ul>"
+        + rif
+    )
+
+
+def _blocco_solaio(pv, quale):
+    rap = (pv or {}).get("rapporto") or {}
+    bl = rap.get(quale) or {}
+    if not bl:
+        return ""
+    titolo = "Travetti" if quale == "travetti" else "Travi"
+    return (
+        f"<h3>{titolo}</h3>"
+        f"<p>{_esc(bl.get('sommario', ''))}</p>"
+        f"<p class='meta'><b>Procedimento.</b> {_esc(bl.get('dettaglio', '')).replace(chr(10), '<br>')}</p>"
+    )
+
+
 def _corpo_statica(dati):
     testo = (dati.get("statica") or "").strip()
+    esito = dati.get("statica_esito")
     if not testo:
         corpo = "<p>Il calcolo del telaio non è stato eseguito.</p>"
     else:
-        corpo = f"<pre class='rapporto'>{_esc(testo)}</pre>"
+        schema = _svg_statica(esito)
+        rapporto = f"<pre class='rapporto'>{_esc(testo)}</pre>"
+        corpo = (f"<div class='affianco'>{rapporto}<figure>{schema}</figure></div>" if schema else rapporto)
+    pv = dati.get("pavimento") or {}
+    solaio = _blocco_solaio(pv, "travetti") + _blocco_solaio(pv, "travi")
     return (
         "<h2>Valutazione statica</h2>"
-        "<p class='meta'>Telaio dello scheletro: peso del legno, dei rivestimenti, dell'isolante e neve. "
-        "Serve a confrontare le pose. Non è un calcolo secondo norma. "
-        "Le aste colorate nella vista si aggiornano con «Calcola sollecitazioni», non con questo file.</p>"
+        + nota_insieme(dati, "Scheletro e solaio sono") +
+        "<h3>Scheletro</h3>"
+        "<p class='meta'><b>Libreria.</b> Il telaio si calcola con <b>PyNiteFEA</b> (Pynite), analisi elastica lineare "
+        "a elementi finiti. Non si riporta il procedimento interno del solutore.</p>"
+        "<p class='meta'><b>A cosa serve.</b> Mostra dove il calcolo concentra sforzo sullo scheletro "
+        "(piega, schiacciamento, trazione, abbassamento) e quali aste escono più sollecitate. "
+        "Serve a individuare i punti deboli da guardare e a confrontare varianti con la stessa ipotesi; "
+        "non sostituisce il cantiere né un calcolo di norma.</p>"
+        "<p class='meta'><b>Ipotesi sui giunti.</b> Telaio con peso del legno, rivestimenti, isolante, copertura e carico neve. "
+        "Agli incroci il modello permette di trasmettere il momento (aste collegate agli angoli); "
+        "le coperture pesano ma non rinforzano come guscio. Giunti e piastre reali cambiano quanto "
+        "momento arriva al legno. Le aste colorate nella vista si aggiornano con «Calcola sollecitazioni», "
+        "non con questo file.</p>"
         + corpo
+        + (_legenda_statica(esito) if testo else "")
+        + ("<h2>Solaio</h2>"
+           "<p class='meta'>Dopo lo scheletro: travetti (sezione scelta, interasse calcolato) e travi "
+           "(un pezzo per lato, sezione dal catalogo). C24, freccia L/300. Indicativo, non è un calcolo NTC.</p>"
+           + solaio if solaio else "")
     )
 
 
@@ -1549,7 +2335,66 @@ def _corpo_termico(dati):
     blocco = dati.get("termico") or ""
     if not blocco:
         blocco = "<p>Manca uno spessore o un dato termico: la curva non è stata calcolata.</p>"
-    return "<h2>Valutazione termica</h2>" + blocco
+    nota = ""
+    if not dati.get("zome_pannello"):
+        nota = nota_accessori(dati)
+    elif _insieme(dati):
+        con_acc = bool(dati.get("accessori"))
+        nota = (f"<p class='meta'><b>{'Report con spazi accessori' if con_acc and len(_insieme(dati)) - len(dati['accessori']) < 2 else 'Report con più zome'}.</b> "
+                f"Le aree opaca e vetrata sono di {'tutti i componenti, spazi accessori compresi' if con_acc else 'tutte le zome'}; "
+                f"gli strati della parete sono quelli di «{_esc(dati.get('zome_pannello'))}», la zome del pannello.</p>")
+    return "<h2>Valutazione termica</h2>" + nota + blocco
+
+
+def _blocco_complessita(dati):
+    """Capitoletto Complessità: pezzi, tipi, regolazioni della troncatrice e tempo di bottega, a gradini fino al modello finito."""
+    import zome_complessita as zx
+    cx = dati.get("complessita") or {}
+    righe_v, coll = cx.get("varianti") or [], cx.get("collezione")
+    if not righe_v and not coll:
+        return ""
+
+    def ore(m):
+        return _n(m / 60.0, 1)
+
+    def riga(nome, r, forte=False):
+        if r.get("errore"):
+            return f"<tr><td>{_esc(nome)}</td><td colspan='7'>non si costruisce: {_esc(r['errore'])}</td></tr>"
+        b, bb = ("<b>", "</b>") if forte else ("", "")
+        facce = f"{r['facce']} ({r['gruppi_facce']})" if r.get("facce") else "—"
+        celle = [r["pezzi"], r["tipi"], facce, r["angoli"], r["fermi"], ore(r["minuti"]), ore(r["minuti_regolazioni"])]
+        return f"<tr><td>{b}{_esc(nome)}{bb}</td>" + "".join(f"<td class='n'>{b}{c}{bb}</td>" for c in celle) + "</tr>"
+
+    corpo = "".join(riga(r["nome"], r) for r in righe_v)
+    note = []
+    if coll:
+        corpo += riga("Scheletro nella collection", coll, forte=True)
+        if coll.get("illeggibili"):
+            note.append(f"{coll['illeggibili']} solidi dello scheletro non sono tavole leggibili e restano fuori dal conto.")
+        ultimo = next((r for r in reversed(righe_v) if not r.get("errore")), None)
+        if _insieme(dati) and dati.get("zome_pannello"):
+            note.append(f"Le righe a gradini sono di «{dati.get('zome_pannello')}», la zome del pannello; "
+                        "la riga in neretto conta lo scheletro di tutti i componenti del report: "
+                        + ", ".join(dati["componenti"]) + ".")
+        elif ultimo and any(ultimo[k] != coll[k] for k in ("pezzi", "tipi", "angoli", "fermi")):
+            note.append("Lo scheletro nella collection non è quello che fa l'algoritmo con questi parametri: "
+                        "è stato cambiato a mano o ricostruito con altre misure. Vale la riga in neretto.")
+    m = zx.MINUTI
+    testa = ("<thead><tr><th>Variante</th><th class='n'>Pezzi</th><th class='n'>Tipi</th><th class='n'>Facce (gruppi)</th>"
+             "<th class='n'>Regolazioni d'angolo</th><th class='n'>Regolazioni del fermo</th>"
+             "<th class='n'>Tempo di bottega (h)</th><th class='n'>di cui regolazioni (h)</th></tr></thead>")
+    spiega = (f"Tipi: pezzi diversi entro {_n(zx.TOLL_MM, 0)} mm e {_n(zx.TOLL_GRADI, 1)}°; un pezzo e il suo specchio sono "
+              "lo stesso tipo. Facce: rombi, triangoli e chiusure; tra parentesi i gruppi di facce con gli stessi pezzi, "
+              "come nei dettagli costruttivi. Regolazioni d'angolo: angoli di testa diversi, ciascuno impostato una volta. Regolazioni del fermo: "
+              "la seconda testa si taglia contro il fermo, uno per ogni lunghezza con quell'angolo. "
+              f"Tempo di bottega: {_n(m['taglio'], 1)} min a taglio, {_n(m['angolo'], 0)} min a regolazione d'angolo, "
+              f"{_n(m['fermo'], 0)} min a regolazione del fermo (valori provvisori, per confrontare). "
+              "Le righe sopra sono la zome base e poi una modifica alla volta, nell'ordine; quella in neretto è lo "
+              "scheletro così com'è nella collection.")
+    return ("<h2>Complessità</h2>"
+            f"<table>{testa}<tbody>{corpo}</tbody></table>"
+            f"<p class='meta'>{_esc(spiega)}</p>"
+            + "".join(f"<p class='meta'>{_esc(t)}</p>" for t in note))
 
 
 def _corpo_indice(dati):
@@ -1563,40 +2408,204 @@ def _corpo_indice(dati):
         "<li><a href='termico.html'>Valutazione termica</a> — "
         "parete opaca e vetrocamera, luglio-agosto e gennaio a Neirone, con il flusso verso l'interno.</li>"
         "<li><a href='costruttivi.html'>Dettagli costruttivi</a> — "
-        "scheletro, pali, travetti, pavimento, esterno, pareti, interno, isolante, vetrocamera e copertura: "
+        "scheletro, travi, travetti, pavimento, esterno, pareti, interno, isolante, vetrocamera e copertura: "
         "schema, isometrica, pianta, laterale e sezione.</li>"
-        "<li><a href='manufatti.html'>Manufatti e servizio igienico</a> — "
-        "lunghezza, larghezza e altezza di ogni manufatto nel file, in isometrica, pianta, fronte e laterale. "
-        "Se il servizio igienico non è dentro, la pagina dice dov'è e a che distanza.</li>"
+        "<li><a href='viste.html'>Viste e ingombri</a> — "
+        "lunghezza, larghezza e altezza di ogni componente della collection e dell'insieme, "
+        "in isometrica, pianta, fronte e laterale, con la posizione dei componenti fra loro.</li>"
+        "<li><a href='planimetria.html'>Planimetria</a> — "
+        "planimetria generale in scala 1:200 per la Regione: sedime della struttura, piazzola, superficie coperta, "
+        "percorso pedonale, particelle e strada carrabile.</li>"
         "</ul>"
+        + _blocco_pdf(dati) +
         f"<p class='totale'>Totale {_euro(dati['totale'])} €</p>"
         f"<p class='totale'>Peso {_n(dati['peso'], 0)} kg</p>"
+        + _blocco_complessita(dati) +
         "<p class='meta'>Peso, torta e note sono nel preventivo. I pezzi quotati sono nei dettagli costruttivi. "
-        "Le misure dell'ingombro e il servizio igienico sono nella pagina dei manufatti.</p>"
+        "Le misure dell'ingombro sono nella pagina delle viste.</p>"
+        "<p class='meta'>Per inviare il report: copia l'intera cartella <code>report</code> con tutti gli .html. "
+        "I link tra le pagine sono relativi; su un altro PC apri <code>report.html</code>.</p>"
     )
 
 
+def _blocco_pdf(dati):
+    """I due PDF, se scritti: il report interno e la planimetria, documento tecnico a parte."""
+    pdf = dati.get("pdf") or {}
+    if not pdf:
+        return ""
+    voci = []
+    if pdf.get("report"):
+        voci.append(f"<li><a href='{_esc(pdf['report'])}'>Report interno (PDF)</a> — preventivo e capitolato, "
+                    "statica, termico, dettagli costruttivi, viste.</li>")
+    if pdf.get("planimetria"):
+        voci.append(f"<li><a href='{_esc(pdf['planimetria'])}'>Planimetria generale (PDF)</a> — "
+                    "il documento tecnico per la Regione, senza parti interne.</li>")
+    return "<h2>PDF</h2><ul>" + "".join(voci) + "</ul>"
+
+
 def pagine_report(dati):
-    """Sei HTML: indice, quattro capitoli e la scheda dei manufatti."""
+    """Sette HTML: indice, quattro capitoli, le viste con gli ingombri e la planimetria."""
     return {
         "report.html": _pagina(dati, "Report", "report.html", _corpo_indice(dati)),
         "preventivo.html": _pagina(dati, "Preventivo e capitolato", "preventivo.html", _corpo_preventivo(dati)),
         "statica.html": _pagina(dati, "Valutazione statica", "statica.html", _corpo_statica(dati)),
         "termico.html": _pagina(dati, "Valutazione termica", "termico.html", _corpo_termico(dati)),
         "costruttivi.html": _pagina(dati, "Dettagli costruttivi", "costruttivi.html", _corpo_costruttivi(dati)),
-        "manufatti.html": _pagina(dati, "Manufatti e servizio igienico", "manufatti.html", _corpo_manufatti(dati)),
+        "viste.html": _pagina(dati, "Viste e ingombri", "viste.html", _corpo_manufatti(dati)),
+        "planimetria.html": _pagina(dati, "Planimetria", "planimetria.html", _corpo_planimetria(dati)),
     }
 
 
-def scrivi_scena(percorso, oggetti, meta, opz, prezzi, statica="", manufatti=None, punti_igienico=None):
-    """Scrive l'indice, i quattro capitoli e la scheda dei manufatti nella cartella di `percorso`."""
+def _dati_planimetria(dati):
+    pl = dati.get("planimetria_dati")
+    if pl is None:
+        pl = zome_planimetria.prepara(dati.get("sito"), dati.get("manufatti"))
+        dati["planimetria_dati"] = pl
+    return pl
+
+
+def _corpo_planimetria(dati, interno=True):
+    """Ultima pagina: la planimetria generale, documento tecnico, con la tavola sul foglio che le basta."""
+    return zome_planimetria.corpo(_dati_planimetria(dati), dati["nome"], f"Data: {dati.get('creato') or adesso()}",
+                                  interno=interno)
+
+
+_STAMPA_SENZA_INTERNO = """
+@media print { body > h1, body > .sottotitolo, body > .nav { display: none !important; } }
+"""
+
+
+def html_planimetria(dati):
+    """La planimetria da sola, per il PDF tecnico: niente intestazione interna, parametri o indice."""
+    return f"""<!DOCTYPE html>
+<html lang="it"><head><meta charset="utf-8"><title>Planimetria generale</title>
+<style>{_STILE_PAGINA}{zome_planimetria.STILE}
+body {{ margin: 0; max-width: none; font-size: 12px; }}</style></head><body>
+{_corpo_planimetria(dati, interno=False)}
+</body></html>"""
+
+
+_STILE_STAMPA = """
+@page { size: A4; margin: 12mm; }
+body { margin: 0; max-width: none; font-size: 12px; }
+.capitolo { break-before: page; }
+.capitolo:first-of-type { break-before: auto; }
+svg { max-width: 100%; height: auto; }
+figure, tr, .costo, .schema { break-inside: avoid; }
+h2 { break-after: avoid; }
+"""
+
+
+def html_stampa(dati):
+    """Un solo HTML con i capitoli interni, uno per pagina, per farne il PDF.  La planimetria ha il suo PDF."""
+    capitoli = (
+        ("Preventivo e capitolato", _corpo_preventivo),
+        ("Valutazione statica", _corpo_statica),
+        ("Valutazione termica", _corpo_termico),
+        ("Dettagli costruttivi", _corpo_costruttivi),
+        ("Viste e ingombri", _corpo_manufatti),
+    )
+    corpo = "".join(f"<section class='capitolo'><h1>{_esc(t)}</h1>{f(dati)}</section>" for t, f in capitoli)
+    return f"""<!DOCTYPE html>
+<html lang="it"><head><meta charset="utf-8"><title>Report — {_esc(dati['nome'])}</title>
+<style>{_STILE_PAGINA}{_STILE_STAMPA}</style></head><body>
+<h1>Report — {_esc(dati['nome'])}</h1>
+{_intestazione(dati)}
+<p class='totale'>Totale {_euro(dati['totale'])} € · Peso {_n(dati['peso'], 0)} kg</p>
+{_blocco_complessita(dati)}
+{corpo}
+</body></html>"""
+
+
+def trova_browser():
+    """Edge o Chrome: il PDF lo stampa il browser, senza librerie in più."""
+    nomi = ("msedge.exe", "chrome.exe")
+    try:
+        import winreg
+        for nome in nomi:
+            for radice in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                try:
+                    with winreg.OpenKey(radice, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths" + "\\" + nome) as k:
+                        p = winreg.QueryValue(k, None)
+                    if p and os.path.isfile(p.strip('"')):
+                        return p.strip('"')
+                except OSError:
+                    pass
+    except ImportError:
+        pass
+    basi = [os.environ.get(v, "") for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")]
+    for sotto in (r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe"):
+        for b in basi:
+            p = os.path.join(b, sotto)
+            if b and os.path.isfile(p):
+                return p
+    return None
+
+
+def scrivi_pdf(cartella, dati, nome="report.pdf", html=None, stampa_nome="report_stampa.html"):
+    """Scrive report.pdf nella cartella (o un altro HTML, se dato). Senza browser lascia l'HTML da stampare a mano."""
+    import pathlib, subprocess, tempfile
+    stampa = os.path.join(cartella, stampa_nome)
+    with open(stampa, "w", encoding="utf-8") as f:
+        f.write(html if html is not None else html_stampa(dati))
+    browser = trova_browser()
+    if not browser:
+        raise RuntimeError(f"Non trovo Edge né Chrome: apri {stampa_nome} e stampa in PDF con Ctrl+P.")
+    pdf = os.path.join(cartella, nome)
+    if os.path.exists(pdf):
+        os.remove(pdf)
+    with tempfile.TemporaryDirectory() as profilo:
+        # Un profilo a parte: con il browser già aperto il comando passerebbe la stampa a quello e non scriverebbe nulla.
+        subprocess.run([browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-pdf-header-footer",
+                        "--user-data-dir=" + profilo, "--print-to-pdf=" + pdf, pathlib.Path(stampa).as_uri()],
+                       timeout=180, capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if not os.path.isfile(pdf) or os.path.getsize(pdf) == 0:
+        raise RuntimeError(f"Il browser non ha scritto il PDF: apri {stampa_nome} e stampa in PDF con Ctrl+P.")
+    os.remove(stampa)
+    return pdf
+
+
+def scrivi_pdf_planimetria(cartella, dati, nome="planimetria.pdf"):
+    """La planimetria generale in un PDF a parte: la pagina dei dati in A4 e la tavola sul suo foglio."""
+    return scrivi_pdf(cartella, dati, nome, html=html_planimetria(dati), stampa_nome="planimetria_stampa.html")
+
+
+def scrivi_pdf_tutti(cartella, dati):
+    """I due PDF e l'indice rifatto con i loro link.  Ritorna (percorsi, errori)."""
+    fatti, errori = {}, []
+    for chiave, funz in (("report", scrivi_pdf), ("planimetria", scrivi_pdf_planimetria)):
+        try:
+            fatti[chiave] = os.path.basename(funz(cartella, dati))
+        except Exception as e:
+            errori.append(str(e))
+    dati["pdf"] = fatti
+    with open(os.path.join(cartella, "report.html"), "w", encoding="utf-8") as f:
+        f.write(_pagina(dati, "Report", "report.html", _corpo_indice(dati)))
+    return fatti, errori
+
+
+def scrivi_scena(percorso, oggetti, meta, opz, prezzi, statica="", manufatti=None, statica_esito=None, sito=None, sezioni=None):
+    """Scrive l'indice, i quattro capitoli e le viste con gli ingombri nella cartella di `percorso`
+    (di solito …/report/report.html: tutti gli HTML nella stessa cartella, link relativi)."""
     dati = componi(oggetti, meta, opz, prezzi)
+    dati["creato"] = adesso()
     dati["statica"] = statica or ""
+    dati["statica_esito"] = statica_esito
     dati["manufatti"] = manufatti or []
-    dati["punti_igienico"] = punti_igienico or []
+    dati["sito"] = sito
+    dati["sezioni"] = sezioni or {}
     cartella = os.path.dirname(percorso) or "."
     os.makedirs(cartella, exist_ok=True)
     for nome, html in pagine_report(dati).items():
         with open(os.path.join(cartella, nome), "w", encoding="utf-8") as f:
             f.write(html)
+    leggimi = os.path.join(cartella, "LEGGIMI.txt")
+    with open(leggimi, "w", encoding="utf-8") as f:
+        f.write(
+            "Report HTML della zome.\n\n"
+            "Per inviarlo o archiviarlo: copia TUTTA questa cartella (tutti i file .html).\n"
+            "Apri report.html nel browser; i link all'indice e alle altre pagine sono relativi\n"
+            "e funzionano anche su un altro computer, senza internet.\n"
+        )
     return dati

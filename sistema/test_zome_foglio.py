@@ -53,7 +53,7 @@ assert "Travi e travetti" in testo and "Vetrocamera" in testo
 
 from zome_pavimento import interasse_massimo
 from zome_scena import (_estensioni, _si_incrocia, _viste_tipo, componi, espandi, firma, html_scena,
-                        pagine_report, svg_schema)
+                        html_stampa, pagine_report, svg_schema)
 
 
 def _box(origine, size):
@@ -109,7 +109,7 @@ assert abs(voci_s["Esterno"]["prezzo"] - 11.90) < 1e-6
 assert abs(voci_s["Interno"]["prezzo"] - 10.78) < 1e-6
 assert "Tavole di abete" not in voci_s["Esterno"]["voce"]
 html_s = html_scena(dati_s)
-assert "Isometrica" in html_s and "Pianta" in html_s and "Laterale" in html_s and "Sezione" in html_s
+assert "Posizione" in html_s and "Pianta" in html_s and "Laterale" in html_s and "Sezione" in html_s
 assert "<h2>Strati</h2>" not in html_s and "peso non segue" not in html_s
 assert "<h2>Esterno</h2>" in html_s and "<h2>Interno</h2>" in html_s
 assert "L'altra parte" in html_s and "class='somma'" in html_s
@@ -117,7 +117,7 @@ i_euro = html_s.find('<p class="totale">Totale')
 i_peso = html_s.find('<p class="totale">Peso')
 i_torta = html_s.find('class="torta"')
 assert 0 <= i_euro < i_peso < i_torta
-assert html_s.find("<h2>Preventivo di massima</h2>") < html_s.find("<h2>Note</h2>") < html_s.find("Isometrica")
+assert html_s.find("<h2>Preventivo di massima</h2>") < html_s.find("<h2>Note</h2>") < html_s.find("Posizione")
 termo = blocco_termico(PREZZI, {"t_legno_mm": 20, "t_int_mm": 15, "t_isolante_mm": 80,
                                  "isolante_nome": "Argilla espansa",
                                  "area_opaca_m2": 19.3, "area_vetro_m2": 3.86})
@@ -144,13 +144,16 @@ assert all(r["chiave"] == "c24" for r in solo_s["righe"])
 assert "<h2>Vetrocamera</h2>" not in html_scena(solo_s)
 pagine = pagine_report(dati_s)
 assert set(pagine) == {"report.html", "preventivo.html", "statica.html", "termico.html",
-                       "costruttivi.html", "manufatti.html"}
+                       "costruttivi.html", "viste.html", "planimetria.html"}
 assert "Preventivo e capitolato" in pagine["preventivo.html"] and "id='note'" in pagine["preventivo.html"]
 assert "Valutazione statica" in pagine["statica.html"]
 assert "Luglio e agosto" in pagine["termico.html"] or "Manca" in pagine["termico.html"]
-assert "Isometrica" in pagine["costruttivi.html"] and "Sezione" in pagine["costruttivi.html"]
+assert "Posizione" in pagine["costruttivi.html"] and pagine["costruttivi.html"].count("<thead>") <= len(dati_s["capitoli"]) and "Sezione" in pagine["costruttivi.html"]
 assert "preventivo.html" in pagine["report.html"] and "costruttivi.html" in pagine["report.html"]
-assert "manufatti.html" in pagine["report.html"] and "non ho trovato manufatti" in pagine["manufatti.html"]
+assert "viste.html" in pagine["report.html"] and "non ho trovato pezzi" in pagine["viste.html"]
+assert all("igienic" not in h for h in pagine.values())
+stampa = html_stampa(dati_s)
+assert stampa.count("<section class='capitolo'>") == 5 and "@page" in stampa and "class='nav'" not in stampa
 
 
 def _manufatto(nome, origine, size):
@@ -160,14 +163,38 @@ def _manufatto(nome, origine, size):
 
 casa = _manufatto("casa", (0, 0, 0), (4, 3, 2.5))
 bagno = _manufatto("bagno", (0.2, 5, 0), (2, 2, 2.2))
-pag_m = pagine_report(dict(dati_s, manufatti=[casa, bagno], punti_igienico=[(1.2, 6.0, 1.0)]))["manufatti.html"]
+pag_m = pagine_report(dict(dati_s, manufatti=[casa, bagno]))["viste.html"]
 assert "4,00 m (est-ovest)" in pag_m and "3,00 m (nord-sud)" in pag_m and "2,50 m" in pag_m
-assert "«bagno»: il servizio igienico è presente all&#x27;interno." in pag_m
-assert "non è presente all&#x27;interno" in pag_m and "2,00 m" in pag_m and "4,50 m a nord" in pag_m
+assert "igienic" not in pag_m and "<h2>Posizione</h2>" in pag_m
+assert "«bagno»: il centro è 0,80 m a ovest e 4,50 m a nord rispetto al centro di «casa»" in pag_m
+assert "Fra i due ingombri restano 2,00 m verso nord." in pag_m
+assert "<b>Insieme</b>" in pag_m and "<b>7,00 m (nord-sud)</b>" in pag_m      # da y 0 a y 7
 assert all(voce in pag_m for voce in ("Isometrica", "Pianta", "Fronte", "Laterale"))
-assert pag_m.count("<svg") == 4
-solo = pagine_report(dict(dati_s, manufatti=[casa], punti_igienico=[]))["manufatti.html"]
-assert "non risulta dal modello" in solo
+assert pag_m.count("<svg") == 6 and "Sezione verticale" in pag_m and "Sezione orizzontale" in pag_m
+solo = pagine_report(dict(dati_s, manufatti=[casa]))["viste.html"]
+assert "Posizione" not in solo and "Insieme" not in solo
+# estradossi: tavolato con la faccia di sopra a 0,45 m, guscio fino a 2,50 m; il muretto più alto del tavolato non conta
+tv, tf = _box((0.5, 0.5, 0.40), (3, 2, 0.05))
+mv, mf = _box((0, 0, 0), (4, 3, 0.50))
+casa_p = dict(casa, pezzi=casa["pezzi"] + [{"ruolo": "pavimento", "nome": "z_pav_tavolato", "verts": tv, "faces": tf},
+                                           {"ruolo": "pavimento", "nome": "z_pav_pietre", "verts": mv, "faces": mf}])
+pag_e = pagine_report(dict(dati_s, manufatti=[casa_p]))["viste.html"]
+assert "Altezza pavimento–punta" in pag_e and "<td class='n'>2,05 m</td>" in pag_e
+# le pietre (6 × 5, fuori dalla casa) non allargano l'ingombro; i travetti sotto il tavolato non alzano l'altezza
+pv, pf = _box((-1, -1, -0.2), (6, 5, 0.3))
+trv, trf = _box((0.5, 0.5, 0.20), (3, 2, 0.20))
+casa_t = dict(casa, pezzi=casa["pezzi"] + [{"ruolo": "pavimento", "nome": "z_pav_tavolato", "verts": tv, "faces": tf},
+                                           {"ruolo": "pavimento", "nome": "z_pav_travetti", "verts": trv, "faces": trf},
+                                           {"ruolo": "pavimento", "nome": "z_pav_pietre", "verts": pv, "faces": pf}])
+pag_t = pagine_report(dict(dati_s, manufatti=[casa_t]))["viste.html"]
+assert "4,00 m (est-ovest)" in pag_t and "<td class='n'>2,05 m</td>" in pag_t and "~" not in pag_t
+assert "<td class='n'>2,50 m (ingombro)</td>" in solo
+assert all("Data: " in p and "sola materia prima" not in p for p in pagine_report(dati_s).values())
+import re as _re
+ore_ = {_re.search(r"Data: \d{4}-\d\d-\d\d, ore \d\d:\d\d:\d\d", p).group(0)
+        for p in list(pagine_report(dict(dati_s, creato="2026-11-12, ore 10:20:30")).values())
+        + [html_stampa(dict(dati_s, creato="2026-11-12, ore 10:20:30"))]}
+assert ore_ == {"Data: 2026-11-12, ore 10:20:30"}, ore_            # stessa ora in ogni pagina e nel PDF
 
 solo = dict(opz, esterno=False, perline=False, vetro=False)
 d2 = prepara(m, solo, PREZZI)
